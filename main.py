@@ -15,5 +15,7 @@ if __name__ == "__main__":
     vc_content = vc.get_content()
     if vc_content:
         print("Successfully retrieved content from vCenter.")
+        hosts = vc.get_hosts(vc_content)
+        print(hosts)
     else:
         print("Failed to retrieve content.")

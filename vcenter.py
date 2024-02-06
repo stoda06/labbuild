@@ -37,3 +37,12 @@ class VCenter:
             return None
 
     # You can add more methods here to interact with vCenter
+    def get_hosts(self, content):
+        container = content.viewManager.CreateContainerView(content.rootFolder,[vim.HostSystem], True)
+
+        hosts_view = container.view
+        hosts = []
+        for host in hosts_view:
+            hosts.append(host.name)
+        
+        return hosts
