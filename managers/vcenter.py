@@ -2,18 +2,11 @@ from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 import ssl
 import atexit
-import functools
+from network_manager import NetworkManager
+from resource_pool_manager import ResourcePoolManager
+# from common import auto_requires_connection
 
-def requires_connection(func):
-    """Decorator to ensure a vCenter connection is established before calling the method."""
-    @functools.wraps(func)
-    def wrapper(self, *args, **kwargs):
-        if not self.connection:
-            print("Not connected to vCenter. Please establish a connection first.")
-            return None
-        return func(self, *args, **kwargs)
-    return wrapper
-
+# @auto_requires_connection
 class VCenter:
     def __init__(self, host, user, password, port=443):
         self.host = host
@@ -39,12 +32,10 @@ class VCenter:
             print(f"Failed to connect to vCenter: {e}")
             self.connection = None
 
-    @requires_connection
     def get_content(self):
         """Retrieves the root folder from vCenter."""
         return self.connection.RetrieveContent()
 
-    @requires_connection
     def get_hosts(self):
         content = self.get_content()
         host_view = content.viewManager.CreateContainerView(content.rootFolder,[vim.HostSystem], True)
@@ -53,7 +44,6 @@ class VCenter:
         
         return hosts
     
-    @requires_connection
     def get_datacenters(self):
         """Retrieves all datacenters from vCenter."""
         content = self.get_content()
@@ -63,7 +53,6 @@ class VCenter:
         
         return datacenters
     
-    @requires_connection
     def get_resource_pool(self, host_name):
         """Retrieves all resource pools for the given host name, including nested pools."""
         hosts = self.get_hosts()  # Retrieve all hosts
@@ -91,3 +80,13 @@ class VCenter:
         for rp in resource_pool.resourcePool:
             rps.extend(self._get_nested_rps(rp))
         return rps
+    
+    def use_resource_pool_manager(self):
+        """Returns a NetworkManager instance utilizing the current VCenter connection."""
+        # Ensure NetworkManager is imported at the top
+        return ResourcePoolManager(self)
+    
+    def use_network_manager(self):
+        """Returns a NetworkManager instance utilizing the current VCenter connection."""
+        # Ensure NetworkManager is imported at the top
+        return NetworkManager(self)
