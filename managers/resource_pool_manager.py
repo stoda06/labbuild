@@ -1,7 +1,8 @@
 from managers.vcenter import VCenter
 from pyVmomi import vim
+# from common import auto_requires_connection
 
-
+# @auto_requires_connection
 class ResourcePoolManager(VCenter):
     def create_resource_pool_under_host(self, host_name, rp_name, cpu_allocation, memory_allocation):
         """Creates a new resource pool under the specified host's default resource pool."""
@@ -22,6 +23,10 @@ class ResourcePoolManager(VCenter):
     def create_resource_pool(self, parent_resource_pool, rp_name, cpu_allocation, memory_allocation):
         """Creates a new resource pool under the specified parent resource pool."""
         try:
+            parent_rp = self.get_resource_pool_by_name(parent_resource_pool)
+            if parent_rp is None:
+                print(f"Parent Resource pool '{parent_resource_pool} not found.")
+
             resource_config_spec = vim.ResourceConfigSpec()
 
             # CPU Allocation
@@ -39,11 +44,10 @@ class ResourcePoolManager(VCenter):
             memory_alloc.expandableReservation = memory_allocation['expandable_reservation']
             memory_alloc.shares = vim.SharesInfo(level=vim.SharesInfo.Level.normal, shares=memory_allocation['shares'])
             resource_config_spec.memoryAllocation = memory_alloc
-            resource_pool = self.get_resource_pool_by_name(parent_resource_pool)
-            resource_pool = parent_resource_pool.CreateResourcePool(name=rp_name, spec=resource_config_spec)
+            resource_pool = parent_rp.CreateResourcePool(name=rp_name, spec=resource_config_spec)
             
 
-            print(f"Resource pool '{rp_name}' created successfully under {parent_resource_pool.name}.")
+            print(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
             return resource_pool
         except Exception as e:
             print(f"Failed to create resource pool: {e}")
@@ -65,6 +69,15 @@ class ResourcePoolManager(VCenter):
             print(f"Resource pool '{parent_resource_pool_name}' not found.")
             return []
         return self._list_rps(parent_rp)
+    
+    def _list_rps(self, resource_pool, rps=None):
+        """Recursively lists all resource pools starting from a given resource pool."""
+        if rps is None:
+            rps = []
+        rps.append(resource_pool.name)
+        for rp in resource_pool.resourcePool:
+            self._list_rps(rp, rps)
+        return rps
 
     def get_resource_pool_by_name(self, rp_name):
         """Retrieve a resource pool by its name."""
@@ -74,11 +87,3 @@ class ResourcePoolManager(VCenter):
             if rp.name == rp_name:
                 return rp
         return None
-    
-    def get_hosts(self):
-        content = self.get_content()
-        host_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
-        hosts = host_view.view
-        host_view.Destroy()
-
-        return hosts
