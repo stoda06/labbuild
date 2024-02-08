@@ -55,7 +55,7 @@ class NetworkManager(VCenter):
             print(f"Host configuration error: {e.msg}")
         except Exception as e:
             print(f"General error: {e}")
-
+    
     def get_host_network_system(self):
         """
         Retrieves the HostNetworkSystem of the first host found.
@@ -78,3 +78,35 @@ class NetworkManager(VCenter):
         obj_list = list(view.view)
         view.Destroy()
         return obj_list[0] if obj_list else None
+    
+    def create_vswitch(self, host_name, vswitch_name, num_ports=128, mtu=1500):
+        """
+        Creates a new virtual switch on the specified host.
+
+        :param host_name: The name of the host where the vSwitch will be created.
+        :param vswitch_name: The name for the new virtual switch.
+        :param num_ports: The number of ports that the virtual switch will have.
+        :param mtu: The MTU size for the virtual switch.
+        """
+        try:
+            host_system = self.get_host_by_name(host_name)
+            if not host_system:
+                print(f"Host '{host_name}' not found.")
+                return
+
+            network_system = host_system.configManager.networkSystem
+            
+            vswitch_spec = vim.host.VirtualSwitch.Specification()
+            vswitch_spec.numPorts = num_ports
+            vswitch_spec.mtu = mtu
+
+            network_system.AddVirtualSwitch(vswitchName=vswitch_name, spec=vswitch_spec)
+            print(f"Virtual switch '{vswitch_name}' created successfully on host '{host_name}'.")
+        except vim.fault.AlreadyExists:
+            print(f"Virtual switch '{vswitch_name}' already exists on host '{host_name}'.")
+        except vim.fault.NotFound:
+            print(f"Host '{host_name}' not found.")
+        except vim.fault.ResourceInUse:
+            print(f"Virtual switch '{vswitch_name}' is in use and cannot be created.")
+        except Exception as e:
+            print(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
