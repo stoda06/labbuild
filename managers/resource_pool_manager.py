@@ -92,16 +92,3 @@ class ResourcePoolManager(VCenter):
         except Exception as e:
             print(f"Failed to delete resource pool '{rp_name}': {e}")
             return False
-
-    def wait_for_task(self, task):
-        """Waits for a vCenter task to finish."""
-        while task.info.state == vim.TaskInfo.State.running or task.info.state == vim.TaskInfo.State.queued:
-            pass
-        if task.info.state == vim.TaskInfo.State.success:
-            print("Operation completed successfully.")
-            return True
-        else:
-            print("Operation failed.")
-            if task.info.error:
-                print(task.info.error)
-            return False
