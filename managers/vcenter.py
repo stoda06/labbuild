@@ -35,11 +35,8 @@ class VCenter:
     
     def get_host_by_name(self, host_name):
         """Retrieve a host by its name."""
-        content = self.connection.RetrieveContent()
-        host_container = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
-        host_view = host_container.view
-        host_container.Destroy()
-        for host in host_view:
+        hosts = self.get_all_objects_by_type(vim.HostSystem)
+        for host in hosts:
             if host.name == host_name:
                 return host
         print(f"Host '{host_name}' not found.")
@@ -47,12 +44,20 @@ class VCenter:
     
     def get_resource_pool_by_name(self, rp_name):
         """Retrieve a resource pool by its name."""
-        content = self.get_content()
-        rp_container = content.viewManager.CreateContainerView(content.rootFolder, [vim.ResourcePool], True)
-        rp_view = rp_container.view
-        rp_container.Destroy()
-        for rp in rp_view.view:
+        resource_pools = self.get_all_objects_by_type(vim.ResourcePool)
+        for rp in resource_pools:
             if rp.name == rp_name:
                 return rp
-        print(f"Resource '{rp_name}' not found.")
         return None
+    
+    def get_all_objects_by_type(self, vimtype):
+        """
+        Helper function to retrieve all objects of a given type from vCenter.
+
+        :param vimtype: The vim type to search for (e.g., vim.ResourcePool).
+        :return: A list of all objects of the specified type.
+        """
+        container = self.connection.content.viewManager.CreateContainerView(self.connection.content.rootFolder, [vimtype], True)
+        objects = list(container.view)
+        container.Destroy()
+        return objects
