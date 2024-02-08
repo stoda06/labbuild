@@ -61,3 +61,16 @@ class VCenter:
         objects = list(container.view)
         container.Destroy()
         return objects
+    
+    def wait_for_task(self, task):
+        """Waits for a vCenter task to finish."""
+        while task.info.state == vim.TaskInfo.State.running or task.info.state == vim.TaskInfo.State.queued:
+            pass
+        if task.info.state == vim.TaskInfo.State.success:
+            print("Operation completed successfully.")
+            return True
+        else:
+            print("Operation failed.")
+            if task.info.error:
+                print(task.info.error)
+            return False
