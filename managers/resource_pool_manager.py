@@ -76,3 +76,32 @@ class ResourcePoolManager(VCenter):
         for rp in resource_pool.resourcePool:
             self._list_rps(rp, rps)
         return rps
+    
+    def delete_resource_pool(self, rp_name):
+        """Deletes the specified resource pool."""
+        try:
+            rp = self.get_resource_pool_by_name(rp_name)
+            if rp is None:
+                print(f"Resource pool '{rp_name}' not found.")
+                return False
+
+            task = rp.Destroy_Task()
+            self.wait_for_task(task)
+            print(f"Resource pool '{rp_name}' deleted successfully.")
+            return True
+        except Exception as e:
+            print(f"Failed to delete resource pool '{rp_name}': {e}")
+            return False
+
+    def wait_for_task(self, task):
+        """Waits for a vCenter task to finish."""
+        while task.info.state == vim.TaskInfo.State.running or task.info.state == vim.TaskInfo.State.queued:
+            pass
+        if task.info.state == vim.TaskInfo.State.success:
+            print("Operation completed successfully.")
+            return True
+        else:
+            print("Operation failed.")
+            if task.info.error:
+                print(task.info.error)
+            return False
