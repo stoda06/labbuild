@@ -1,4 +1,4 @@
-from vcenter import VCenter
+from managers.vcenter import VCenter
 from pyVmomi import vim
 
 

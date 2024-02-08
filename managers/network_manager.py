@@ -1,5 +1,5 @@
 from pyVmomi import vim
-from vcenter import VCenter
+from managers.vcenter import VCenter
 
 class NetworkManager(VCenter):
     def __init__(self, vcenter_instance=None):

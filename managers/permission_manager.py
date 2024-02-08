@@ -1,5 +1,5 @@
 from pyVmomi import vim, vmodl
-from vcenter import VCenter
+from managers.vcenter import VCenter
 
 class PermissionManager(VCenter):
     def create_role(self, role_name, privileges):
