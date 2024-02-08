@@ -1,8 +1,7 @@
-from managers.vcenter import VCenter
+from vcenter import VCenter
 from pyVmomi import vim
-# from common import auto_requires_connection
 
-# @auto_requires_connection
+
 class ResourcePoolManager(VCenter):
     def __init__(self, vcenter_instance=None):
         if vcenter_instance:
@@ -61,15 +60,6 @@ class ResourcePoolManager(VCenter):
             print(f"Failed to create resource pool: {e}")
             return None
 
-    def get_host_by_name(self, host_name):
-        """Retrieve a host by its name."""
-        content = self.get_content()
-        host_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
-        for host in host_view.view:
-            if host.name == host_name:
-                return host
-        return None
-
     def list_resource_pools(self, parent_resource_pool_name):
         """Lists all resource pools under the specified parent resource pool."""
         parent_rp = self.get_resource_pool_by_name(parent_resource_pool_name)
@@ -86,12 +76,3 @@ class ResourcePoolManager(VCenter):
         for rp in resource_pool.resourcePool:
             self._list_rps(rp, rps)
         return rps
-
-    def get_resource_pool_by_name(self, rp_name):
-        """Retrieve a resource pool by its name."""
-        content = self.get_content()
-        rp_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.ResourcePool], True)
-        for rp in rp_view.view:
-            if rp.name == rp_name:
-                return rp
-        return None
