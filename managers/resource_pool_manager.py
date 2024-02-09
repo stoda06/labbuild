@@ -3,18 +3,18 @@ from pyVmomi import vim
 
 
 class ResourcePoolManager(VCenter):
-    def __init__(self, vcenter_instance=None):
-        if vcenter_instance:
-            # Assume the connection and other necessary properties
-            self.connection = vcenter_instance.connection
-        else:
-            # Normal initialization process
-            super().__init__(vcenter_instance.host, vcenter_instance.user, vcenter_instance.password, vcenter_instance.port)
+    # def __init__(self, vcenter_instance=None):
+        # if vcenter_instance:
+        #     # Assume the connection and other necessary properties
+        #     self.connection = vcenter_instance.connection
+        # else:
+        #     # Normal initialization process
+        #     super().__init__(vcenter_instance.host, vcenter_instance.user, vcenter_instance.password, vcenter_instance.port)
     
     def create_resource_pool_under_host(self, host_name, rp_name, cpu_allocation, memory_allocation):
         """Creates a new resource pool under the specified host's default resource pool."""
         try:
-            host = self.get_host_by_name(host_name)
+            host = self.get_obj([vim.HostSystem], host_name)
             if host is None:
                 print(f"Host '{host_name}' not found.")
                 return None
@@ -30,7 +30,7 @@ class ResourcePoolManager(VCenter):
     def create_resource_pool(self, parent_resource_pool, rp_name, cpu_allocation, memory_allocation):
         """Creates a new resource pool under the specified parent resource pool."""
         try:
-            parent_rp = self.get_resource_pool_by_name(parent_resource_pool)
+            parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool)
             if parent_rp is None:
                 print(f"Parent Resource pool '{parent_resource_pool} not found.")
 
@@ -62,7 +62,7 @@ class ResourcePoolManager(VCenter):
 
     def list_resource_pools(self, parent_resource_pool_name):
         """Lists all resource pools under the specified parent resource pool."""
-        parent_rp = self.get_resource_pool_by_name(parent_resource_pool_name)
+        parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool_name)
         if parent_rp is None:
             print(f"Resource pool '{parent_resource_pool_name}' not found.")
             return []
@@ -80,7 +80,7 @@ class ResourcePoolManager(VCenter):
     def delete_resource_pool(self, rp_name):
         """Deletes the specified resource pool."""
         try:
-            rp = self.get_resource_pool_by_name(rp_name)
+            rp = self.get_obj([vim.ResourcePool], rp_name)
             if rp is None:
                 print(f"Resource pool '{rp_name}' not found.")
                 return False
