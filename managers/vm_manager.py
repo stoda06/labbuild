@@ -55,16 +55,15 @@ class VmManager(VCenter):
         except Exception as e:
             print(f"Failed to create VM '{vm_name}': {e}")
 
-    # Implement get_obj, wait_for_task, and other necessary methods as shown in previous examples
-    def clone_vm(self, template_name, clone_name, resource_pool_name, datastore_name=None, datacenter_name=None, power_on=False):
+    def clone_vm(self, template_name, clone_name, resource_pool_name, directory_name, datastore_name=None, power_on=False):
         """
-        Clones a VM from an existing template.
+        Clones a VM from an existing template into a specified directory (VM folder).
 
         :param template_name: The name of the template to clone from.
         :param clone_name: The name for the cloned VM.
         :param resource_pool_name: The name of the resource pool where the cloned VM will be located.
+        :param directory_name: The name of the directory (VM folder) where the cloned VM will be placed.
         :param datastore_name: Optional. The name of the datastore where the cloned VM will be stored. Uses template's datastore if None.
-        :param datacenter_name: Optional. The name of the datacenter where the cloned VM will be located. Used for VM folder lookup.
         :param power_on: Whether to power on the cloned VM after creation.
         """
         try:
@@ -73,30 +72,23 @@ class VmManager(VCenter):
                 print(f"Template '{template_name}' not found.")
                 return
 
-            resource_pool = self.find_resource_pool_by_name(resource_pool_name)
+            resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
             if not resource_pool:
                 print(f"Resource pool '{resource_pool_name}' not found.")
                 return
 
-            # If a specific datastore is specified, find it; otherwise, use the template's datastore
+            vm_folder = self.get_obj([vim.Folder], directory_name)
+            if not vm_folder:
+                print(f"VM Folder '{directory_name}' not found.")
+                return
+
             if datastore_name:
                 datastore = self.get_obj([vim.Datastore], datastore_name)
                 if not datastore:
                     print(f"Datastore '{datastore_name}' not found.")
                     return
             else:
-                datastore = template_vm.datastore[0]  # Assuming the template is associated with a single datastore
-
-            # Find the datacenter's VM folder if specified, otherwise use the template's folder
-            if datacenter_name:
-                datacenter = self.get_obj([vim.Datacenter], datacenter_name)
-                vm_folder = datacenter.vmFolder if datacenter else None
-            else:
-                vm_folder = template_vm.parent
-
-            if not vm_folder:
-                print("VM folder not found.")
-                return
+                datastore = template_vm.datastore[0]
 
             clone_spec = vim.vm.CloneSpec()
             clone_spec.location = vim.vm.RelocateSpec()
@@ -104,12 +96,43 @@ class VmManager(VCenter):
             clone_spec.location.datastore = datastore
             clone_spec.powerOn = power_on
 
-            # Execute the clone task
-            clone_task = template_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-            self.wait_for_task(clone_task)
-            print(f"VM '{clone_name}' cloned successfully from template '{template_name}'.")
+            task = template_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+            self.wait_for_task(task)
+            print(f"VM '{clone_name}' cloned successfully from template '{template_name}' into folder '{directory_name}'.")
         except Exception as e:
             print(f"Failed to clone VM '{clone_name}': {e}")
+
+    def find_vm_folder_by_name(self, folder_name, starting_folder=None):
+        """
+        Recursively searches for a VM folder by name.
+
+        :param folder_name: The name of the VM folder to find.
+        :param starting_folder: The folder to start the search from; if None, starts from the root folder.
+        :return: The VM folder object if found, None otherwise.
+        """
+        if starting_folder is None:
+            starting_folder = self.connection.content.rootFolder
+            print(f"Starting folder: {starting_folder}")
+        
+        return self.search_for_folder(starting_folder, folder_name)
+
+    def search_for_folder(self, folder, folder_name):
+        """
+        Recursively searches for a folder with the specified name starting from the given folder.
+
+        :param folder: The folder to start the search from.
+        :param folder_name: The name of the folder to search for.
+        :return: The folder if found, None otherwise.
+        """
+        print(f"Current folder name: {folder.name}")
+        if folder.name == folder_name and isinstance(folder, vim.Folder):
+            return folder
+        for child in folder.childEntity:
+            if isinstance(child, vim.Folder):
+                found_folder = self.search_for_folder(child, folder_name)
+                if found_folder:
+                    return found_folder
+        return None
 
     def list_vms(self):
         """Lists all virtual machines available in the connected vCenter."""
@@ -119,3 +142,75 @@ class VmManager(VCenter):
                 print(f"VM Name: {vm.name}, Power State: {vm.runtime.powerState}")
         except Exception as e:
             print(f"Failed to list VMs: {e}")
+
+    def get_network_adapters(self, vm_name):
+        """
+        Fetches all network adapters for a given VM.
+
+        :param vm_name: The name of the VM to retrieve network adapters from.
+        :return: A list of network adapter devices.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            print(f"VM '{vm_name}' not found.")
+            return []
+
+        network_adapters = []
+        for device in vm.config.hardware.device:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard):
+                network_adapters.append(device)
+
+        return network_adapters
+    
+    def update_network_adapter(self, vm_name, network_interface_label, new_mac_address=None):
+        """
+        Updates properties of a specified network adapter on a VM. Currently supports updating the MAC address.
+
+        :param vm_name: The name of the VM.
+        :param network_interface_label: The label/name of the network interface to update (e.g., "Network adapter 1").
+        :param new_mac_address: Optional. The new MAC address to assign to the network interface.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            print(f"VM '{vm_name}' not found.")
+            return
+
+        # Check if the VM is powered off
+        if vm.runtime.powerState != vim.VirtualMachine.PowerState.poweredOff:
+            print(f"VM '{vm_name}' must be powered off to modify network adapters.")
+            return
+
+        network_adapters = self.get_network_adapters(vm_name)
+        adapter_to_update = None
+
+        # Find the network adapter by its label/name
+        for adapter in network_adapters:
+            if adapter.deviceInfo.label == network_interface_label:
+                adapter_to_update = adapter
+                break
+
+        if not adapter_to_update:
+            print(f"Network adapter '{network_interface_label}' not found in VM '{vm_name}'.")
+            return
+
+        def update_mac_method(adapter, new_mac):
+            """Nested method to update the MAC address of a network adapter."""
+            adapter.macAddress = new_mac
+            adapter.addressType = 'manual'
+
+        # Create a specification for reconfiguring the VM
+        spec = vim.vm.ConfigSpec()
+        nic_change_spec = vim.vm.device.VirtualDeviceSpec()
+        nic_change_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+        nic_change_spec.device = adapter_to_update
+
+        # Update the MAC address if provided
+        if new_mac_address:
+            update_mac_method(nic_change_spec.device, new_mac_address)
+
+        spec.deviceChange = [nic_change_spec]
+
+        # Execute the reconfiguration task
+        task = vm.ReconfigVM_Task(spec=spec)
+        self.wait_for_task(task)
+        print(f"Updated network adapter '{network_interface_label}' in VM '{vm_name}'.")
