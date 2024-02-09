@@ -2,6 +2,7 @@ from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 import ssl
 import atexit
+import time
 
 
 class VCenter:
@@ -33,21 +34,21 @@ class VCenter:
         """Retrieves the root folder from vCenter."""
         return self.connection.RetrieveContent()
     
-    def get_host_by_name(self, host_name):
-        """Retrieve a host by its name."""
-        hosts = self.get_all_objects_by_type(vim.HostSystem)
-        for host in hosts:
-            if host.name == host_name:
-                return host
-        print(f"Host '{host_name}' not found.")
-        return None
-    
-    def get_resource_pool_by_name(self, rp_name):
-        """Retrieve a resource pool by its name."""
-        resource_pools = self.get_all_objects_by_type(vim.ResourcePool)
-        for rp in resource_pools:
-            if rp.name == rp_name:
-                return rp
+    def get_obj(self, vimtype, name):
+        """
+        Retrieves an object by name from vCenter.
+
+        :param vimtype: A list of the vim type(s) to search for (e.g., [vim.VirtualMachine]).
+        :param name: The name of the object to find.
+        :return: The found object, or None if not found.
+        """
+        content = self.get_content()
+        container = content.viewManager.CreateContainerView(content.rootFolder, vimtype, True)
+        container_view = container.view
+        container.Destroy()
+        for c in container_view:
+            if c.name == name:
+                return c
         return None
     
     def get_all_objects_by_type(self, vimtype):
@@ -63,9 +64,17 @@ class VCenter:
         return objects
     
     def wait_for_task(self, task):
-        """Waits for a vCenter task to finish."""
-        while task.info.state == vim.TaskInfo.State.running or task.info.state == vim.TaskInfo.State.queued:
-            pass
+        """
+        Waits for a vCenter task to finish and displays a progress bar.
+
+        :param task: The vCenter task to wait on.
+        """
+        while task.info.state in [vim.TaskInfo.State.running, vim.TaskInfo.State.queued]:
+            # Calculate the progress as a percentage
+            progress = task.info.progress if task.info.progress else 0
+            self.print_progress_bar(progress, 100, prefix = 'Progress:', suffix = 'Complete', length = 50)
+            time.sleep(2)  # Sleep for a bit to avoid spamming updates
+
         if task.info.state == vim.TaskInfo.State.success:
             print("Operation completed successfully.")
             return True
@@ -74,3 +83,24 @@ class VCenter:
             if task.info.error:
                 print(task.info.error)
             return False
+
+    @staticmethod
+    def print_progress_bar(iteration, total, prefix='', suffix='', length=100, fill='█', print_end="\r"):
+        """
+        Call in a loop to create terminal progress bar
+
+        :param iteration: Current iteration
+        :param total: Total iterations
+        :param prefix: Prefix string
+        :param suffix: Suffix string
+        :param length: Character length of bar
+        :param fill: Bar fill character
+        :param print_end: End character (e.g. "\r", "\r\n")
+        """
+        percent = ("{0:.1f}").format(100 * (iteration / float(total)))
+        filled_length = int(length * iteration // total)
+        bar = fill * filled_length + '-' * (length - filled_length)
+        print(f'\r{prefix} |{bar}| {percent}% {suffix}', end=print_end)
+        # Print New Line on Complete
+        if iteration == total: 
+            print()
