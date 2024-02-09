@@ -2,59 +2,53 @@ from pyVmomi import vim
 from managers.vcenter import VCenter
 
 class NetworkManager(VCenter):
-    def __init__(self, vcenter_instance=None):
-        if vcenter_instance:
-            # Assume the connection and other necessary properties
-            self.connection = vcenter_instance.connection
-        else:
-            # Normal initialization process
-            super().__init__(vcenter_instance.host, vcenter_instance.user, vcenter_instance.password, vcenter_instance.port)
+    # def __init__(self, vcenter_instance=None):
+        # if vcenter_instance:
+        #     # Assume the connection and other necessary properties
+        #     self.connection = vcenter_instance.connection
+        # else:
+        #     # Normal initialization process
+        #     super().__init__(vcenter_instance.host, vcenter_instance.user, vcenter_instance.password, vcenter_instance.port)
     
-    def create_vm_port_group(self, switch_name, port_group_name, vlan_id=0):
+    def create_vm_port_groups(self, switch_name, port_groups):
         """
-        Creates a virtual machine port group on a specified standard switch.
+        Creates multiple virtual machine port groups on a specified standard switch, ignoring existing port groups.
 
-        :param switch_name: Name of the standard switch to create the port group on.
-        :param port_group_name: Name for the new port group.
-        :param vlan_id: VLAN ID for the port group (default is 0, for no VLAN).
+        :param switch_name: Name of the standard switch to create the port groups on.
+        :param port_groups: A dictionary where keys are port group names and values are dictionaries with port group properties (e.g., VLAN ID).
         """
         try:
-            # Find the specified standard switch by name
             host_network_system = self.get_host_network_system()
             if not host_network_system:
                 print("Failed to retrieve HostNetworkSystem.")
                 return
-            
-            vswitch = None
-            for switch in host_network_system.networkConfig.vswitch:
-                if switch.name == switch_name:
-                    vswitch = switch
-                    break
 
-            if not vswitch:
-                print(f"Standard switch '{switch_name}' not found.")
-                return
+            for pg_name, pg_props in port_groups.items():
+                # Check if the port group already exists
+                # if any(pg.name == pg_name for pg in host_network_system.networkInfo.portgroup):
+                #     print(f"Port group '{pg_name}' already exists on switch '{switch_name}', ignoring.")
+                #     continue  # Skip to the next port group
 
-            # Create the port group specification
-            port_group_spec = vim.host.PortGroup.Specification()
-            port_group_spec.name = port_group_name
-            port_group_spec.vlanId = vlan_id
-            port_group_spec.vswitchName = switch_name
-            port_group_spec.policy = vim.host.NetworkPolicy()
+                vlan_id = pg_props.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
+                port_group_spec = vim.host.PortGroup.Specification()
+                port_group_spec.name = pg_name
+                port_group_spec.vlanId = vlan_id
+                port_group_spec.vswitchName = switch_name
+                port_group_spec.policy = vim.host.NetworkPolicy()
 
-            # Create the port group
-            host_network_system.AddPortGroup(portgrp=port_group_spec)
-            print(f"Port group '{port_group_name}' created on switch '{switch_name}'.")
+                try:
+                    host_network_system.AddPortGroup(portgrp=port_group_spec)
+                    print(f"Port group '{pg_name}' created successfully on switch '{switch_name}'.")
+                except vim.fault.AlreadyExists:
+                    print(f"Port group '{pg_name}' already exists on switch '{switch_name}', this should not happen.")
+                    continue  # This is a safeguard; the initial check should prevent this from occurring
         except vim.fault.NotFound:
             print(f"Switch '{switch_name}' not found.")
-        except vim.fault.DuplicateName:
-            print(f"Port group '{port_group_name}' already exists.")
-        except vim.fault.InvalidState:
-            print("The operation is not allowed in the current state.")
-        except vim.fault.HostConfigFault as e:
-            print(f"Host configuration error: {e.msg}")
+        except vim.fault.ResourceInUse:
+            print(f"Resource is in use and cannot be modified.")
         except Exception as e:
-            print(f"General error: {e}")
+            print(f"Failed to create port groups on switch '{switch_name}': {e}")
+
     
     def get_host_network_system(self):
         """
@@ -89,12 +83,12 @@ class NetworkManager(VCenter):
         :param mtu: The MTU size for the virtual switch.
         """
         try:
-            host_system = self.get_host_by_name(host_name)
-            if not host_system:
-                print(f"Host '{host_name}' not found.")
+            host = self.get_obj([vim.HostSystem], host_name)
+            if not host:
+                print(f"Resource pool '{host}' not found.")
                 return
 
-            network_system = host_system.configManager.networkSystem
+            network_system = host.configManager.networkSystem
             
             vswitch_spec = vim.host.VirtualSwitch.Specification()
             vswitch_spec.numPorts = num_ports
