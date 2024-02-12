@@ -3,14 +3,7 @@ from pyVmomi import vim
 
 
 class ResourcePoolManager(VCenter):
-    # def __init__(self, vcenter_instance=None):
-        # if vcenter_instance:
-        #     # Assume the connection and other necessary properties
-        #     self.connection = vcenter_instance.connection
-        # else:
-        #     # Normal initialization process
-        #     super().__init__(vcenter_instance.host, vcenter_instance.user, vcenter_instance.password, vcenter_instance.port)
-    
+
     def create_resource_pool_under_host(self, host_name, rp_name, cpu_allocation, memory_allocation):
         """Creates a new resource pool under the specified host's default resource pool."""
         try:
@@ -92,3 +85,42 @@ class ResourcePoolManager(VCenter):
         except Exception as e:
             print(f"Failed to delete resource pool '{rp_name}': {e}")
             return False
+
+    def assign_role_to_resource_pool(self, resource_pool_name, user_name, role_name):
+        """Assigns a specified role to a user on a given resource pool.
+
+        :param resource_pool_name: The name of the resource pool.
+        :param user_name: The identifier of the user (e.g., "DOMAIN\\User").
+        :param role_name: The name of the role to assign.
+        """
+        # Find the role by name
+        role_id = None
+        for role in self.connection.content.authorizationManager.roleList:
+            if role.name == role_name:
+                role_id = role.roleId
+                break
+
+        if role_id is None:
+            print(f"Role '{role_name}' not found.")
+            return
+
+        # Find the resource pool by name
+        resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
+        if resource_pool is None:
+            print(f"Resource pool '{resource_pool_name}' not found.")
+            return
+
+        # Create the permission spec
+        permission = vim.AuthorizationManager.Permission(
+            principal=user_name,
+            group=False,  # Change to True if assigning permissions to a user group
+            roleId=role_id,
+            propagate=True  # Whether or not the permission should propagate to child objects
+        )
+
+        # Set the permission on the resource pool
+        try:
+            self.connection.content.authorizationManager.SetEntityPermissions(entity=resource_pool, permission=[permission])
+            print(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
+        except Exception as e:
+            print(f"Failed to assign role to user on resource pool: {e}")
