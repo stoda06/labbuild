@@ -29,6 +29,10 @@ class VCenter:
         except Exception as e:
             print(f"Failed to connect to vCenter: {e}")
             self.connection = None
+    
+    def is_connected(self):
+        """Checks if the service instance is connected."""
+        return self.connection is not None
 
     def get_content(self):
         """Retrieves the root folder from vCenter."""
@@ -73,7 +77,7 @@ class VCenter:
             # Calculate the progress as a percentage
             progress = task.info.progress if task.info.progress else 0
             self.print_progress_bar(progress, 100, prefix = 'Progress:', suffix = 'Complete', length = 50)
-            time.sleep(2)  # Sleep for a bit to avoid spamming updates
+            time.sleep(1)  # Sleep for a bit to avoid spamming updates
 
         if task.info.state == vim.TaskInfo.State.success:
             print("Operation completed successfully.")
@@ -85,22 +89,38 @@ class VCenter:
             return False
 
     @staticmethod
-    def print_progress_bar(iteration, total, prefix='', suffix='', length=100, fill='█', print_end="\r"):
+    def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=100, fill='█', print_end="\r"):
         """
         Call in a loop to create terminal progress bar
-
-        :param iteration: Current iteration
-        :param total: Total iterations
-        :param prefix: Prefix string
-        :param suffix: Suffix string
-        :param length: Character length of bar
-        :param fill: Bar fill character
-        :param print_end: End character (e.g. "\r", "\r\n")
+        @params:
+            iteration   - Required  : current iteration (Int)
+            total       - Required  : total iterations (Int)
+            prefix      - Optional  : prefix string (Str)
+            suffix      - Optional  : suffix string (Str)
+            decimals    - Optional  : positive number of decimals in percent complete (Int)
+            length      - Optional  : character length of bar (Int)
+            fill        - Optional  : bar fill character (Str)
+            print_end   - Optional  : end character (e.g. "\r", "\r\n") (Str)
         """
-        percent = ("{0:.1f}").format(100 * (iteration / float(total)))
+        if iteration is None or total is None:
+            print("Error: iteration or total is None")
+            return
+
+        if total == 0:
+            print("Error: Total value is zero, cannot calculate progress.")
+            return
+
+        # Ensure iteration and total are floats for division
+        iteration = float(iteration)
+        total = float(total)
+
+        # Calculate percent completion
+        percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / total))
         filled_length = int(length * iteration // total)
         bar = fill * filled_length + '-' * (length - filled_length)
+
         print(f'\r{prefix} |{bar}| {percent}% {suffix}', end=print_end)
         # Print New Line on Complete
         if iteration == total: 
             print()
+
