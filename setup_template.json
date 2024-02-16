@@ -1,0 +1,234 @@
+[
+    {
+        "setup_name": "CCSA-R81.20",
+        "prtg_monitor": "",
+        "prtg_container": "",
+        "components": [
+            {
+                "component_name": "R81.20-vr",
+                "prtg_monitor": "",
+                "prtg_container": "",
+                "base_vms": [
+                    {
+                        "vm_name": "cp-R81.20-vr",
+                        "network_map": {
+                            "Network adapter 1": "cp-rdp",
+                            "Network adapter 2": "cp-ext-vs0-cp",
+                            "Network adapter 3": "cp-inta-vs0-cp",
+                            "Network adapter 4": "cp-mgt-vs0-cp",
+                            "Network adapter 5": "cp-dmz-vs0-cp",
+                            "Network adapter 6": "cp-intb-vs0-cp",
+                            "Network adapter 7": "cp-ext-b-vs0-cp",
+                            "Network adapter 8": "cp-none2-vs0-cp",
+                            "Network adapter 9": "cp-ext-b-vs0-cp",
+                            "Network adapter 10": "cp-mgmtb-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "cp-R81-vr-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "A-DMZ-R81.20",
+                "base_vms": [
+                    {
+                        "vm_name": "A-DMZ-R81.20",
+                        "network_map": {
+                            "Network adapter 1": "cp-dmz-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "A-DMZ-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "A-GUI-CCSA-R81.20",
+                "base_vms": [
+                    {
+                        "vm_name": "A-GUI-CCSA-R81.20",
+                        "network_map": {
+                            "Network adapter 1": "cp-mgt-vs0-cp",
+                            "Network adapter 2": "cp-mgt-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "A-GUI-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "A-GW-R81.20-CCSA",
+                "base_vms": [
+                    {
+                        "vm_name": "A-GW-R81.20-CCSA",
+                        "network_map": {
+                            "Network adapter 1": "cp-mgt-vs0-cp",
+                            "Network adapter 2": "cp-inta-vs0-cp",
+                            "Network adapter 3": "cp-dmz-vs0-cp",
+                            "Network adapter 4": "cp-sync-vs0-cp",
+                            "Network adapter 5": "cp-ext-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "A-GW-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "A-Host-R81.20-CCSA",
+                "base_vms": [
+                    {
+                        "vm_name": "A-Host-R81.20-CCSA",
+                        "network_map": {
+                            "Network adapter 1": "cp-mgt-vs0-cp",
+                            "Network adapter 2": "cp-inta-vs0-cp",
+                            "Network adapter 3": "cp-dmz-vs0-cp",
+                            "Network adapter 4": "cp-sync-vs0-cp",
+                            "Network adapter 5": "cp-ext-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "A-GW-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "A-SMS-R81.20-CCSA",
+                "base_vms": [
+                    {
+                        "vm_name": "A-SMS-R81.20-CCSA",
+                        "network_map": {
+                            "Network adapter 1": "cp-mgt-vs0-cp",
+                            "Network adapter 2": "cp-inta-vs0-cp",
+                            "Network adapter 3": "cp-dmz-vs0-cp",
+                            "Network adapter 4": "cp-sync-vs0-cp",
+                            "Network adapter 5": "cp-ext-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "A-GW-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "B-GW-R81.20-CCSA",
+                "base_vms": [
+                    {
+                        "vm_name": "B-GW-R81.20-CCSA",
+                        "network_map": {
+                            "Network adapter 1": "cp-intb-vs0-cp",
+                            "Network adapter 2": "cp-ext-b-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "B-GW-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "B-Host-R81.20-CCSA",
+                "base_vms": [
+                    {
+                        "vm_name": "B-Host-R81.20-CCSA",
+                        "network_map": {
+                            "Network adapter 1": "cp-ext-vs0-cp",
+                            "Network adapter 2": "cp-intb-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "B-Host-"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "component_name": "R80-w10",
+                "base_vms": [
+                    {
+                        "vm_name": "cp-base-R80-w10",
+                        "network_map": {
+                            "Network adapter 1": "cp-none2-vs0-cp"
+                        },
+                        "clone_vms": [
+                            {
+                                "name_prefix": "cp-w10-pod"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "network": {
+            "switch_name": "vs0",
+            "port_groups": [
+                {
+                    "port_group_name": "cp-mgt",
+                    "vlan_id": 401
+                },
+                {
+                    "port_group_name": "cp-inta",
+                    "vlan_id": 402
+                },
+                {
+                    "port_group_name": "cp-dmz",
+                    "vlan_id": 403
+                },
+                {
+                    "port_group_name": "cp-wifi",
+                    "vlan_id": 404
+                },
+                {
+                    "port_group_name": "cp-sync",
+                    "vlan_id": 405
+                },
+                {
+                    "port_group_name": "cp-ext",
+                    "vlan_id": 406
+                },
+                {
+                    "port_group_name": "cp-intb",
+                    "vlan_id": 407
+                },
+                {
+                    "port_group_name": "cp-none1",
+                    "vlan_id": 408
+                },
+                {
+                    "port_group_name": "cp-none2",
+                    "vlan_id": 409
+                },
+                {
+                    "port_group_name": "cp-mgmtb",
+                    "vlan_id": 410
+                },
+                {
+                    "port_group_name": "cp-none3",
+                    "vlan_id": 411
+                },
+                {
+                    "port_group_name": "cp-ext-b",
+                    "vlan_id": 412
+                }
+            ],
+            "promiscious_mode": ["cp-ext", "cp-intb"]
+        }
+
+    }
+]
