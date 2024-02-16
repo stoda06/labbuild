@@ -3,6 +3,13 @@ from managers.vcenter import VCenter
 
 
 class VmManager(VCenter):
+
+    def __init__(self, vcenter_instance):
+        if not vcenter_instance.connection:
+            raise ValueError("VCenter instance is not connected.")
+        self.vcenter = vcenter_instance
+        self.connection = vcenter_instance.connection
+
     def create_vm(self, vm_name, resource_pool_name, datastore_name, network_name, num_cpus=1, memory_mb=1024, guest_id='otherGuest'):
         """
         Creates a new virtual machine within a specified resource pool.
@@ -16,7 +23,7 @@ class VmManager(VCenter):
         :param guest_id: Identifier for the guest OS type.
         """
         try:
-            resource_pool = self.get_resource_pool_by_name(resource_pool_name)
+            resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
             if not resource_pool:
                 print(f"Resource pool '{resource_pool_name}' not found.")
                 return
@@ -162,55 +169,284 @@ class VmManager(VCenter):
 
         return network_adapters
     
-    def update_network_adapter(self, vm_name, network_interface_label, new_mac_address=None):
+    def update_mac_address(self, vm_name, adapter_label, new_mac_address):
         """
-        Updates properties of a specified network adapter on a VM. Currently supports updating the MAC address.
+        Updates the MAC address of a specified network adapter on a VM.
 
-        :param vm_name: The name of the VM.
-        :param network_interface_label: The label/name of the network interface to update (e.g., "Network adapter 1").
-        :param new_mac_address: Optional. The new MAC address to assign to the network interface.
+        :param vm_name: The name of the VM to update.
+        :param adapter_label: The label of the network adapter (e.g., "Network adapter 1").
+        :param new_mac_address: The new MAC address to assign to the adapter.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            raise ValueError(f"VM '{vm_name}' not found.")
+        
+        # Find the specified network adapter
+        nic_spec = None
+        for device in vm.config.hardware.device:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.deviceInfo.label == adapter_label:
+                nic_spec = vim.vm.device.VirtualDeviceSpec()
+                nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                nic_spec.device = device
+                nic_spec.device.macAddress = new_mac_address
+                nic_spec.device.addressType = 'manual'  # Important for setting custom MAC
+                break
+
+        if not nic_spec:
+            raise ValueError(f"Network adapter '{adapter_label}' not found on VM '{vm_name}'.")
+
+        # Apply the configuration change
+        config_spec = vim.vm.ConfigSpec(deviceChange=[nic_spec])
+        try:
+            task = vm.ReconfigVM_Task(config_spec)
+            self.wait_for_task(task)
+            print(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'.")
+        except vmodl.MethodFault as error:
+            raise Exception(f"Error updating MAC address: {error.msg}")
+
+    def delete_vm(self, vm_name):
+        """
+        Deletes a virtual machine (VM) by its name.
+
+        :param vm_name: The name of the VM to be deleted.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             print(f"VM '{vm_name}' not found.")
             return
 
-        # Check if the VM is powered off
-        if vm.runtime.powerState != vim.VirtualMachine.PowerState.poweredOff:
-            print(f"VM '{vm_name}' must be powered off to modify network adapters.")
-            return
+        # Check if the VM is powered on. If so, power it off first.
+        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
+            print(f"VM '{vm_name}' is powered on. Attempting to power off before deletion.")
+            power_off_task = vm.PowerOffVM_Task()
+            self.wait_for_task(power_off_task)
+            print(f"VM '{vm_name}' powered off successfully.")
 
-        network_adapters = self.get_network_adapters(vm_name)
-        adapter_to_update = None
+        # Proceed to delete the VM
+        try:
+            delete_task = vm.Destroy_Task()
+            self.wait_for_task(delete_task)
+            print(f"VM '{vm_name}' deleted successfully.")
+        except Exception as e:
+            print(f"Failed to delete VM '{vm_name}': {e}")
 
-        # Find the network adapter by its label/name
-        for adapter in network_adapters:
-            if adapter.deviceInfo.label == network_interface_label:
-                adapter_to_update = adapter
-                break
+    def get_vm_max_resources(self, vm_name):
+        """
+        Retrieves the maximum allocated resources (CPU, memory, and storage) for a VM.
 
-        if not adapter_to_update:
-            print(f"Network adapter '{network_interface_label}' not found in VM '{vm_name}'.")
-            return
+        :param vm_name: The name of the VM.
+        :return: A dictionary with the maximum allocated CPU (in cores), memory (in MB), and storage (in GB).
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            print(f"VM '{vm_name}' not found.")
+            return None
 
-        def update_mac_method(adapter, new_mac):
-            """Nested method to update the MAC address of a network adapter."""
-            adapter.macAddress = new_mac
-            adapter.addressType = 'manual'
+        # Maximum allocated CPU (number of cores)
+        cpu_cores = vm.config.hardware.numCPU
+        
+        # Maximum allocated memory (in MB)
+        memory_mb = vm.config.hardware.memoryMB
 
-        # Create a specification for reconfiguring the VM
-        spec = vim.vm.ConfigSpec()
-        nic_change_spec = vim.vm.device.VirtualDeviceSpec()
-        nic_change_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
-        nic_change_spec.device = adapter_to_update
+        # Maximum allocated storage (in GB), summing up all disk sizes
+        storage_gb = sum(disk.capacityInKB for disk in vm.config.hardware.device 
+                         if isinstance(disk, vim.vm.device.VirtualDisk)) / (1024 * 1024)
 
-        # Update the MAC address if provided
-        if new_mac_address:
-            update_mac_method(nic_change_spec.device, new_mac_address)
+        max_resources = {
+            "cpu_cores": cpu_cores,
+            "memory_mb": memory_mb,
+            "storage_gb": storage_gb,
+        }
 
-        spec.deviceChange = [nic_change_spec]
+        return max_resources
+    
+    def get_vm_current_usage(self, vm_name):
+        """
+        Retrieves the current usage of CPU and memory for a VM.
 
-        # Execute the reconfiguration task
-        task = vm.ReconfigVM_Task(spec=spec)
-        self.wait_for_task(task)
-        print(f"Updated network adapter '{network_interface_label}' in VM '{vm_name}'.")
+        :param vm_name: The name of the VM.
+        :return: A dictionary with the current CPU usage (in MHz) and memory usage (in MB).
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            print(f"VM '{vm_name}' not found.")
+            return None
+
+        # Current CPU usage (in MHz)
+        cpu_usage_mhz = vm.summary.quickStats.overallCpuUsage
+
+        # Current memory usage (in MB)
+        memory_usage_mb = vm.summary.quickStats.guestMemoryUsage
+
+        current_usage = {
+            "cpu_usage_mhz": cpu_usage_mhz,
+            "memory_usage_mb": memory_usage_mb,
+        }
+
+        return current_usage
+
+    def delete_folder(self, folder_name, force=False):
+        """
+        Deletes a folder by its name if the folder is empty, or if force is True, deletes it and its contents recursively.
+        Provides an error message if trying to delete a non-empty folder without force option.
+
+        :param folder_name: The name of the folder to be deleted.
+        :param force: If True, deletes the folder and its contents even if it is not empty. Default is False.
+        :return: A message indicating success, failure, or reason for inability to delete.
+        """
+        # Find the folder by name
+        folder = self.get_obj([vim.Folder], folder_name)
+        if not folder:
+            return f"Folder '{folder_name}' not found."
+
+        # Check if the folder is empty and force is not applied
+        if folder.childEntity and not force:
+            # The folder has contents (VMs, sub-folders, etc.) and force is not True
+            return f"Folder '{folder_name}' is not empty. Cannot delete without enabling the force option."
+
+        # Proceed with deletion if the folder is empty or force is True
+        try:
+            if isinstance(folder.parent, (vim.Datacenter, vim.Folder)):
+                delete_task = folder.Destroy_Task()
+                self.wait_for_task(delete_task)
+                return f"Folder '{folder_name}' and its contents were deleted successfully."
+            else:
+                return "Cannot delete a system or top-level folder."
+        except Exception as e:
+            return f"Failed to delete folder '{folder_name}': {str(e)}"
+        
+    def get_portgroups_for_vswitch(self, host_name, vswitch_name):
+        """
+        Retrieves all network objects associated with port groups for a specified vSwitch on a host,
+        avoiding nested loops for efficiency.
+
+        :param host_name: The name of the host system.
+        :param vswitch_name: The name of the vSwitch.
+        :return: A list of network objects associated with the port groups on the vSwitch, 
+                 or None if the host or vSwitch is not found.
+        """
+        host = self.get_obj([vim.HostSystem], host_name)
+        if not host:
+            print(f"Host '{host_name}' not found.")
+            return None
+
+        # Filter port groups for those associated with the specified vSwitch
+        print("Fetching associated port groups")
+        associated_portgroups = [pg for pg in host.config.network.portgroup if pg.spec.vswitchName == vswitch_name]
+        print("Done")
+
+        if not associated_portgroups:
+            print(f"No port groups found for vSwitch '{vswitch_name}' on host '{host_name}'.")
+            return None
+
+        # Create a dictionary mapping network names to network objects for the host
+        print("Creating Network Dict")
+        network_dict = {network.name: network for network in host.network if vswitch_name in network.name}
+        # network_dict = {network.name: network for network in host.network}
+        print("Done")
+
+        # Retrieve the network objects corresponding to the filtered port groups
+        print("Retrieve Network objects")
+        network_objects = [network_dict.get(pg.spec.name) for pg in associated_portgroups if pg.spec.name in network_dict]
+        print("Done")
+
+        if not network_objects:
+            print(f"No network objects found for port groups on vSwitch '{vswitch_name}'.")
+            return None
+
+        return network_objects
+
+    def update_vm_networks(self, vm_name, folder_name, network_map):
+        """
+        Updates the networks of an existing VM based on a provided network_map,
+        directly using the network names without lookup.
+
+        :param vm_name: The name of the VM to update.
+        :param network_map: A dictionary mapping network interface labels to network names.
+        """
+        vm = self.get_vm_by_name_and_folder(vm_name, folder_name)
+        if not vm:
+            raise ValueError(f"VM '{vm_name}' not found.")
+
+        # Ensure VM is powered off for changes
+        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
+            print(f"Powering off VM '{vm_name}' for network update.")
+            self.wait_for_task(vm.PowerOffVM_Task())
+
+        # Prepare the device change spec using network names directly
+        device_changes = []
+        for device in vm.config.hardware.device:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.deviceInfo.label in network_map:
+                network_name = network_map[device.deviceInfo.label]
+                
+                # Set up network backing with the provided network name
+                network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
+                network_backing.deviceName = network_name
+
+                # Configure the NIC spec
+                nic_spec = vim.vm.device.VirtualDeviceSpec()
+                nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                nic_spec.device = device
+                nic_spec.device.backing = network_backing
+                
+                device_changes.append(nic_spec)
+
+        # Apply the changes in a batch job within a try-except block
+        try:
+            if device_changes:
+                spec = vim.vm.ConfigSpec(deviceChange=device_changes)
+                task = vm.ReconfigVM_Task(spec=spec)
+                self.wait_for_task(task)
+                print(f"Network interfaces on VM '{vm_name}' updated successfully.")
+            else:
+                print("No network interface changes detected.")
+        except vmodl.MethodFault as error:
+            raise Exception(f"Failed to update network interfaces for VM '{vm_name}': {error.msg}")
+        except Exception as e:
+            raise Exception(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
+
+        # Optionally, power the VM back on after updates
+
+
+        # Consider powering the VM back on if needed
+    def get_vm_by_name_and_folder(self, vm_name, folder_name):
+        """
+        Retrieves a VM object based on the VM name and the name of its containing folder.
+
+        :param vm_name: The name of the VM to retrieve.
+        :param folder_name: The name of the folder in which the VM is located.
+        :return: The VM object if found, None otherwise.
+        """
+        # Find the folder by name
+        folder = self.get_obj([vim.Folder], folder_name)
+        if not folder:
+            print(f"Folder '{folder_name}' not found.")
+            return None
+
+        # Search for the VM within the folder's child entities
+        for child in folder.childEntity:
+            if isinstance(child, vim.VirtualMachine) and child.name == vm_name:
+                return child
+            elif isinstance(child, vim.Folder):  # Recursively search in sub-folders
+                vm = self.get_vm_by_name_and_folder(vm_name, child.name)
+                if vm:
+                    return vm
+
+        print(f"VM '{vm_name}' not found in folder '{folder_name}'.")
+        return None
+
+
+    
+
+
+
+    
+
+
+
+
+
+    """
+    F5 bigip and prtg link iso image in cd/dvd [keg2 podiso/pod-54-a.iso]
+    """
+
