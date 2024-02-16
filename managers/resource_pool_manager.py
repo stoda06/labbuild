@@ -4,6 +4,12 @@ from pyVmomi import vim
 
 class ResourcePoolManager(VCenter):
 
+    def __init__(self, vcenter_instance):
+        if not vcenter_instance.connection:
+            raise ValueError("VCenter instance is not connected.")
+        self.vcenter = vcenter_instance
+        self.connection = vcenter_instance.connection
+
     def create_resource_pool_under_host(self, host_name, rp_name, cpu_allocation, memory_allocation):
         """Creates a new resource pool under the specified host's default resource pool."""
         try:

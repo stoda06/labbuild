@@ -3,6 +3,11 @@ from managers.vcenter import VCenter
 
 
 class DatastoreManager(VCenter):
+
+    def __init__(self, vcenter_instance):
+        if not vcenter_instance.is_connected():
+            raise ValueError("VCenter instance is not connected. Please establish a connection first.")
+        self.service_instance = vcenter_instance.connection
     
     def list_datastores(self):
         """Lists all datastores available in the connected vCenter."""

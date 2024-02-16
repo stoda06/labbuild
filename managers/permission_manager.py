@@ -2,6 +2,13 @@ from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 
 class PermissionManager(VCenter):
+
+    def __init__(self, vcenter_instance):
+        if not vcenter_instance.connection:
+            raise ValueError("VCenter instance is not connected.")
+        self.vcenter = vcenter_instance
+        self.connection = vcenter_instance.connection
+        
     def create_role(self, role_name, privileges):
         """Creates a custom role with a set of privileges."""
         try:
@@ -66,9 +73,24 @@ class PermissionManager(VCenter):
         :param user: The user or group to whom the permissions will be assigned.
         :param role_name: The name of the role defining the permissions.
         """
-        resource_pool = self.get_resource_pool_by_name(resource_pool_name)
+        resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
         if resource_pool is None:
             print(f"Resource pool '{resource_pool_name}' not found.")
             return
 
         self.set_entity_permissions(entity=resource_pool, user=user, role_name=role_name)
+
+    def add_permissions_to_folder(self, folder_name, user, role_name):
+        """
+        Adds permissions for a specified user or group to a resource pool.
+
+        :param resource_pool_name: The name of the resource pool.
+        :param user: The user or group to whom the permissions will be assigned.
+        :param role_name: The name of the role defining the permissions.
+        """
+        folder = self.get_obj([vim.Folder], folder_name)
+        if folder is None:
+            print(f"Resource pool '{folder_name}' not found.")
+            return
+
+        self.set_entity_permissions(entity=folder, user=user, role_name=role_name)

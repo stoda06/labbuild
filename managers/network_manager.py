@@ -2,14 +2,13 @@ from pyVmomi import vim
 from managers.vcenter import VCenter
 
 class NetworkManager(VCenter):
-    # def __init__(self, vcenter_instance=None):
-        # if vcenter_instance:
-        #     # Assume the connection and other necessary properties
-        #     self.connection = vcenter_instance.connection
-        # else:
-        #     # Normal initialization process
-        #     super().__init__(vcenter_instance.host, vcenter_instance.user, vcenter_instance.password, vcenter_instance.port)
-    
+
+    def __init__(self, vcenter_instance):
+        if not vcenter_instance.connection:
+            raise ValueError("VCenter instance is not connected.")
+        self.vcenter = vcenter_instance
+        self.connection = vcenter_instance.connection
+
     def create_vm_port_groups(self, switch_name, port_groups):
         """
         Creates multiple virtual machine port groups on a specified standard switch, ignoring existing port groups.
@@ -24,10 +23,6 @@ class NetworkManager(VCenter):
                 return
 
             for pg_name, pg_props in port_groups.items():
-                # Check if the port group already exists
-                # if any(pg.name == pg_name for pg in host_network_system.networkInfo.portgroup):
-                #     print(f"Port group '{pg_name}' already exists on switch '{switch_name}', ignoring.")
-                #     continue  # Skip to the next port group
 
                 vlan_id = pg_props.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
                 port_group_spec = vim.host.PortGroup.Specification()
@@ -104,3 +99,49 @@ class NetworkManager(VCenter):
             print(f"Virtual switch '{vswitch_name}' is in use and cannot be created.")
         except Exception as e:
             print(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
+
+    def delete_vswitch(self, host_name, vswitch_name):
+        """
+        Deletes a specified vSwitch from a host.
+
+        :param host_name: The name of the host from which to delete the vSwitch.
+        :param vswitch_name: The name of the vSwitch to delete.
+        """
+        # Find the host system by name
+        host_system = None
+        for host in self.get_all_hosts():
+            if host.name == host_name:
+                host_system = host
+                break
+
+        if not host_system:
+            raise ValueError(f"Host '{host_name}' not found.")
+
+        # Get the host's network system
+        host_network_system = host_system.configManager.networkSystem
+
+        # Check if the vSwitch exists
+        vswitch_exists = any(vswitch for vswitch in host_network_system.networkInfo.vswitch if vswitch.name == vswitch_name)
+        if not vswitch_exists:
+            raise ValueError(f"vSwitch '{vswitch_name}' not found on host '{host_name}'.")
+
+        # Remove the vSwitch
+        try:
+            host_network_system.RemoveVirtualSwitch(vswitchName=vswitch_name)
+            print(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_name}'.")
+        except vim.fault.NotFound:
+            raise ValueError(f"vSwitch '{vswitch_name}' could not be found.")
+        except vim.fault.ResourceInUse:
+            raise ValueError(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
+        except Exception as e:
+            raise Exception(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
+
+    def get_all_hosts(self):
+        """
+        Helper method to retrieve all host systems.
+        """
+        content = self.connection.RetrieveContent()
+        obj_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
+        hosts = obj_view.view
+        obj_view.Destroy()
+        return hosts
