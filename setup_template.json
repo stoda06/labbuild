@@ -4,6 +4,7 @@
         "user": "labcp-{X}",
         "role": "labcp-0-role",
         "group_name": "cp-pod{X}",
+        "folder_name": "cp-pod{X}-folder",
         "prtg_monitor": "",
         "prtg_container": "",
         "components": [
@@ -31,7 +32,7 @@
                 "base_vm": "A-DMZ-R81.20",
                 "clone_name": "A-DMZ-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-dmz-vs0-cp"
+                    "Network adapter 1": "cp-dmz-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -41,8 +42,8 @@
                 "base_vm": "A-GUI-CCSA-R81.20",
                 "clone_name": "A-GUI-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-mgt-vs0-cp",
-                    "Network adapter 2": "cp-mgt-vs0-cp"
+                    "Network adapter 1": "cp-mgt-vs{X}-cp",
+                    "Network adapter 2": "cp-mgt-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -52,11 +53,11 @@
                 "base_vm": "A-GW-R81.20-CCSA",
                 "clone_name": "A-GW-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-mgt-vs0-cp",
-                    "Network adapter 2": "cp-inta-vs0-cp",
-                    "Network adapter 3": "cp-dmz-vs0-cp",
-                    "Network adapter 4": "cp-sync-vs0-cp",
-                    "Network adapter 5": "cp-ext-vs0-cp"
+                    "Network adapter 1": "cp-mgt-vs{X}-cp",
+                    "Network adapter 2": "cp-inta-vs{X}-cp",
+                    "Network adapter 3": "cp-dmz-vs{X}-cp",
+                    "Network adapter 4": "cp-sync-vs{X}-cp",
+                    "Network adapter 5": "cp-ext-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -66,11 +67,11 @@
                 "base_vm": "A-Host-R81.20-CCSA",
                 "clone_name": "A-Host-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-mgt-vs0-cp",
-                    "Network adapter 2": "cp-inta-vs0-cp",
-                    "Network adapter 3": "cp-dmz-vs0-cp",
-                    "Network adapter 4": "cp-sync-vs0-cp",
-                    "Network adapter 5": "cp-ext-vs0-cp"
+                    "Network adapter 1": "cp-mgt-vs{X}-cp",
+                    "Network adapter 2": "cp-inta-vs{X}-cp",
+                    "Network adapter 3": "cp-dmz-vs{X}-cp",
+                    "Network adapter 4": "cp-sync-vs{X}-cp",
+                    "Network adapter 5": "cp-ext-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -80,11 +81,11 @@
                 "base_vm": "A-SMS-R81.20-CCSA",
                 "clone_name": "A-SMS-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-mgt-vs0-cp",
-                    "Network adapter 2": "cp-inta-vs0-cp",
-                    "Network adapter 3": "cp-dmz-vs0-cp",
-                    "Network adapter 4": "cp-sync-vs0-cp",
-                    "Network adapter 5": "cp-ext-vs0-cp"
+                    "Network adapter 1": "cp-mgt-vs{X}-cp",
+                    "Network adapter 2": "cp-inta-vs{X}-cp",
+                    "Network adapter 3": "cp-dmz-vs{X}-cp",
+                    "Network adapter 4": "cp-sync-vs{X}-cp",
+                    "Network adapter 5": "cp-ext-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -94,8 +95,8 @@
                 "base_vm": "B-GW-R81.20-CCSA",
                 "clone_name": "B-GW-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-intb-vs0-cp",
-                    "Network adapter 2": "cp-ext-b-vs0-cp"
+                    "Network adapter 1": "cp-intb-vs{X}-cp",
+                    "Network adapter 2": "cp-ext-b-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -105,8 +106,8 @@
                 "base_vm": "B-Host-R81.20-CCSA",
                 "clone_name": "B-Host-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-ext-vs0-cp",
-                    "Network adapter 2": "cp-intb-vs0-cp"
+                    "Network adapter 1": "cp-ext-vs{X}-cp",
+                    "Network adapter 2": "cp-intb-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -116,7 +117,7 @@
                 "base_vm": "cp-base-R80-w10",
                 "clone_name": "cp-w10-pod{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-none2-vs0-cp"
+                    "Network adapter 1": "cp-none2-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
