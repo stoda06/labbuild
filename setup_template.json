@@ -1,6 +1,8 @@
-[
-    {
-        "course_name": "CCSA-R81.20",
+{
+    "CCSA-R81.20": {
+        "domain": "vcenter.rededucation.com",
+        "user": "labcp-{X}",
+        "role": "labcp-0-role",
         "group_name": "cp-pod{X}",
         "prtg_monitor": "",
         "prtg_container": "",
@@ -176,4 +178,4 @@
         }
 
     }
-]
+}
