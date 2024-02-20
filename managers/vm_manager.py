@@ -62,6 +62,18 @@ class VmManager(VCenter):
         except Exception as e:
             print(f"Failed to create VM '{vm_name}': {e}")
 
+    def poweron_vm(self, vm_name):
+        if vm_name:
+        # Check the current power state before attempting to power on
+            if vm_name.runtime.powerState == vim.VirtualMachinePowerState.poweredOff:
+                print(f"Powering on VM '{vm_name}'...")
+                task = vm_name.PowerOnVM_Task()
+                print("VM is powered on.")
+            else:
+                print(f"VM '{vm_name}' is already powered on.")
+        else:
+            print(f"VM '{vm_name}' not found.")
+
     def clone_vm(self, template_name, clone_name, resource_pool_name, directory_name, datastore_name=None, power_on=False):
         """
         Clones a VM from an existing template into a specified directory (VM folder).
@@ -405,10 +417,8 @@ class VmManager(VCenter):
         except Exception as e:
             raise Exception(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
 
-        # Optionally, power the VM back on after updates
 
-
-        # Consider powering the VM back on if needed
+    
     def get_vm_by_name_and_folder(self, vm_name, folder_name):
         """
         Retrieves a VM object based on the VM name and the name of its containing folder.
