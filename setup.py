@@ -3,6 +3,7 @@ from managers.folder_manager import FolderManager
 from managers.network_manager import NetworkManager
 from managers.vm_manager import VmManager
 from managers.vcenter import VCenter
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 import os
 import json
@@ -34,6 +35,54 @@ def replace_placeholder(setup_config, value):
 
     return updated_setup_config
 
+def setup_vms(vm_manager, pod_config):
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for component in pod_config["components"]:
+            # Schedule the VM cloning task
+            clone_future = executor.submit(
+                vm_manager.clone_vm,
+                component["base_vm"], 
+                component["clone_name"], 
+                pod_config["group_name"], 
+                pod_config["folder_name"], 
+                datastore_name="vms"  # Assuming "vms" is a fixed datastore name for all clones
+            )
+            futures.append(clone_future)
+        
+        # Optionally, wait for all cloning tasks to complete and handle their results
+        for future in futures:
+            try:
+                result = future.result()  # This will re-raise any exceptions caught in the task
+                # Handle successful cloning result
+                print(result)
+            except Exception as e:
+                # Handle cloning failure
+                print(f"Cloning task failed: {e}")
+
+def update_vms(vm_manager, pod_config):
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for component in pod_config["components"]:
+            # Schedule the VM cloning task
+            update_future = executor.submit(
+                vm_manager.update_vm_networks,
+                component["clone_name"],
+                pod_config["folder_name"],
+                component["network_map"]
+            )
+            futures.append(update_future)
+        
+        # Optionally, wait for all cloning tasks to complete and handle their results
+        for future in futures:
+            try:
+                result = future.result()  # This will re-raise any exceptions caught in the task
+                # Handle successful cloning result
+                print(result)
+            except Exception as e:
+                # Handle cloning failure
+                print(f"Cloning task failed: {e}")
+
 if __name__ == "__main__":
     vc_host = "vcenter-appliance-2.rededucation.com"
     vc_user = os.getenv("VC_USER"); print(vc_user)
@@ -48,8 +97,8 @@ if __name__ == "__main__":
     course_name = "CCSA-R81.20"
     parent_group_name = "cp-ultramagnus"
     parent_folder_name = "cp"
-    start_pod = 55
-    end_pod = 55
+    start_pod = 56
+    end_pod = 56
 
     course_config = get_setup_config(course_name)
 
@@ -112,12 +161,9 @@ if __name__ == "__main__":
 
             # Clone VM
             vm_manager = VmManager(vc)
+            setup_vms(vm_manager, pod_config)
+            update_vms(vm_manager, pod_config)
             for component in pod_config["components"]:
-                vm_manager.clone_vm(component["base_vm"], component["clone_name"], 
-                                    pod_config["group_name"], pod_config["folder_name"], datastore_name="vms")
-                
-                vm_manager.update_vm_networks(component["clone_name"],pod_config["folder_name"],component["network_map"])
-            
                 if component["base_vm"] == "cp-R81.20-vr":
                     vm_manager.update_mac_address(component["clone_name"], 
                                                   "Network adapter 1", 
