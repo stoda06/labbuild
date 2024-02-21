@@ -1,4 +1,9 @@
-from vcenter import VCenter
+from managers.vcenter import VCenter
+from managers.resource_pool_manager import ResourcePoolManager
+from managers.network_manager import NetworkManager
+from managers.vm_manager import VmManager
+from managers.permission_manager import PermissionManager
+from managers.folder_manager import FolderManager
 from dotenv import load_dotenv
 import os
 
@@ -51,6 +56,11 @@ def create_vm(connection, base_vm, new_vm, child_rp, child_folder):
 
     manager = VmManager(connection)
     manager.clone_vm(base_vm, new_vm, child_rp, child_folder, datastore_name="vms")
+
+def poweron_vm(connection, new_vm):
+
+    manager = VmManager(connection)
+    manager.poweron_vm(new_vm)
 
 def update_vm(connection, vm_name, child_folder, network_map, new_mac):
 
@@ -114,23 +124,23 @@ if __name__ == "__main__":
     new_vm = "cp-R81-vr-58"
 
     # Setup
-    # create_resource_pool(vc, parent_rp, child_rp)
-    # create_folder(vc, parent_folder, child_folder, user, role_name)
-    # create_network(vc, host_name, vswitch, port_groups)
-    # create_vm(vc, base_vm, new_vm, child_rp, child_folder)
-    # update_vm(vc, new_vm, child_folder, network_map, new_mac = "00:50:56:04:00:" + hex(56)[2:])
-    
+    create_resource_pool(vc, parent_rp, child_rp)
+    create_folder(vc, parent_folder, child_folder, user, role_name)
+    create_network(vc, host_name, vswitch, port_groups)
+    create_vm(vc, base_vm, new_vm, child_rp, child_folder)
+    update_vm(vc, new_vm, child_folder, network_map, new_mac = "00:50:56:04:00:" + hex(56)[2:])
+    poweron_vm(vc, new_vm)
     # Setup Done
 
 
     # Teardown
-    vm_manager = VmManager(vc)
-    vm_manager.delete_folder(child_folder, force=True)
+    # vm_manager = VmManager(vc)
+    # vm_manager.delete_folder(child_folder, force=True)
 
-    network_manager = NetworkManager(vc)
-    network_manager.delete_vswitch(host_name, vswitch)
+    # network_manager = NetworkManager(vc)
+    # network_manager.delete_vswitch(host_name, vswitch)
 
-    rp_manager = ResourcePoolManager(vc)
-    rp_manager.delete_resource_pool(child_rp)
+    # rp_manager = ResourcePoolManager(vc)
+    # rp_manager.delete_resource_pool(child_rp)
 
     # Teardown Done

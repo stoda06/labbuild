@@ -1,5 +1,6 @@
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
+from pyVim.task import WaitForTask
 
 
 class VmManager(VCenter):
@@ -63,16 +64,48 @@ class VmManager(VCenter):
             print(f"Failed to create VM '{vm_name}': {e}")
 
     def poweron_vm(self, vm_name):
-        if vm_name:
-        # Check the current power state before attempting to power on
-            if vm_name.runtime.powerState == vim.VirtualMachinePowerState.poweredOff:
-                print(f"Powering on VM '{vm_name}'...")
-                task = vm_name.PowerOnVM_Task()
-                print("VM is powered on.")
-            else:
-                print(f"VM '{vm_name}' is already powered on.")
-        else:
+        
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
             print(f"VM '{vm_name}' not found.")
+            return
+
+        # Check if the VM is powered on. If so, power it off first.
+        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOff:
+            print(f"VM '{vm_name}' is powered off. Attempting to power on before deletion.")
+            power_on_task = vm.PowerOnVM_Task()
+            self.wait_for_task(power_on_task)
+            print(f"VM '{vm_name}' powered on successfully.")
+
+
+    # def poweron_vm(self, vm_name, resource_pool_name, template_name):
+
+        
+        # content = service_instance.content
+        # containerView = content.viewManager.CreateContainerView(content.rootFolder, [vim.ResourcePool], True)
+        
+            # try:
+            #     resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
+            #     if not resource_pool:
+            #         print(f"Resource pool '{resource_pool_name}' not found.")
+            #         return
+
+            #     for vm in resource_pool.vm:
+            #             if vm.runtime.powerState != vim.VirtualMachinePowerState.poweredOn:
+            #                 print(f"Powering on VM '{vm.name}'...")
+            #             try:
+            #                 task = vm.PowerOnVM_Task()
+            #                 WaitForTask(task)
+            #                 print(f"VM '{vm.name}' is powered on.")
+            #             except Exception as e:
+            #                 print(f"Failed to power on VM '{vm.name}': {e}")
+            #             else:
+            #                 print(f"VM '{vm.name}' is already powered on.")
+
+            # except Exception as e:
+            #     print(f"Failed to PowerOn VM '{vm_name}': {e}")
+        
+        
 
     def clone_vm(self, template_name, clone_name, resource_pool_name, directory_name, datastore_name=None, power_on=False):
         """
