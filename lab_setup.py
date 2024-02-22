@@ -60,6 +60,7 @@ def setup_vms(vm_manager, pod_config):
                 # Handle cloning failure
                 print(f"Cloning task failed: {e}")
 
+
 def update_vms(vm_manager, pod_config):
     with ThreadPoolExecutor() as executor:
         futures = []
@@ -82,6 +83,7 @@ def update_vms(vm_manager, pod_config):
             except Exception as e:
                 # Handle cloning failure
                 print(f"Cloning task failed: {e}")
+        
 
 if __name__ == "__main__":
     vc_host = "vcenter-appliance-2.rededucation.com"
@@ -97,8 +99,8 @@ if __name__ == "__main__":
     course_name = "CCSA-R81.20"
     parent_group_name = "cp-ultramagnus"
     parent_folder_name = "cp"
-    start_pod = 56
-    end_pod = 56
+    start_pod = 54
+    end_pod = 54
 
     course_config = get_setup_config(course_name)
 
