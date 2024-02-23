@@ -67,11 +67,8 @@
                 "base_vm": "A-Host-R81.20-CCSA",
                 "clone_name": "A-Host-{X}",
                 "network_map": {
-                    "Network adapter 1": "cp-mgt-vs{X}-cp",
-                    "Network adapter 2": "cp-inta-vs{X}-cp",
-                    "Network adapter 3": "cp-dmz-vs{X}-cp",
-                    "Network adapter 4": "cp-sync-vs{X}-cp",
-                    "Network adapter 5": "cp-ext-vs{X}-cp"
+                    "Network adapter 1": "cp-inta-vs{X}-cp",
+                    "Network adapter 2": "cp-none1-vs{X}-cp"
                 },
                 "prtg_monitor": "",
                 "prtg_container": ""
@@ -124,7 +121,7 @@
             }
         ],
         "network": {
-            "switch_name": "vs{X}",
+            "switch_name": "vs{X}-cp",
             "port_groups": [
                 {
                     "port_group_name": "cp-mgt-vs{X}-cp",
