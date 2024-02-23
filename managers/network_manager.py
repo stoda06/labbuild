@@ -1,5 +1,6 @@
-from pyVmomi import vim
+from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
+from concurrent.futures import ThreadPoolExecutor
 
 class NetworkManager(VCenter):
 
@@ -8,43 +9,48 @@ class NetworkManager(VCenter):
             raise ValueError("VCenter instance is not connected.")
         self.vcenter = vcenter_instance
         self.connection = vcenter_instance.connection
-
-    def create_vm_port_groups(self, switch_name, port_groups):
+    
+    def create_port_group(self, host_network_system, switch_name, port_group_spec):
         """
-        Creates multiple virtual machine port groups on a specified standard switch, ignoring existing port groups.
-
-        :param switch_name: Name of the standard switch to create the port groups on.
-        :param port_groups: A dictionary where keys are port group names and values are dictionaries with port group properties (e.g., VLAN ID).
+        Create a single port group on the specified switch.
         """
         try:
-            host_network_system = self.get_host_network_system()
-            if not host_network_system:
-                print("Failed to retrieve HostNetworkSystem.")
-                return
+            host_network_system.AddPortGroup(portgrp=port_group_spec)
+            print(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
+        except vim.fault.AlreadyExists:
+            print(f"Port group '{port_group_spec.name}' already exists on switch '{switch_name}'. Skipping.")
+        except Exception as e:
+            print(f"Failed to create port group '{port_group_spec.name}': {e}")
+    
+    def create_vm_port_groups(self, switch_name, port_groups):
+        """
+        Creates multiple virtual machine port groups on a specified standard switch concurrently.
 
-            for pg_name, pg_props in port_groups.items():
+        :param switch_name: Name of the standard switch to create the port groups on.
+        :param port_groups: A list of dictionaries, each containing port group properties (e.g., name and VLAN ID).
+        """
+        host_network_system = self.get_host_network_system()  # Assume this is a method that retrieves the HostNetworkSystem
+        if not host_network_system:
+            print("Failed to retrieve HostNetworkSystem.")
+            return
 
-                vlan_id = pg_props.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for pg in port_groups:
                 port_group_spec = vim.host.PortGroup.Specification()
-                port_group_spec.name = pg_name
-                port_group_spec.vlanId = vlan_id
+                port_group_spec.name = pg["port_group_name"]
+                port_group_spec.vlanId = pg.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
                 port_group_spec.vswitchName = switch_name
                 port_group_spec.policy = vim.host.NetworkPolicy()
 
-                try:
-                    host_network_system.AddPortGroup(portgrp=port_group_spec)
-                    print(f"Port group '{pg_name}' created successfully on switch '{switch_name}'.")
-                except vim.fault.AlreadyExists:
-                    print(f"Port group '{pg_name}' already exists on switch '{switch_name}', this should not happen.")
-                    continue  # This is a safeguard; the initial check should prevent this from occurring
-        except vim.fault.NotFound:
-            print(f"Switch '{switch_name}' not found.")
-        except vim.fault.ResourceInUse:
-            print(f"Resource is in use and cannot be modified.")
-        except Exception as e:
-            print(f"Failed to create port groups on switch '{switch_name}': {e}")
+                # Schedule the port group creation task
+                future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec)
+                futures.append(future)
 
-    
+            # Optionally, wait for all tasks to complete and handle their results
+            for future in futures:
+                future.result()  # This will re-raise any exceptions caught in the task
+  
     def get_host_network_system(self):
         """
         Retrieves the HostNetworkSystem of the first host found.
@@ -145,3 +151,56 @@ class NetworkManager(VCenter):
         hosts = obj_view.view
         obj_view.Destroy()
         return hosts
+    
+    def set_user_role_on_network(self, user_domain_name, role_name, network):
+        """
+        Helper function to set a user role on a single network.
+        """
+        if network is None:
+            return "Network not found"
+        
+        # Retrieve the AuthorizationManager and the RoleManager
+        auth_manager = self.connection.content.authorizationManager
+        role_list = auth_manager.roleList
+        
+        # Find the specified role ID
+        role_id = None
+        for role in role_list:
+            if role.name == role_name:
+                role_id = role.roleId
+                break
+        
+        if role_id is None:
+            return f"Role '{role_name}' not found."
+        
+        # Construct the permission spec and apply it
+        permission = vim.AuthorizationManager.Permission()
+        permission.principal = user_domain_name
+        permission.group = False
+        permission.roleId = role_id
+        permission.propagate = True
+        
+        try:
+            auth_manager.SetEntityPermissions(entity=network, permission=[permission])
+            return f"Assigned role '{role_name}' to user '{user_domain_name}' on network '{network.name}'."
+        except Exception as e:
+            return f"Failed to assign role to network '{network.name}': {e}"
+    
+    def apply_user_role_to_networks(self, user_domain_name, role_name, network_names):
+        """
+        Applies a specified user and role to multiple networks concurrently.
+
+        :param user_domain_name: The domain and username to whom the role will be assigned.
+        :param role_name: The name of the role to assign.
+        :param network_names: A list of network names to assign the role to.
+        """
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for network_name in network_names:
+                network = self.get_obj([vim.Network],network_name)
+                future = executor.submit(self.set_user_role_on_network, user_domain_name, role_name, network)
+                futures.append(future)
+            
+            # Processing results
+            for future in futures:
+                print(future.result())

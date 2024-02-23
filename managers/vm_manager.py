@@ -1,5 +1,6 @@
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class VmManager(VCenter):
@@ -285,35 +286,49 @@ class VmManager(VCenter):
 
         return current_usage
 
+
+    def power_off_vm(self, vm):
+        """
+        Powers off a single virtual machine.
+        """
+        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
+            power_off_task = vm.PowerOffVM_Task()
+            self.wait_for_task(power_off_task)
+
     def delete_folder(self, folder_name, force=False):
         """
         Deletes a folder by its name if the folder is empty, or if force is True, deletes it and its contents recursively.
-        Provides an error message if trying to delete a non-empty folder without force option.
-
-        :param folder_name: The name of the folder to be deleted.
-        :param force: If True, deletes the folder and its contents even if it is not empty. Default is False.
-        :return: A message indicating success, failure, or reason for inability to delete.
+        If force is True and there are VMs in the folder, it powers them off concurrently before deletion.
         """
-        # Find the folder by name
         folder = self.get_obj([vim.Folder], folder_name)
         if not folder:
             return f"Folder '{folder_name}' not found."
-
-        # Check if the folder is empty and force is not applied
+        
         if folder.childEntity and not force:
-            # The folder has contents (VMs, sub-folders, etc.) and force is not True
             return f"Folder '{folder_name}' is not empty. Cannot delete without enabling the force option."
 
-        # Proceed with deletion if the folder is empty or force is True
+        if force and folder.childEntity:
+            # Filter for VMs only if we need to force delete
+            vms = [child for child in folder.childEntity if isinstance(child, vim.VirtualMachine)]
+            
+            # Proceed with concurrent power off if there are any VMs
+            if vms:
+                with ThreadPoolExecutor(max_workers=max(1, len(vms))) as executor:
+                    future_to_vm = {executor.submit(self.power_off_vm, vm): vm for vm in vms}
+                    for future in as_completed(future_to_vm):
+                        vm = future_to_vm[future]
+                        try:
+                            future.result()  # wait for power off task to complete
+                        except Exception as exc:
+                            print(f'VM {vm.name} power off generated an exception: {exc}')
+
         try:
-            if isinstance(folder.parent, (vim.Datacenter, vim.Folder)):
-                delete_task = folder.Destroy_Task()
-                self.wait_for_task(delete_task)
-                return f"Folder '{folder_name}' and its contents were deleted successfully."
-            else:
-                return "Cannot delete a system or top-level folder."
+            delete_task = folder.Destroy_Task()
+            self.wait_for_task(delete_task)
+            return f"Folder '{folder_name}' and its contents were deleted successfully."
         except Exception as e:
             return f"Failed to delete folder '{folder_name}': {str(e)}"
+
         
     def get_portgroups_for_vswitch(self, host_name, vswitch_name):
         """

@@ -1,5 +1,5 @@
 from pyVim.connect import SmartConnect, Disconnect
-from pyVmomi import vim
+from pyVmomi import vim, vmodl
 import ssl
 import atexit
 import time
@@ -40,19 +40,29 @@ class VCenter:
     
     def get_obj(self, vimtype, name):
         """
-        Retrieves an object by name from vCenter.
-
-        :param vimtype: A list of the vim type(s) to search for (e.g., [vim.VirtualMachine]).
-        :param name: The name of the object to find.
-        :return: The found object, or None if not found.
+        Retrieves an object by name from vCenter using a more efficient search mechanism.
         """
         content = self.get_content()
-        container = content.viewManager.CreateContainerView(content.rootFolder, vimtype, True)
-        container_view = container.view
-        container.Destroy()
-        for c in container_view:
-            if c.name == name:
-                return c
+        try:
+            container = content.viewManager.CreateContainerView(content.rootFolder, vimtype, True)
+            # Preparing the property collector's filter specs
+            property_spec = vmodl.query.PropertyCollector.PropertySpec(type=vimtype[0], pathSet=["name"], all=False)
+            traversal_spec = vmodl.query.PropertyCollector.TraversalSpec(name='traverseEntities', path='view', skip=False, type=vim.view.ContainerView)
+            object_spec = vmodl.query.PropertyCollector.ObjectSpec(obj=container, skip=True, selectSet=[traversal_spec])
+            filter_spec = vmodl.query.PropertyCollector.FilterSpec(objectSet=[object_spec], propSet=[property_spec])
+            
+            # Retrieving properties
+            collector = content.propertyCollector
+            props = collector.RetrieveContents([filter_spec])
+
+            # Searching for the object by name
+            for obj in props:
+                if obj.propSet[0].val == name:
+                    return obj.obj
+        finally:
+            if 'container' in locals():
+                container.Destroy()
+
         return None
     
     def get_all_objects_by_type(self, vimtype):
@@ -103,11 +113,11 @@ class VCenter:
             print_end   - Optional  : end character (e.g. "\r", "\r\n") (Str)
         """
         if iteration is None or total is None:
-            print("Error: iteration or total is None")
+            # print("Error: iteration or total is None")
             return
 
         if total == 0:
-            print("Error: Total value is zero, cannot calculate progress.")
+            # print("Error: Total value is zero, cannot calculate progress.")
             return
 
         # Ensure iteration and total are floats for division
