@@ -114,11 +114,7 @@ class NetworkManager(VCenter):
         :param vswitch_name: The name of the vSwitch to delete.
         """
         # Find the host system by name
-        host_system = None
-        for host in self.get_all_hosts():
-            if host.name == host_name:
-                host_system = host
-                break
+        host_system = self.get_obj([vim.HostSystem], host_name)
 
         if not host_system:
             raise ValueError(f"Host '{host_name}' not found.")
@@ -141,16 +137,6 @@ class NetworkManager(VCenter):
             raise ValueError(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
         except Exception as e:
             raise Exception(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
-
-    def get_all_hosts(self):
-        """
-        Helper method to retrieve all host systems.
-        """
-        content = self.connection.RetrieveContent()
-        obj_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
-        hosts = obj_view.view
-        obj_view.Destroy()
-        return hosts
     
     def set_user_role_on_network(self, user_domain_name, role_name, network):
         """
