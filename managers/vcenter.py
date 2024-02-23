@@ -67,14 +67,53 @@ class VCenter:
     
     def get_all_objects_by_type(self, vimtype):
         """
-        Helper function to retrieve all objects of a given type from vCenter.
+        Retrieves all objects of a given type from vCenter using Property Collector for efficiency.
 
         :param vimtype: The vim type to search for (e.g., vim.ResourcePool).
         :return: A list of all objects of the specified type.
         """
-        container = self.connection.content.viewManager.CreateContainerView(self.connection.content.rootFolder, [vimtype], True)
-        objects = list(container.view)
-        container.Destroy()
+        content = self.connection.RetrieveContent()
+        property_collector = content.propertyCollector
+        view_manager = content.viewManager
+
+        # Create a container view for the desired vimtype
+        container_view = view_manager.CreateContainerView(content.rootFolder, [vimtype], True)
+
+        # Create a traversal spec to navigate from the container view to its view property
+        traversal_spec = vmodl.query.PropertyCollector.TraversalSpec(
+            name='traverseView',
+            path='view',
+            skip=False,
+            type=vim.view.ContainerView
+        )
+
+        # Specify which properties we want to retrieve (name is used as an example, can be adjusted)
+        property_spec = vmodl.query.PropertyCollector.PropertySpec(
+            type=vimtype,
+            pathSet=['name'],  # Specify more properties if needed
+            all=False
+        )
+
+        # Combine traversal spec and property spec into a filter spec
+        object_spec = vmodl.query.PropertyCollector.ObjectSpec(
+            obj=container_view,
+            skip=True,
+            selectSet=[traversal_spec]
+        )
+
+        filter_spec = vmodl.query.PropertyCollector.FilterSpec(
+            objectSet=[object_spec],
+            propSet=[property_spec]
+        )
+
+        # Retrieve all objects of the specified type
+        retrieved_objects = property_collector.RetrieveContents([filter_spec])
+
+        # Cleanup the container view
+        container_view.Destroy()
+
+        # Extract and return the actual objects from the retrieved properties
+        objects = [obj.obj for obj in retrieved_objects]
         return objects
     
     def wait_for_task(self, task):
