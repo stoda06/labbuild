@@ -1,6 +1,5 @@
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
-from pyVim.task import WaitForTask
 
 
 class VmManager(VCenter):
@@ -65,6 +64,11 @@ class VmManager(VCenter):
 
     def poweron_vm(self, vm_name):
         
+        """
+        Powers On a new virtual machine within a specified resource pool.
+        :param vm_name: Name of the virtual machine.
+        """
+
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             print(f"VM '{vm_name}' not found.")
