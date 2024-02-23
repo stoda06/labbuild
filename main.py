@@ -83,15 +83,15 @@ if __name__ == "__main__":
     vc.connect()
 
     parent_rp = "cp-ultramagnus"
-    child_rp = "cp-pod58"
+    child_rp = "cp-pod56"
 
     user = "labcp-58"
     role_name = "labcp-0-role"
 
     parent_folder = "cp"
-    child_folder = "cp-pod58-folder"
+    child_folder = "cp-pod56-folder"
 
-    vswitch = "vs58-cp"
+    vswitch = "vs56-cp"
     host_name = "ultramagnus.rededucation.com"
     port_groups = {
         "cp-mgt-" + vswitch: {"vlan_id": 401},
@@ -124,23 +124,23 @@ if __name__ == "__main__":
     new_vm = "cp-R81-vr-58"
 
     # Setup
-    create_resource_pool(vc, parent_rp, child_rp)
-    create_folder(vc, parent_folder, child_folder, user, role_name)
-    create_network(vc, host_name, vswitch, port_groups)
-    create_vm(vc, base_vm, new_vm, child_rp, child_folder)
-    update_vm(vc, new_vm, child_folder, network_map, new_mac = "00:50:56:04:00:" + hex(56)[2:])
-    poweron_vm(vc, new_vm)
+    # create_resource_pool(vc, parent_rp, child_rp)
+    # create_folder(vc, parent_folder, child_folder, user, role_name)
+    # create_network(vc, host_name, vswitch, port_groups)
+    # create_vm(vc, base_vm, new_vm, child_rp, child_folder)
+    # update_vm(vc, new_vm, child_folder, network_map, new_mac = "00:50:56:04:00:" + hex(56)[2:])
+    # poweron_vm(vc, new_vm)
     # Setup Done
 
 
     # Teardown
-    # vm_manager = VmManager(vc)
-    # vm_manager.delete_folder(child_folder, force=True)
+    vm_manager = VmManager(vc)
+    vm_manager.delete_folder(child_folder, force=True)
 
-    # network_manager = NetworkManager(vc)
-    # network_manager.delete_vswitch(host_name, vswitch)
+    network_manager = NetworkManager(vc)
+    network_manager.delete_vswitch(host_name, vswitch)
 
-    # rp_manager = ResourcePoolManager(vc)
-    # rp_manager.delete_resource_pool(child_rp)
+    rp_manager = ResourcePoolManager(vc)
+    rp_manager.delete_resource_pool(child_rp)
 
     # Teardown Done
