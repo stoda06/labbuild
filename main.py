@@ -57,6 +57,11 @@ def create_vm(connection, base_vm, new_vm, child_rp, child_folder):
     manager = VmManager(connection)
     manager.clone_vm(base_vm, new_vm, child_rp, child_folder, datastore_name="vms")
 
+def poweron_vm(connection, new_vm):
+
+    manager = VmManager(connection)
+    manager.poweron_vm(new_vm)
+
 def update_vm(connection, vm_name, child_folder, network_map, new_mac):
 
     manager = VmManager(connection)
@@ -78,15 +83,15 @@ if __name__ == "__main__":
     vc.connect()
 
     parent_rp = "cp-ultramagnus"
-    child_rp = "cp-pod58"
+    child_rp = "cp-pod56"
 
     user = "labcp-58"
     role_name = "labcp-0-role"
 
     parent_folder = "cp"
-    child_folder = "cp-pod58-folder"
+    child_folder = "cp-pod56-folder"
 
-    vswitch = "vs58-cp"
+    vswitch = "vs56-cp"
     host_name = "ultramagnus.rededucation.com"
     port_groups = {
         "cp-mgt-" + vswitch: {"vlan_id": 401},
@@ -124,7 +129,7 @@ if __name__ == "__main__":
     # create_network(vc, host_name, vswitch, port_groups)
     # create_vm(vc, base_vm, new_vm, child_rp, child_folder)
     # update_vm(vc, new_vm, child_folder, network_map, new_mac = "00:50:56:04:00:" + hex(56)[2:])
-    
+    # poweron_vm(vc, new_vm)
     # Setup Done
 
 
