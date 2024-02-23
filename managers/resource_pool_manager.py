@@ -92,7 +92,7 @@ class ResourcePoolManager(VCenter):
             print(f"Failed to delete resource pool '{rp_name}': {e}")
             return False
 
-    def assign_role_to_resource_pool(self, resource_pool_name, user_name, role_name):
+    def assign_role_to_resource_pool(self, resource_pool_name, user_name, role_name, propagate=True):
         """Assigns a specified role to a user on a given resource pool.
 
         :param resource_pool_name: The name of the resource pool.
@@ -121,7 +121,7 @@ class ResourcePoolManager(VCenter):
             principal=user_name,
             group=False,  # Change to True if assigning permissions to a user group
             roleId=role_id,
-            propagate=True  # Whether or not the permission should propagate to child objects
+            propagate=propagate  # Whether or not the permission should propagate to child objects
         )
 
         # Set the permission on the resource pool
