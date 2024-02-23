@@ -142,7 +142,6 @@ if __name__ == "__main__":
             folder_manager = FolderManager(vc)
             folder_manager.create_folder(parent_folder_name, pod_config["folder_name"])
             print(f"Folder created.")
-            # print(f"Assign user {pod_config["user"]} and role {pod_config["role"]} for pod {pod}")
             folder_manager.assign_user_to_folder(pod_config["folder_name"],
                                                  pod_config["domain"]+"\\"+pod_config["user"],
                                                  pod_config["role"])
@@ -150,7 +149,6 @@ if __name__ == "__main__":
 
 
             # Create network, vswitch and port groups.
-            # print(f"Creating vswitch {pod_config["network"]["switch_name"]} on host {host_name}")
             network_manager = NetworkManager(vc)
             network_manager.create_vswitch(host_name, pod_config["network"]["switch_name"])
             print(f"vSwitch created on {host_name}")
