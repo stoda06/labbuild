@@ -22,17 +22,22 @@ class NetworkManager(VCenter):
         except Exception as e:
             print(f"Failed to create port group '{port_group_spec.name}': {e}")
     
-    def create_vm_port_groups(self, switch_name, port_groups):
+    def create_vm_port_groups(self, hostname, switch_name, port_groups):
         """
-        Creates multiple virtual machine port groups on a specified standard switch concurrently.
+        Creates multiple virtual machine port groups on a specified standard switch concurrently for a given host.
 
+        :param hostname: Name of the host where the standard switch resides.
         :param switch_name: Name of the standard switch to create the port groups on.
         :param port_groups: A list of dictionaries, each containing port group properties (e.g., name and VLAN ID).
         """
-        host_network_system = self.get_host_network_system()  # Assume this is a method that retrieves the HostNetworkSystem
-        if not host_network_system:
-            print("Failed to retrieve HostNetworkSystem.")
+        # Use the get_obj method to fetch the host by its name
+        host = self.get_obj([vim.HostSystem], hostname)
+        if not host:
+            print(f"Failed to retrieve host '{hostname}'.")
             return
+
+        # Access the HostNetworkSystem directly from the retrieved host
+        host_network_system = host.configManager.networkSystem
 
         with ThreadPoolExecutor() as executor:
             futures = []
@@ -44,35 +49,15 @@ class NetworkManager(VCenter):
                 port_group_spec.policy = vim.host.NetworkPolicy()
 
                 # Schedule the port group creation task
-                future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec)
+                future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec, hostname)
                 futures.append(future)
 
             # Optionally, wait for all tasks to complete and handle their results
             for future in futures:
-                future.result()  # This will re-raise any exceptions caught in the task
-  
-    def get_host_network_system(self):
-        """
-        Retrieves the HostNetworkSystem of the first host found.
-        This example assumes a single host or uses the first host found; adjust as needed.
-        """
-        content = self.connection.RetrieveContent()
-        for datacenter in content.rootFolder.childEntity:
-            if hasattr(datacenter, 'hostFolder'):
-                host_folder = datacenter.hostFolder
-                host_system = self.get_first_object_by_type(host_folder, vim.HostSystem)
-                if host_system:
-                    return host_system.configManager.networkSystem
-        return None
-
-    def get_first_object_by_type(self, starting_point, obj_type):
-        """
-        Helper method to get the first object of a specific type from a starting point.
-        """
-        view = self.connection.content.viewManager.CreateContainerView(starting_point, [obj_type], True)
-        obj_list = list(view.view)
-        view.Destroy()
-        return obj_list[0] if obj_list else None
+                try:
+                    future.result()  # This will re-raise any exceptions caught in the task
+                except Exception as e:
+                    print(f"Failed to create one or more port groups: {e}")
     
     def create_vswitch(self, host_name, vswitch_name, num_ports=128, mtu=1500):
         """
