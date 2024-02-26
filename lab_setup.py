@@ -35,7 +35,7 @@ def replace_placeholder(setup_config, value):
 
     return updated_setup_config
 
-def setup_vms(vm_manager, pod_config):
+def setup_vms(vm_manager, pod_config, pod_number):
     with ThreadPoolExecutor() as executor:
         futures = []
         for component in pod_config["components"]:
@@ -50,29 +50,32 @@ def setup_vms(vm_manager, pod_config):
             )
             futures.append(clone_future)
         
-        # Optionally, wait for all cloning tasks to complete and handle their results
-        for future in futures:
-            try:
-                result = future.result()  # This will re-raise any exceptions caught in the task
-                # Handle successful cloning result
-                print(result)
-            except Exception as e:
-                # Handle cloning failure
-                print(f"Cloning task failed: {e}")
+        wait_for_futures(futures)
+        futures.clear()
 
-
-def update_vms(vm_manager, pod_config):
-    with ThreadPoolExecutor() as executor:
-        futures = []
         for component in pod_config["components"]:
             # Schedule the VM cloning task
             update_future = executor.submit(
                 vm_manager.update_vm_networks,
                 component["clone_name"],
                 pod_config["folder_name"],
-                component["network_map"]
+                pod_number
             )
             futures.append(update_future)
+        wait_for_futures(futures)
+        futures.clear()
+
+        for component in pod_config["components"]:
+            # Schedule the VM cloning task
+            poweron_future = executor.submit(
+                vm_manager.poweron_vm,
+                component["clone_name"]
+            )
+            futures.append(poweron_future)
+        wait_for_futures(futures)
+        
+
+def wait_for_futures(futures):
         
         # Optionally, wait for all cloning tasks to complete and handle their results
         for future in futures:
@@ -99,8 +102,8 @@ if __name__ == "__main__":
     course_name = "CCSA-R81.20"
     parent_group_name = "cp-ultramagnus"
     parent_folder_name = "cp"
-    start_pod = 54
-    end_pod = 54
+    start_pod = 75
+    end_pod = 75
 
     course_config = get_setup_config(course_name)
 
@@ -161,13 +164,12 @@ if __name__ == "__main__":
 
             # Clone VM
             vm_manager = VmManager(vc)
-            setup_vms(vm_manager, pod_config)
-            update_vms(vm_manager, pod_config)
+            setup_vms(vm_manager, pod_config, pod)
             for component in pod_config["components"]:
                 if component["base_vm"] == "cp-R81.20-vr":
                     vm_manager.update_mac_address(component["clone_name"], 
                                                   "Network adapter 1", 
-                                                  "00:50:56:04:00:" + hex(pod)[2:])
+                                                  "00:50:56:04:00:" + "{:02x}".format(pod))
     
     # Capture the end time with higher precision
     end_time = time.perf_counter()
@@ -179,4 +181,3 @@ if __name__ == "__main__":
     duration_minutes = duration_seconds / 60
 
     print(f"The program took {duration_minutes:.2f} minutes to run.")
-    # 13.40 minutes
