@@ -155,7 +155,7 @@ if __name__ == "__main__":
             network_manager = NetworkManager(vc)
             network_manager.create_vswitch(host_name, pod_config["network"]["switch_name"])
             print(f"vSwitch created on {host_name}")
-            network_manager.create_vm_port_groups(pod_config["network"]["switch_name"],
+            network_manager.create_vm_port_groups(host_name, pod_config["network"]["switch_name"],
                                                   pod_config["network"]["port_groups"])
             network_names = [pg["port_group_name"] for pg in pod_config["network"]["port_groups"]]
             network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
