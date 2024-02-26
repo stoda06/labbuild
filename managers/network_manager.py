@@ -49,7 +49,7 @@ class NetworkManager(VCenter):
                 port_group_spec.policy = vim.host.NetworkPolicy()
 
                 # Schedule the port group creation task
-                future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec, host_name)
+                future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec)
                 futures.append(future)
 
             # Optionally, wait for all tasks to complete and handle their results
