@@ -22,7 +22,7 @@ class NetworkManager(VCenter):
         except Exception as e:
             print(f"Failed to create port group '{port_group_spec.name}': {e}")
     
-    def create_vm_port_groups(self, hostname, switch_name, port_groups):
+    def create_vm_port_groups(self, host_name, switch_name, port_groups):
         """
         Creates multiple virtual machine port groups on a specified standard switch concurrently for a given host.
 
@@ -31,9 +31,9 @@ class NetworkManager(VCenter):
         :param port_groups: A list of dictionaries, each containing port group properties (e.g., name and VLAN ID).
         """
         # Use the get_obj method to fetch the host by its name
-        host = self.get_obj([vim.HostSystem], hostname)
+        host = self.get_obj([vim.HostSystem], host_name)
         if not host:
-            print(f"Failed to retrieve host '{hostname}'.")
+            print(f"Failed to retrieve host '{host_name}'.")
             return
 
         # Access the HostNetworkSystem directly from the retrieved host
@@ -49,7 +49,7 @@ class NetworkManager(VCenter):
                 port_group_spec.policy = vim.host.NetworkPolicy()
 
                 # Schedule the port group creation task
-                future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec, hostname)
+                future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec, host_name)
                 futures.append(future)
 
             # Optionally, wait for all tasks to complete and handle their results
