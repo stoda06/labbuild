@@ -2,7 +2,6 @@ from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from logger.log_config import setup_logger
-from pyVim.task import WaitForTask
 
 class VmManager(VCenter):
 
