@@ -1,7 +1,8 @@
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from logger.log_config import setup_logger
+from pyVim.task import WaitForTask
 
 class VmManager(VCenter):
 
@@ -10,6 +11,7 @@ class VmManager(VCenter):
             raise ValueError("VCenter instance is not connected.")
         self.vcenter = vcenter_instance
         self.connection = vcenter_instance.connection
+        self.logger = setup_logger(__name__)
 
     def create_vm(self, vm_name, resource_pool_name, datastore_name, network_name, num_cpus=1, memory_mb=1024, guest_id='otherGuest'):
         """
@@ -26,7 +28,7 @@ class VmManager(VCenter):
         try:
             resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
             if not resource_pool:
-                print(f"Resource pool '{resource_pool_name}' not found.")
+                self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return
 
             datastore = self.get_obj([vim.Datastore], datastore_name)
@@ -59,9 +61,9 @@ class VmManager(VCenter):
             # Create the VM
             create_vm_task = vm_folder.CreateVM_Task(config=vm_config_spec, pool=resource_pool, host=None)
             self.wait_for_task(create_vm_task)
-            print(f"VM '{vm_name}' created successfully in resource pool '{resource_pool_name}'.")
+            self.logger.info(f"VM '{vm_name}' created successfully in resource pool '{resource_pool_name}'.")
         except Exception as e:
-            print(f"Failed to create VM '{vm_name}': {e}")
+            self.logger.error(f"Failed to create VM '{vm_name}': {e}")
 
     def poweron_vm(self, vm_name):
         
@@ -72,7 +74,7 @@ class VmManager(VCenter):
 
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
-            print(f"VM '{vm_name}' not found.")
+            self.logger.error(f"VM '{vm_name}' not found.")
             return
 
         # Check if the VM is powered off. If so, power it on.
@@ -467,6 +469,27 @@ class VmManager(VCenter):
         print(f"VM '{vm_name}' not found in folder '{folder_name}'.")
         return None
 
+    def create_snapshot(self, vm_name, snapshot_name, description="", memory=False, quiesce=False):
+        """
+        Creates a snapshot of the specified virtual machine.
+
+        :param vm_name: The name of the virtual machine.
+        :param snapshot_name: The name for the new snapshot.
+        :param description: An optional description for the snapshot.
+        :param memory: Whether to include the virtual machine's memory in the snapshot.
+        :param quiesce: Whether to quiesce the file system in the virtual machine.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if vm:
+            try:
+                task = vm.CreateSnapshot_Task(name=snapshot_name, description=description,
+                                              memory=memory, quiesce=quiesce)
+                self.wait_for_task(task)
+                print(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
+            except Exception as e:
+                print(f"Failed to create snapshot for VM '{vm_name}': {e}")
+        else:
+            print(f"VM '{vm_name}' not found.")
 
     
 
