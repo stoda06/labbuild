@@ -1,7 +1,6 @@
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from logger.log_config import setup_logger
 
 class VmManager(VCenter):
 
@@ -10,7 +9,7 @@ class VmManager(VCenter):
             raise ValueError("VCenter instance is not connected.")
         self.vcenter = vcenter_instance
         self.connection = vcenter_instance.connection
-        self.logger = setup_logger(__name__)
+        self.logger = vcenter_instance.logger
 
     def create_vm(self, vm_name, resource_pool_name, datastore_name, network_name, num_cpus=1, memory_mb=1024, guest_id='otherGuest'):
         """
@@ -78,17 +77,17 @@ class VmManager(VCenter):
 
         # Check if the VM is powered off. If so, power it on.
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOff:
-            print(f"VM '{vm_name}' is powered off. Attempting to power on")
+            self.logger.info(f"VM '{vm_name}' is powered off. Attempting to power on")
             power_on_task = vm.PowerOnVM_Task()
             self.wait_for_task(power_on_task)
-            print(f"VM '{vm_name}' powered on successfully.")
+            self.logger.info(f"VM '{vm_name}' powered on successfully.")
 
 
-    def clone_vm(self, template_name, clone_name, resource_pool_name, directory_name, datastore_name=None, power_on=False):
+    def clone_vm(self, base_name, clone_name, resource_pool_name, directory_name, datastore_name=None, power_on=False):
         """
         Clones a VM from an existing template into a specified directory (VM folder).
 
-        :param template_name: The name of the template to clone from.
+        :param base_name: The name of the base VM to clone from.
         :param clone_name: The name for the cloned VM.
         :param resource_pool_name: The name of the resource pool where the cloned VM will be located.
         :param directory_name: The name of the directory (VM folder) where the cloned VM will be placed.
@@ -96,28 +95,28 @@ class VmManager(VCenter):
         :param power_on: Whether to power on the cloned VM after creation.
         """
         try:
-            template_vm = self.get_obj([vim.VirtualMachine], template_name)
-            if not template_vm:
-                print(f"Template '{template_name}' not found.")
+            base_vm = self.get_obj([vim.VirtualMachine], base_name)
+            if not base_vm:
+                self.logger.error(f"Base VM '{base_name}' not found.")
                 return
 
             resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
             if not resource_pool:
-                print(f"Resource pool '{resource_pool_name}' not found.")
+                self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return
 
             vm_folder = self.get_obj([vim.Folder], directory_name)
             if not vm_folder:
-                print(f"VM Folder '{directory_name}' not found.")
+                self.logger.error(f"VM Folder '{directory_name}' not found.")
                 return
 
             if datastore_name:
                 datastore = self.get_obj([vim.Datastore], datastore_name)
                 if not datastore:
-                    print(f"Datastore '{datastore_name}' not found.")
+                    self.logger.error(f"Datastore '{datastore_name}' not found.")
                     return
             else:
-                datastore = template_vm.datastore[0]
+                datastore = base_vm.datastore[0]
 
             clone_spec = vim.vm.CloneSpec()
             clone_spec.location = vim.vm.RelocateSpec()
@@ -125,11 +124,11 @@ class VmManager(VCenter):
             clone_spec.location.datastore = datastore
             clone_spec.powerOn = power_on
 
-            task = template_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+            task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
             self.wait_for_task(task)
-            print(f"VM '{clone_name}' cloned successfully from template '{template_name}' into folder '{directory_name}'.")
+            self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
         except Exception as e:
-            print(f"Failed to clone VM '{clone_name}': {e}")
+            self.logger.error(f"Failed to clone VM '{clone_name}': {e}")
 
     def find_vm_folder_by_name(self, folder_name, starting_folder=None):
         """

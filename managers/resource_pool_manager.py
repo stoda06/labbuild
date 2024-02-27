@@ -9,6 +9,7 @@ class ResourcePoolManager(VCenter):
             raise ValueError("VCenter instance is not connected.")
         self.vcenter = vcenter_instance
         self.connection = vcenter_instance.connection
+        self.logger = vcenter_instance.logger
 
     def create_resource_pool_under_host(self, host_name, rp_name, cpu_allocation, memory_allocation):
         """Creates a new resource pool under the specified host's default resource pool."""

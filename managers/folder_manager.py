@@ -8,6 +8,7 @@ class FolderManager(VCenter):
             raise ValueError("VCenter instance is not connected.")
         self.vcenter = vcenter_instance
         self.connection = vcenter_instance.connection
+        self.logger = vcenter_instance.logger
 
     def create_folder(self, parent_folder_name, new_folder_name):
         """

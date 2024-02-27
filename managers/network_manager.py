@@ -9,6 +9,7 @@ class NetworkManager(VCenter):
             raise ValueError("VCenter instance is not connected.")
         self.vcenter = vcenter_instance
         self.connection = vcenter_instance.connection
+        self.logger = vcenter_instance.logger
     
     def create_port_group(self, host_network_system, switch_name, port_group_spec):
         """

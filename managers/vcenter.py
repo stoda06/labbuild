@@ -1,6 +1,7 @@
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim, vmodl
 from pyVim.task import WaitForTask
+from logger.log_config import setup_logger
 import ssl
 import atexit
 import time
@@ -13,6 +14,7 @@ class VCenter:
         self.password = password
         self.port = port
         self.connection = None
+        self.logger = setup_logger(__name__)
 
     def connect(self):
         """Establishes a secure connection to the vCenter server."""

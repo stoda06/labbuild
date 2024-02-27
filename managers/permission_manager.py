@@ -8,6 +8,7 @@ class PermissionManager(VCenter):
             raise ValueError("VCenter instance is not connected.")
         self.vcenter = vcenter_instance
         self.connection = vcenter_instance.connection
+        self.logger = vcenter_instance.logger
         
     def create_role(self, role_name, privileges):
         """Creates a custom role with a set of privileges."""
