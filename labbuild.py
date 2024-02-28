@@ -78,13 +78,14 @@ def setup_environment(args):
                     deploy_lab,
                     vc,
                     args,
-                    pod_config
+                    pod_config,
+                    pod
                 )
                 futures.append(deploy_futures)
             wait_for_futures(futures)
 
 
-def deploy_lab(vc, args, pod_config):
+def deploy_lab(vc, args, pod_config, pod):
 
     # Create resource pool for the pod.
     logger.info(f"Creating resource pool for pod: {pod_config["group_name"]}")
@@ -106,11 +107,73 @@ def deploy_lab(vc, args, pod_config):
                                                 cpu_allocation, 
                                                 memory_allocation)
     logger.info(f"Resource pool created for {pod_config["group_name"]}.")
-    logger.info(f"Assigning user and role for resource pool {pod_config["group_name"]}.")
+    logger.info(f"Assigning user: {pod_config["user"]} and role: {pod_config["role"]} for resource pool {pod_config["group_name"]}.")
     resource_pool_manager.assign_role_to_resource_pool(pod_config["group_name"], 
                                                        pod_config["domain"]+"\\"+pod_config["user"], 
                                                        pod_config["role"])
+    
     logger.info(f"Creating folder {pod_config["folder_name"]}")
+    parent_folder_name = "cp"
+    folder_manager = FolderManager(vc)
+    folder_manager.create_folder(parent_folder_name, pod_config["folder_name"])
+    logger.info(f"Created folder {pod_config["folder_name"]}")
+    logger.info(f"Assigning user: {pod_config["user"]} and role: {pod_config["role"]} for resource pool {pod_config["folder_name"]}")
+    folder_manager.assign_user_to_folder(pod_config["folder_name"],
+                                         pod_config["domain"]+"\\"+pod_config["user"],
+                                         pod_config["role"])
+    
+    logger.info(f"Creating vswitch {pod_config} on host {args.host}")
+    network_manager = NetworkManager(vc)
+    network_manager.create_vswitch(args.host, pod_config["network"]["switch_name"])
+    logger.info(f"Created vswitch {pod_config} on host {args.host}")
+    logger.info(f"Creating port groups {pod_config["network"]["port_groups"]} on host {pod_config}")
+    network_manager.create_vm_port_groups(args.host, pod_config["network"]["switch_name"],
+                                          pod_config["network"]["port_groups"])
+    logger.info(f"Created port groups {pod_config["network"]["port_groups"]} on host {pod_config}")
+    logger.info(f"Assigning user: {pod_config["user"]} and role: {pod_config["role"]} for networks {pod_config["network"]["port_groups"]}")
+    network_names = [pg["port_group_name"] for pg in pod_config["network"]["port_groups"]]
+    network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
+                                                pod_config["role"], network_names)
+    logger.info(f"Assigned user: {pod_config["user"]} and role: {pod_config["role"]} for networks {pod_config["network"]["port_groups"]}")
+    
+    logger.info(f"Cloning VMs in to {pod_config["folder_name"]}")
+    vm_manager = VmManager(vc)
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for component in pod_config["components"]:
+            # Schedule the VM cloning task
+            logger.info(f"Cloning VM {component["clone_name"]}")
+            clone_future = executor.submit(
+                vm_manager.clone_vm,
+                component["base_vm"], 
+                component["clone_name"], 
+                pod_config["group_name"], 
+                pod_config["folder_name"], 
+                datastore_name="vms"  # Assuming "vms" is a fixed datastore name for all clones
+            )
+            futures.append(clone_future)
+        wait_for_futures(futures)
+        futures.clear()
+
+        for component in pod_config["components"]:
+            logger.info(f"Updating networks for VMs {component["clone_name"]}")
+            # Schedule the VM cloning task
+            update_future = executor.submit(
+                vm_manager.update_vm_networks,
+                component["clone_name"],
+                pod_config["folder_name"],
+                pod
+            )
+            futures.append(update_future)
+        wait_for_futures(futures)
+        futures.clear()
+
+        for component in pod_config["components"]:
+            if component["base_vm"] == "cp-R81.20-vr":
+                vm_manager.update_mac_address(component["clone_name"], 
+                                              "Network adapter 1", 
+                                              "00:50:56:04:00:" + "{:02x}".format(pod))
+
 
 def teardown_lab():
     print("Tearing down lab...")
