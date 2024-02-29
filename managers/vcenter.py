@@ -4,8 +4,6 @@ from pyVim.task import WaitForTask
 from logger.log_config import setup_logger
 import ssl
 import atexit
-import time
-
 
 class VCenter:
     def __init__(self, host, user, password, port=443):
@@ -14,7 +12,7 @@ class VCenter:
         self.password = password
         self.port = port
         self.connection = None
-        self.logger = setup_logger(__name__)
+        self.logger = setup_logger()
 
     def connect(self):
         """Establishes a secure connection to the vCenter server."""
