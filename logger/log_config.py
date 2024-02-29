@@ -2,12 +2,12 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import sys
 
-def setup_logger(name):
+def setup_logger(level=logging.INFO):
     """
     Configures and returns a logger with the specified name.
     """
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)  # Set the default logging level
+    logger = logging.getLogger('labbuild')
+    logger.setLevel(level)  # Set the default logging level
 
     # Check if handlers are already configured (e.g., when importing this function in multiple modules)
     if not logger.handlers:
