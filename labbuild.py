@@ -15,17 +15,14 @@ import os
 load_dotenv()
 
 logger = setup_logger()
-vc_host = "vcenter-appliance-2.rededucation.com"
-vc_user = os.getenv("VC_USER")
-vc_password = os.getenv("VC_PASS")
-vc_port = 443  # Default port for vCenter connection
 
 def load_setup_template(file_path):
     with open(file_path, 'r') as file:
         return json.load(file)
 
 def get_setup_config(setup_name):
-    setup_config = load_setup_template(setup_name)
+    setup_template = load_setup_template('courses/'+ setup_name+'.json')
+    setup_config = setup_template.get(setup_name)
     if setup_config is None:
         logger.error(f"Setup {setup_name} not found.")
         return None
@@ -57,13 +54,17 @@ def wait_for_futures(futures):
 
 
 def setup_environment(args):
+    vc_host = "vcenter-appliance-2.rededucation.com"
+    vc_user = os.getenv("VC_USER")
+    vc_password = os.getenv("VC_PASS")
+    vc_port = 443  # Default port for vCenter connection
     logger.info("Gathering user info.")
     # Add your setup environment logic here
 
     vc = VCenter(vc_host, vc_user, vc_password, vc_port)
     vc.connect()
 
-    course_config = get_setup_config("courses/" + args.course + ".json")
+    course_config = get_setup_config(args.course)
 
     # Capture the start time with higher precision
     start_time = time.perf_counter()
@@ -71,9 +72,8 @@ def setup_environment(args):
     if course_config:
         with ThreadPoolExecutor() as executor:
             futures = []
-            for pod in range(args.start_pod, args.end_pod+1):
+            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                 pod_config = replace_placeholder(course_config, pod)
-
                 deploy_futures = executor.submit(
                     deploy_lab,
                     vc,
@@ -84,11 +84,22 @@ def setup_environment(args):
                 futures.append(deploy_futures)
             wait_for_futures(futures)
 
+    # Capture the end time with higher precision
+    end_time = time.perf_counter()
+
+    # Calculate the duration in seconds
+    duration_seconds = end_time - start_time
+
+    # Convert seconds to minutes
+    duration_minutes = duration_seconds / 60
+
+    logger.info(f"The program took {duration_minutes:.2f} minutes to run.")
+
 
 def deploy_lab(vc, args, pod_config, pod):
 
     # Create resource pool for the pod.
-    logger.info(f"Creating resource pool for pod: {pod_config["group_name"]}")
+    logger.info(f"Creating resource pool for pod: {pod_config['group_name']}")
     resource_pool_manager = ResourcePoolManager(vc)
     cpu_allocation = {
         'limit': -1,
@@ -106,43 +117,42 @@ def deploy_lab(vc, args, pod_config, pod):
                                                pod_config["group_name"], 
                                                 cpu_allocation, 
                                                 memory_allocation)
-    logger.info(f"Resource pool created for {pod_config["group_name"]}.")
-    logger.info(f"Assigning user: {pod_config["user"]} and role: {pod_config["role"]} for resource pool {pod_config["group_name"]}.")
+    logger.info(f"Resource pool created for {pod_config['group_name']}.")
+    logger.info(f"Assigning user: {pod_config['user']} and role: {pod_config['role']} for resource pool {pod_config['group_name']}.")
     resource_pool_manager.assign_role_to_resource_pool(pod_config["group_name"], 
                                                        pod_config["domain"]+"\\"+pod_config["user"], 
                                                        pod_config["role"])
     
-    logger.info(f"Creating folder {pod_config["folder_name"]}")
-    parent_folder_name = "cp"
+    logger.info(f"Creating folder {pod_config['folder_name']}")
     folder_manager = FolderManager(vc)
-    folder_manager.create_folder(parent_folder_name, pod_config["folder_name"])
-    logger.info(f"Created folder {pod_config["folder_name"]}")
-    logger.info(f"Assigning user: {pod_config["user"]} and role: {pod_config["role"]} for resource pool {pod_config["folder_name"]}")
+    folder_manager.create_folder(args.parent_folder, pod_config['folder_name'])
+    logger.info(f"Created folder {pod_config['folder_name']}")
+    logger.info(f"Assigning user: {pod_config['user']} and role: {pod_config['role']} for resource pool {pod_config['folder_name']}")
     folder_manager.assign_user_to_folder(pod_config["folder_name"],
                                          pod_config["domain"]+"\\"+pod_config["user"],
                                          pod_config["role"])
     
     logger.info(f"Creating vswitch {pod_config} on host {args.host}")
     network_manager = NetworkManager(vc)
-    network_manager.create_vswitch(args.host, pod_config["network"]["switch_name"])
+    network_manager.create_vswitch(args.host, pod_config['network']['switch_name'])
     logger.info(f"Created vswitch {pod_config} on host {args.host}")
-    logger.info(f"Creating port groups {pod_config["network"]["port_groups"]} on host {pod_config}")
+    logger.info(f"Creating port groups {pod_config['network']['port_groups']} on host {pod_config}")
     network_manager.create_vm_port_groups(args.host, pod_config["network"]["switch_name"],
                                           pod_config["network"]["port_groups"])
-    logger.info(f"Created port groups {pod_config["network"]["port_groups"]} on host {pod_config}")
-    logger.info(f"Assigning user: {pod_config["user"]} and role: {pod_config["role"]} for networks {pod_config["network"]["port_groups"]}")
+    logger.info(f"Created port groups {pod_config['network']['port_groups']} on host {pod_config}")
+    logger.info(f"Assigning user: {pod_config['user']} and role: {pod_config['role']} for networks {pod_config['network']['port_groups']}")
     network_names = [pg["port_group_name"] for pg in pod_config["network"]["port_groups"]]
     network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
                                                 pod_config["role"], network_names)
-    logger.info(f"Assigned user: {pod_config["user"]} and role: {pod_config["role"]} for networks {pod_config["network"]["port_groups"]}")
+    logger.info(f"Assigned user: {pod_config['user']} and role: {pod_config['role']} for networks {pod_config['network']['port_groups']}")
     
-    logger.info(f"Cloning VMs in to {pod_config["folder_name"]}")
+    logger.info(f"Cloning VMs in to {pod_config['folder_name']}")
     vm_manager = VmManager(vc)
     with ThreadPoolExecutor() as executor:
         futures = []
         for component in pod_config["components"]:
             # Schedule the VM cloning task
-            logger.info(f"Cloning VM {component["clone_name"]}")
+            logger.info(f"Cloning VM {component['clone_name']}")
             clone_future = executor.submit(
                 vm_manager.clone_vm,
                 component["base_vm"], 
@@ -156,7 +166,7 @@ def deploy_lab(vc, args, pod_config, pod):
         futures.clear()
 
         for component in pod_config["components"]:
-            logger.info(f"Updating networks for VMs {component["clone_name"]}")
+            logger.info(f"Updating networks for VMs {component['clone_name']}")
             # Schedule the VM cloning task
             update_future = executor.submit(
                 vm_manager.update_vm_networks,
@@ -165,14 +175,21 @@ def deploy_lab(vc, args, pod_config, pod):
                 pod
             )
             futures.append(update_future)
-        wait_for_futures(futures)
-        futures.clear()
-
-        for component in pod_config["components"]:
             if component["base_vm"] == "cp-R81.20-vr":
                 vm_manager.update_mac_address(component["clone_name"], 
                                               "Network adapter 1", 
                                               "00:50:56:04:00:" + "{:02x}".format(pod))
+        wait_for_futures(futures)
+        futures.clear()
+
+        for component in pod_config["components"]:
+            # Schedule the VM cloning task
+            poweron_future = executor.submit(
+                vm_manager.poweron_vm,
+                component["clone_name"]
+            )
+            futures.append(poweron_future)
+        wait_for_futures(futures)
 
 
 def teardown_lab():
@@ -216,7 +233,7 @@ def main():
 
     # Execute based on switches
     if args.command == 'setup':
-        print(f"Setting up environment with config: {args.verbose}")
+        print(f"Setting up environment with config...")
         setup_environment(args)
         if args.verbose:
             print("Verbose mode enabled.")
