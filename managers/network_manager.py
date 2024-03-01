@@ -201,11 +201,12 @@ class NetworkManager(VCenter):
                 self.logger.warning(f"Port group '{network_name}' not found on host '{host_name}'.")
                 return
 
-            policy = vim.host.NetworkPolicy(security=vim.host.NetworkPolicy.SecurityPolicy(allowPromiscuous=vim.BoolPolicy(value=True)))
-            port_group_spec = vim.host.PortGroupSpec(policy=policy, name=network_name, vswitchName=port_group.spec.vswitchName, operation=vim.host.PortGroupSpec.Operation.edit)
+            port_group_spec = port_group.spec
+            port_group_spec.policy = vim.host.NetworkPolicy()
+            port_group_spec.policy.security = vim.host.NetworkPolicy.SecurityPolicy(allowPromiscuous=True)
 
             try:
-                network_system.UpdatePortGroup(portGroupName=network_name, portGroupSpec=port_group_spec)
+                network_system.UpdatePortGroup(network_name, port_group_spec)
                 self.logger.info(f"Promiscuous mode enabled for port group '{network_name}' on host '{host_name}'.")
             except vmodl.MethodFault as e:
                 self.logger.error(f"Failed to enable promiscuous mode for port group '{network_name}' on host '{host_name}': {e.msg}")
