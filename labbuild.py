@@ -54,7 +54,7 @@ def wait_for_futures(futures):
 
 
 def setup_environment(args):
-    vc_host = "vcenter-appliance-2.rededucation.com"
+    vc_host = args.vcenter
     vc_user = os.getenv("VC_USER")
     vc_password = os.getenv("VC_PASS")
     vc_port = 443  # Default port for vCenter connection
@@ -202,6 +202,7 @@ def main():
 
     # Subparser for the 'setup' command
     setup_parser = subparsers.add_parser('setup', help='Set-up the lab environment')
+    setup_parser.add_argument('--vcenter', required=True, help='Specify the vcenter for conenction.')
     setup_parser.add_argument('--course', required=True, help='Path to the configuration file.')
     setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
