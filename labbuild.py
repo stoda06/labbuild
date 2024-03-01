@@ -135,8 +135,8 @@ def deploy_lab(vc, args, pod_config, pod):
     logger.info(f"Creating vswitch {pod_config} on host {args.host}")
     network_manager = NetworkManager(vc)
     network_manager.create_vswitch(args.host, pod_config['network']['switch_name'])
-    logger.info(f"Created vswitch {pod_config} on host {args.host}")
-    logger.info(f"Creating port groups {pod_config['network']['port_groups']} on host {pod_config}")
+    logger.info(f"Created vswitch {pod_config["network"]["switch_name"]} on host {args.host}")
+    logger.info(f"Creating port groups {pod_config['network']['port_groups']} on host {args.host}")
     network_manager.create_vm_port_groups(args.host, pod_config["network"]["switch_name"],
                                           pod_config["network"]["port_groups"])
     logger.info(f"Created port groups {pod_config['network']['port_groups']} on host {pod_config}")
@@ -145,6 +145,9 @@ def deploy_lab(vc, args, pod_config, pod):
     network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
                                                 pod_config["role"], network_names)
     logger.info(f"Assigned user: {pod_config['user']} and role: {pod_config['role']} for networks {pod_config['network']['port_groups']}")
+    if pod_config['network']['promiscious_mode']:
+        logger.info(f"Enable promiscuous mode for {pod_config['network']['promiscious_mode']}")
+        network_manager.enable_promiscuous_mode(pod_config['network']['promiscious_mode'])
     
     logger.info(f"Cloning VMs in to {pod_config['folder_name']}")
     vm_manager = VmManager(vc)
