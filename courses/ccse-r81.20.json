@@ -182,7 +182,7 @@
                     "vlan_id": 412
                 }
             ],
-            "promiscious_mode": []
+            "promiscious_mode": ["cp-ext-vs{X}-cp","cp-intb-vs{X}-cp"]
         }
  
     }

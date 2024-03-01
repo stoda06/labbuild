@@ -1,0 +1,171 @@
+{
+    "CCHES-R81.20": {
+        "domain": "vcenter.rededucation.com",
+        "user": "labcp-{X}",
+        "role": "labcp-0-role",
+        "group_name": "cp-pod{X}",
+        "folder_name": "cp-pod{X}-folder",
+        "prtg_monitor": "",
+        "prtg_container": "",
+        "components": [
+            {
+                "component_name": "R81.20-vr",
+                "base_vm": "cp-R81.20-vr",
+                "clone_name": "cp-R81-vr-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-rdp",
+                    "Network adapter 2": "cp-ext-vs{X}-cp",
+                    "Network adapter 3": "cp-inta-vs{X}-cp",
+                    "Network adapter 4": "cp-mgt-vs{X}-cp",
+                    "Network adapter 5": "cp-dmz-vs{X}-cp",
+                    "Network adapter 6": "cp-intb-vs{X}-cp",
+                    "Network adapter 7": "cp-ext-b-vs{X}-cp",
+                    "Network adapter 8": "cp-none2-vs{X}-cp",
+                    "Network adapter 9": "cp-ext-b-vs{X}-cp",
+                    "Network adapter 10": "cp-mgmtb-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-Remote-CCHES-R81.20",
+                "base_vm": "A-Remote-CCHES-R81.20",
+                "clone_name": "A-Remote-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-mgmtb-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-SMS-CCHES-R81.20",
+                "base_vm": "A-SMS-CCHES-R81.20",
+                "clone_name": "A-SMS-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-mgt-vs{X}-cp",
+                    "Network adapter 2": "cp-mgt-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-GUI-CCHES-R81.20",
+                "base_vm": "A-GUI-CCHES-R81.20",
+                "clone_name": "A-GUI-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-mgt-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-EPM-02-CCHES-R81.20",
+                "base_vm": "A-EPM-02-CCHES-R81.20",
+                "clone_name": "A-EPM-02-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-mgt-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-LDAP-CCHES-R81.20",
+                "base_vm": "A-LDAP-CCHES-R81.20",
+                "clone_name": "A-LDAP-{X}",
+                "network_map": {
+                    "Network adapter 1": " cp-inta-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-GW-CCHES-R81.20",
+                "base_vm": "A-GW-CCHES-R81.20",
+                "clone_name": "A-GW-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-mgt-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-EPM-CCHES-R81.20",
+                "base_vm": "A-EPM-CCHES-R81.20",
+                "clone_name": "A-EPM-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-mgt-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "A-Host-CCHES-R81.20",
+                "base_vm": "A-Host-CCHES-R81.20",
+                "clone_name": "A-Host-{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-inta-vs{X}-cp",
+                    "Network adapter 2": "cp-none1-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
+                "component_name": "R80-w10",
+                "base_vm": "cp-base-R80-w10",
+                "clone_name": "cp-w10-pod{X}",
+                "network_map": {
+                    "Network adapter 1": "cp-none2-vs{X}-cp"
+                },
+                "prtg_monitor": "",
+                "prtg_container": ""
+            }
+        ],
+        "network": {
+            "switch_name": "vs{X}-cp",
+            "port_groups": [
+                {
+                    "port_group_name": "cp-mgt-vs{X}-cp",
+                    "vlan_id": 401
+                },
+                {
+                    "port_group_name": "cp-inta-vs{X}-cp",
+                    "vlan_id": 402
+                },
+                {
+                    "port_group_name": "cp-dmz-vs{X}-cp",
+                    "vlan_id": 403
+                },
+                {
+                    "port_group_name": "cp-wifi-vs{X}-cp",
+                    "vlan_id": 404
+                },
+                {
+                    "port_group_name": "cp-sync-vs{X}-cp",
+                    "vlan_id": 405
+                },
+                {
+                    "port_group_name": "cp-ext-vs{X}-cp",
+                    "vlan_id": 406
+                },
+                {
+                    "port_group_name": "cp-intb-vs{X}-cp",
+                    "vlan_id": 407
+                },
+                {
+                    "port_group_name": "cp-none1-vs{X}-cp",
+                    "vlan_id": 408
+                },
+                {
+                    "port_group_name": "cp-none2-vs{X}-cp",
+                    "vlan_id": 409
+                },
+                {
+                    "port_group_name": "cp-mgmtb-vs{X}-cp",
+                    "vlan_id": 410
+                }
+            ],
+            "promiscious_mode": []
+        }
+
+    }
+}

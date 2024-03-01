@@ -85,13 +85,13 @@ if __name__ == "__main__":
     parent_rp = "cp-ultramagnus"
     child_rp = "cp-pod56"
 
-    user = "labcp-58"
+    user = "labcp-54"
     role_name = "labcp-0-role"
 
     parent_folder = "cp"
     child_folder = "cp-pod56-folder"
 
-    vswitch = "vs56-cp"
+    vswitch = "vs54-cp"
     host_name = "ultramagnus.rededucation.com"
     port_groups = {
         "cp-mgt-" + vswitch: {"vlan_id": 401},
@@ -134,13 +134,21 @@ if __name__ == "__main__":
 
 
     # Teardown
-    vm_manager = VmManager(vc)
-    vm_manager.delete_folder(child_folder, force=True)
 
-    network_manager = NetworkManager(vc)
-    network_manager.delete_vswitch(host_name, vswitch)
+    for pod in range(10,12):
+        child_folder = f"cp-pod{pod}-folder"
+        vswitch = f"vs{pod}-cp"
+        child_rp = f"cp-pod{pod}"
+        host_name = "ultramagnus.rededucation.com"
 
-    rp_manager = ResourcePoolManager(vc)
-    rp_manager.delete_resource_pool(child_rp)
+
+        vm_manager = VmManager(vc)
+        vm_manager.delete_folder(child_folder, force=True)
+
+
+        rp_manager = ResourcePoolManager(vc)
+        rp_manager.delete_resource_pool(child_rp)
+        network_manager = NetworkManager(vc)
+        network_manager.delete_vswitch(host_name, vswitch)
 
     # Teardown Done

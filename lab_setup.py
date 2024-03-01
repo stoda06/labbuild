@@ -5,9 +5,9 @@ from managers.vm_manager import VmManager
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-import os
 import json
 import time
+import os
 
 load_dotenv()
 
@@ -102,8 +102,8 @@ if __name__ == "__main__":
     course_name = "CCSA-R81.20"
     parent_group_name = "cp-ultramagnus"
     parent_folder_name = "cp"
-    start_pod = 75
-    end_pod = 75
+    start_pod = 76
+    end_pod = 76
 
     course_config = get_setup_config(course_name)
 
