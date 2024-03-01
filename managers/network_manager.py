@@ -1,4 +1,4 @@
-from pyVmomi import vim, vmodl
+from pyVmomi import vim
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -176,3 +176,30 @@ class NetworkManager(VCenter):
             # Processing results
             for future in futures:
                 print(future.result())
+    
+    def enable_promiscuous_mode(self, network_names):
+        """
+        Enables promiscuous mode for a list of port group names using ThreadPoolExecutor for parallel execution.
+
+        :param network_names: A list of port group names to enable promiscuous mode on.
+        """
+        def task(name):
+            portgroup = self.get_obj([vim.dvs.DistributedVirtualPortgroup], name)
+            if portgroup:
+                try:
+                    spec = vim.dvs.DistributedVirtualPortgroup.ConfigSpec()
+                    spec.configVersion = portgroup.config.configVersion
+                    spec.defaultPortConfig = vim.dvs.VmwareDistributedVirtualSwitch.VmwarePortConfigPolicy()
+                    spec.defaultPortConfig.securityPolicy = vim.dvs.VmwareDistributedVirtualSwitch.SecurityPolicy()
+                    spec.defaultPortConfig.securityPolicy.allowPromiscuous = vim.BoolPolicy(value=True)
+                    
+                    reconfig_task = portgroup.ReconfigureDVPortgroup_Task(spec)
+                    self.wait_for_task(reconfig_task)
+                    self.logger.info(f"Promiscuous mode enabled for port group '{name}'.")
+                except Exception as e:
+                    self.logger.error(f"Failed to enable promiscuous mode for port group '{name}': {e}")
+            else:
+                self.logger.warning(f"Port group '{name}' not found.")
+
+        with ThreadPoolExecutor() as executor:
+            executor.map(task, network_names)
