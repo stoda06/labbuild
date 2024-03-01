@@ -135,7 +135,7 @@ def deploy_lab(vc, args, pod_config, pod):
     logger.info(f"Creating vswitch {pod_config} on host {args.host}")
     network_manager = NetworkManager(vc)
     network_manager.create_vswitch(args.host, pod_config['network']['switch_name'])
-    logger.info(f"Created vswitch {pod_config["network"]["switch_name"]} on host {args.host}")
+    logger.info(f"Created vswitch {pod_config['network']['switch_name']} on host {args.host}")
     logger.info(f"Creating port groups {pod_config['network']['port_groups']} on host {args.host}")
     network_manager.create_vm_port_groups(args.host, pod_config["network"]["switch_name"],
                                           pod_config["network"]["port_groups"])
