@@ -177,15 +177,17 @@ class NetworkManager(VCenter):
             for future in futures:
                 print(future.result())
     
-    def enable_promiscuous_mode(self, network_names):
+    def enable_promiscuous_mode(self, switch_name, network_names):
         """
-        Enables promiscuous mode for a list of port group names using ThreadPoolExecutor for parallel execution.
+        Enables promiscuous mode for a list of port group names within a specified switch,
+        using ThreadPoolExecutor for parallel execution.
 
+        :param switch_name: Name of the vSwitch or Distributed Virtual Switch.
         :param network_names: A list of port group names to enable promiscuous mode on.
         """
         def task(name):
             portgroup = self.get_obj([vim.dvs.DistributedVirtualPortgroup], name)
-            if portgroup:
+            if portgroup and portgroup.config.distributedVirtualSwitch.name == switch_name:
                 try:
                     spec = vim.dvs.DistributedVirtualPortgroup.ConfigSpec()
                     spec.configVersion = portgroup.config.configVersion
@@ -195,11 +197,14 @@ class NetworkManager(VCenter):
                     
                     reconfig_task = portgroup.ReconfigureDVPortgroup_Task(spec)
                     self.wait_for_task(reconfig_task)
-                    self.logger.info(f"Promiscuous mode enabled for port group '{name}'.")
+                    self.logger.info(f"Promiscuous mode enabled for port group '{name}' on switch '{switch_name}'.")
                 except Exception as e:
-                    self.logger.error(f"Failed to enable promiscuous mode for port group '{name}': {e}")
+                    self.logger.error(f"Failed to enable promiscuous mode for port group '{name}' on switch '{switch_name}': {e}")
             else:
-                self.logger.warning(f"Port group '{name}' not found.")
+                if not portgroup:
+                    self.logger.warning(f"Port group '{name}' not found.")
+                else:
+                    self.logger.warning(f"Port group '{name}' is not part of switch '{switch_name}'.")
 
         with ThreadPoolExecutor() as executor:
             executor.map(task, network_names)
