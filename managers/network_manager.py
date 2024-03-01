@@ -1,4 +1,4 @@
-from pyVmomi import vim
+from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -177,34 +177,39 @@ class NetworkManager(VCenter):
             for future in futures:
                 print(future.result())
     
-    def enable_promiscuous_mode(self, switch_name, network_names):
+    def enable_promiscuous_mode(self, host_name, network_names):
         """
-        Enables promiscuous mode for a list of port group names within a specified switch,
-        using ThreadPoolExecutor for parallel execution.
+        Enables promiscuous mode for a list of network names on a specified host using ThreadPoolExecutor for parallel execution.
 
-        :param switch_name: Name of the vSwitch or Distributed Virtual Switch.
-        :param network_names: A list of port group names to enable promiscuous mode on.
+        :param host_name: Name of the host where the networks reside.
+        :param network_names: A list of network (port group) names to enable promiscuous mode on.
         """
-        def task(name):
-            portgroup = self.get_obj([vim.dvs.DistributedVirtualPortgroup], name)
-            if portgroup and portgroup.config.distributedVirtualSwitch.name == switch_name:
-                try:
-                    spec = vim.dvs.DistributedVirtualPortgroup.ConfigSpec()
-                    spec.configVersion = portgroup.config.configVersion
-                    spec.defaultPortConfig = vim.dvs.VmwareDistributedVirtualSwitch.VmwarePortConfigPolicy()
-                    spec.defaultPortConfig.securityPolicy = vim.dvs.VmwareDistributedVirtualSwitch.SecurityPolicy()
-                    spec.defaultPortConfig.securityPolicy.allowPromiscuous = vim.BoolPolicy(value=True)
-                    
-                    reconfig_task = portgroup.ReconfigureDVPortgroup_Task(spec)
-                    self.wait_for_task(reconfig_task)
-                    self.logger.info(f"Promiscuous mode enabled for port group '{name}' on switch '{switch_name}'.")
-                except Exception as e:
-                    self.logger.error(f"Failed to enable promiscuous mode for port group '{name}' on switch '{switch_name}': {e}")
-            else:
-                if not portgroup:
-                    self.logger.warning(f"Port group '{name}' not found.")
-                else:
-                    self.logger.warning(f"Port group '{name}' is not part of switch '{switch_name}'.")
+        host = self.get_obj([vim.HostSystem], host_name)
+        if not host:
+            self.logger.error(f"Host '{host_name}' not found.")
+            return
 
+        def task(network_name):
+            network_system = host.configManager.networkSystem
+            port_group = None
+            for pg in network_system.networkConfig.portgroup:
+                if pg.spec.name == network_name:
+                    port_group = pg
+                    break
+
+            if not port_group:
+                self.logger.warning(f"Port group '{network_name}' not found on host '{host_name}'.")
+                return
+
+            policy = vim.host.NetworkPolicy(security=vim.host.NetworkPolicy.SecurityPolicy(allowPromiscuous=vim.BoolPolicy(value=True)))
+            port_group_spec = vim.host.PortGroupSpec(policy=policy, name=network_name, vswitchName=port_group.spec.vswitchName, operation=vim.host.PortGroupSpec.Operation.edit)
+
+            try:
+                network_system.UpdatePortGroup(portGroupName=network_name, portGroupSpec=port_group_spec)
+                self.logger.info(f"Promiscuous mode enabled for port group '{network_name}' on host '{host_name}'.")
+            except vmodl.MethodFault as e:
+                self.logger.error(f"Failed to enable promiscuous mode for port group '{network_name}' on host '{host_name}': {e.msg}")
+
+        # Using ThreadPoolExecutor to enable promiscuous mode concurrently on multiple port groups
         with ThreadPoolExecutor() as executor:
             executor.map(task, network_names)

@@ -147,7 +147,7 @@ def deploy_lab(vc, args, pod_config, pod):
     logger.info(f"Assigned user: {pod_config['user']} and role: {pod_config['role']} for networks {pod_config['network']['port_groups']}")
     if pod_config['network']['promiscious_mode']:
         logger.info(f"Enable promiscuous mode for {pod_config['network']['promiscious_mode']}")
-        network_manager.enable_promiscuous_mode(pod_config['network']['switch_name'], pod_config['network']['promiscious_mode'])
+        network_manager.enable_promiscuous_mode(args.host, pod_config['network']['promiscious_mode'])
     
     logger.info(f"Cloning VMs in to {pod_config['folder_name']}")
     vm_manager = VmManager(vc)
