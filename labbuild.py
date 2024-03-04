@@ -187,6 +187,18 @@ def deploy_lab(vc, args, pod_config, pod):
         wait_for_futures(futures)
         futures.clear()
 
+        logger.info(f"Create snapshot of VMs in the pod {pod}")
+        for component in pod_config["components"]:
+            snapshot_futures = executor.submit(
+                vm_manager.create_snapshot,
+                component["clone_name"],
+                "base",
+                description=f"Snapshot of {component['clone_name']}"
+            )
+            futures.append(snapshot_futures)
+        wait_for_futures(futures)
+        futures.clear()
+
         for component in pod_config["components"]:
             # Schedule the VM cloning task
             poweron_future = executor.submit(
