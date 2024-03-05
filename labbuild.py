@@ -255,6 +255,8 @@ def main():
         setup_environment(args)
         if args.verbose:
             print("Verbose mode enabled.")
+    elif args.command == 'manage':
+        pass
     elif args.command == 'teardown':
         if args.force:
             print("Forcing teardown without confirmation.")
