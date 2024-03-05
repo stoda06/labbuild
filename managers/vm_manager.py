@@ -140,7 +140,7 @@ class VmManager(VCenter):
         """
         if starting_folder is None:
             starting_folder = self.connection.content.rootFolder
-            print(f"Starting folder: {starting_folder}")
+            self.logger.debug(f"Starting folder: {starting_folder}")
         
         return self.search_for_folder(starting_folder, folder_name)
 
@@ -152,7 +152,7 @@ class VmManager(VCenter):
         :param folder_name: The name of the folder to search for.
         :return: The folder if found, None otherwise.
         """
-        print(f"Current folder name: {folder.name}")
+        self.logger.debug(f"Current folder name: {folder.name}")
         if folder.name == folder_name and isinstance(folder, vim.Folder):
             return folder
         for child in folder.childEntity:
@@ -167,9 +167,9 @@ class VmManager(VCenter):
         try:
             vms = self.get_all_objects_by_type(vim.VirtualMachine)
             for vm in vms:
-                print(f"VM Name: {vm.name}, Power State: {vm.runtime.powerState}")
+                self.logger.debug(f"VM Name: {vm.name}, Power State: {vm.runtime.powerState}")
         except Exception as e:
-            print(f"Failed to list VMs: {e}")
+            self.logger.error(f"Failed to list VMs: {e}")
 
     def get_network_adapters(self, vm_name):
         """
@@ -180,7 +180,7 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
-            print(f"VM '{vm_name}' not found.")
+            self.logger.error(f"VM '{vm_name}' not found.")
             return []
 
         network_adapters = []
@@ -200,6 +200,7 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
             raise ValueError(f"VM '{vm_name}' not found.")
         
         # Find the specified network adapter
@@ -214,6 +215,7 @@ class VmManager(VCenter):
                 break
 
         if not nic_spec:
+            self.logger.error(f"Network adapter '{adapter_label}' not found on VM '{vm_name}'.")
             raise ValueError(f"Network adapter '{adapter_label}' not found on VM '{vm_name}'.")
 
         # Apply the configuration change
@@ -221,8 +223,9 @@ class VmManager(VCenter):
         try:
             task = vm.ReconfigVM_Task(config_spec)
             self.wait_for_task(task)
-            print(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'.")
+            self.logger.debug(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'.")
         except vmodl.MethodFault as error:
+            self.logger.error(f"Error updating MAC address: {error.msg}")
             raise Exception(f"Error updating MAC address: {error.msg}")
 
     def delete_vm(self, vm_name):
@@ -233,23 +236,23 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
-            print(f"VM '{vm_name}' not found.")
+            self.logger.error(f"VM '{vm_name}' not found.")
             return
 
         # Check if the VM is powered on. If so, power it off first.
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
-            print(f"VM '{vm_name}' is powered on. Attempting to power off before deletion.")
+            self.logger.warning(f"VM '{vm_name}' is powered on. Attempting to power off before deletion.")
             power_off_task = vm.PowerOffVM_Task()
             self.wait_for_task(power_off_task)
-            print(f"VM '{vm_name}' powered off successfully.")
+            self.logger.debug(f"VM '{vm_name}' powered off successfully.")
 
         # Proceed to delete the VM
         try:
             delete_task = vm.Destroy_Task()
             self.wait_for_task(delete_task)
-            print(f"VM '{vm_name}' deleted successfully.")
+            self.logger.debug(f"VM '{vm_name}' deleted successfully.")
         except Exception as e:
-            print(f"Failed to delete VM '{vm_name}': {e}")
+            self.logger.error(f"Failed to delete VM '{vm_name}': {e}")
 
     def get_vm_max_resources(self, vm_name):
         """
@@ -260,7 +263,7 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
-            print(f"VM '{vm_name}' not found.")
+            self.logger.error(f"VM '{vm_name}' not found.")
             return None
 
         # Maximum allocated CPU (number of cores)
@@ -290,7 +293,7 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
-            print(f"VM '{vm_name}' not found.")
+            self.logger.error(f"VM '{vm_name}' not found.")
             return None
 
         # Current CPU usage (in MHz)
@@ -340,14 +343,16 @@ class VmManager(VCenter):
                         try:
                             future.result()  # wait for power off task to complete
                         except Exception as exc:
-                            print(f'VM {vm.name} power off generated an exception: {exc}')
+                            self.logger.error(f'VM {vm.name} power off generated an exception: {exc}')
 
         try:
             delete_task = folder.Destroy_Task()
             self.wait_for_task(delete_task)
-            return f"Folder '{folder_name}' and its contents were deleted successfully."
+            self.logger.info(f"Folder '{folder_name}' and its contents were deleted successfully.")
+            return None
         except Exception as e:
-            return f"Failed to delete folder '{folder_name}': {str(e)}"
+            self.logger.error(f"Failed to delete folder '{folder_name}': {str(e)}")
+            return None
 
         
     def get_portgroups_for_vswitch(self, host_name, vswitch_name):
@@ -362,31 +367,31 @@ class VmManager(VCenter):
         """
         host = self.get_obj([vim.HostSystem], host_name)
         if not host:
-            print(f"Host '{host_name}' not found.")
+            self.logger.error(f"Host '{host_name}' not found.")
             return None
 
         # Filter port groups for those associated with the specified vSwitch
-        print("Fetching associated port groups")
+        self.logger.info("Fetching associated port groups")
         associated_portgroups = [pg for pg in host.config.network.portgroup if pg.spec.vswitchName == vswitch_name]
-        print("Done")
+        self.logger.info("Done")
 
         if not associated_portgroups:
-            print(f"No port groups found for vSwitch '{vswitch_name}' on host '{host_name}'.")
+            self.logger.error(f"No port groups found for vSwitch '{vswitch_name}' on host '{host_name}'.")
             return None
 
         # Create a dictionary mapping network names to network objects for the host
-        print("Creating Network Dict")
+        self.logger.info("Creating Network Dict")
         network_dict = {network.name: network for network in host.network if vswitch_name in network.name}
         # network_dict = {network.name: network for network in host.network}
-        print("Done")
+        self.logger.info("Done")
 
         # Retrieve the network objects corresponding to the filtered port groups
-        print("Retrieve Network objects")
+        self.logger.info("Retrieve Network objects")
         network_objects = [network_dict.get(pg.spec.name) for pg in associated_portgroups if pg.spec.name in network_dict]
-        print("Done")
+        self.logger.info("Done")
 
         if not network_objects:
-            print(f"No network objects found for port groups on vSwitch '{vswitch_name}'.")
+            self.logger.error(f"No network objects found for port groups on vSwitch '{vswitch_name}'.")
             return None
 
         return network_objects
@@ -402,11 +407,12 @@ class VmManager(VCenter):
         """
         vm = self.get_vm_by_name_and_folder(vm_name, folder_name)
         if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
             raise ValueError(f"VM '{vm_name}' not found.")
 
         # Ensure VM is powered off for changes
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
-            print(f"Powering off VM '{vm_name}' for network update.")
+            self.logger.warning(f"Powering off VM '{vm_name}' for network update.")
             self.wait_for_task(vm.PowerOffVM_Task())
 
         device_changes = []
@@ -437,12 +443,14 @@ class VmManager(VCenter):
                 spec = vim.vm.ConfigSpec(deviceChange=device_changes)
                 task = vm.ReconfigVM_Task(spec=spec)
                 self.wait_for_task(task)
-                print(f"Network interfaces on VM '{vm_name}' updated successfully.")
+                self.logger.info(f"Network interfaces on VM '{vm_name}' updated successfully.")
             else:
-                print("No network interface changes detected or applicable.")
+                self.logger.error("No network interface changes detected or applicable.")
         except vmodl.MethodFault as error:
+            self.logger.error(f"Failed to update network interfaces for VM '{vm_name}': {error.msg}")
             raise Exception(f"Failed to update network interfaces for VM '{vm_name}': {error.msg}")
         except Exception as e:
+            self.logger.error(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
             raise Exception(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
 
 
@@ -458,7 +466,7 @@ class VmManager(VCenter):
         # Find the folder by name
         folder = self.get_obj([vim.Folder], folder_name)
         if not folder:
-            print(f"Folder '{folder_name}' not found.")
+            self.logger.error(f"Folder '{folder_name}' not found.")
             return None
 
         # Search for the VM within the folder's child entities
@@ -470,7 +478,7 @@ class VmManager(VCenter):
                 if vm:
                     return vm
 
-        print(f"VM '{vm_name}' not found in folder '{folder_name}'.")
+        self.logger.error(f"VM '{vm_name}' not found in folder '{folder_name}'.")
         return None
 
     def create_snapshot(self, vm_name, snapshot_name, description="", memory=False, quiesce=False):
@@ -489,11 +497,11 @@ class VmManager(VCenter):
                 task = vm.CreateSnapshot_Task(name=snapshot_name, description=description,
                                               memory=memory, quiesce=quiesce)
                 self.wait_for_task(task)
-                print(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
+                self.logger(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
             except Exception as e:
-                print(f"Failed to create snapshot for VM '{vm_name}': {e}")
+                self.logger.error(f"Failed to create snapshot for VM '{vm_name}': {e}")
         else:
-            print(f"VM '{vm_name}' not found.")
+            self.logger.error(f"VM '{vm_name}' not found.")
 
     
 
