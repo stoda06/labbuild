@@ -164,7 +164,7 @@ def deploy_lab(vc, args, pod_config, pod):
                 component["clone_name"], 
                 pod_config["group_name"], 
                 pod_config["folder_name"], 
-                datastore_name="vms"  # Assuming "vms" is a fixed datastore name for all clones
+                datastore_name=args.datastore  # Assuming "vms" is a fixed datastore name for all clones
             )
             futures.append(clone_future)
         wait_for_futures(futures)
@@ -226,6 +226,7 @@ def main():
     setup_parser.add_argument('--host', required=True, help='Name of the host to create the pods.')
     setup_parser.add_argument('-rp','--parent-resource-pool', required=True, help='Name of the resource pool in which the pods has to be created.')
     setup_parser.add_argument('-fd','--parent-folder', required=True, help='Name of the folder in which the pod folder has to be created.')
+    setup_parser.add_argument('-ds','--datastore', required=False, default="vms", help='Name of the folder in which the pod folder has to be created.')
     setup_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
 
     setup_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
