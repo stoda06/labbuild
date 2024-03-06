@@ -497,7 +497,7 @@ class VmManager(VCenter):
                 task = vm.CreateSnapshot_Task(name=snapshot_name, description=description,
                                               memory=memory, quiesce=quiesce)
                 self.wait_for_task(task)
-                self.logger(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
+                self.logger.info(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
             except Exception as e:
                 self.logger.error(f"Failed to create snapshot for VM '{vm_name}': {e}")
         else:
