@@ -153,7 +153,7 @@ def deploy_lab(vc, args, pod_config, pod):
     
     logger.info(f"Cloning VMs in to {pod_config['folder_name']}")
     vm_manager = VmManager(vc)
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = []
         for component in pod_config["components"]:
             # Schedule the VM cloning task
