@@ -47,10 +47,10 @@ def wait_for_futures(futures):
             try:
                 result = future.result()  # This will re-raise any exceptions caught in the task
                 # Handle successful cloning result
-                print(result)
+                logger.debug(result)
             except Exception as e:
                 # Handle cloning failure
-                print(f"Cloning task failed: {e}")
+                logger.error(f"Cloning task failed: {e}")
 
 
 def setup_environment(args):
@@ -260,3 +260,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    logger
