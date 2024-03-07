@@ -124,7 +124,7 @@
                     "vlan_id": 412
                 }
             ],
-            "promiscious_mode": []
+            "promiscuous_mode": []
         }
 
     }
