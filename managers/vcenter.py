@@ -125,8 +125,8 @@ class VCenter:
         """
         try:
             WaitForTask(task)  # This will block until the task is complete
-            print("Operation completed successfully.")
+            self.logger.debug("Operation completed successfully.")
             return True
         except Exception as e:
-            print(f"Operation failed: {e}")
+            self.logger.error(f"Operation failed: {e}")
             return False

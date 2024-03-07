@@ -16,7 +16,7 @@ class ResourcePoolManager(VCenter):
         try:
             host = self.get_obj([vim.HostSystem], host_name)
             if host is None:
-                print(f"Host '{host_name}' not found.")
+                self.logger.error(f"Host '{host_name}' not found.")
                 return None
 
             # Use the host's default resource pool as the parent
@@ -24,7 +24,7 @@ class ResourcePoolManager(VCenter):
 
             return self.create_resource_pool(parent_rp, rp_name, cpu_allocation, memory_allocation)
         except Exception as e:
-            print(f"Failed to create resource pool under host '{host_name}': {e}")
+            self.logger.error(f"Failed to create resource pool under host '{host_name}': {e}")
             return None
 
     def create_resource_pool(self, parent_resource_pool, rp_name, cpu_allocation, memory_allocation):
@@ -32,7 +32,7 @@ class ResourcePoolManager(VCenter):
         try:
             parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool)
             if parent_rp is None:
-                print(f"Parent Resource pool '{parent_resource_pool} not found.")
+                self.logger.error(f"Parent Resource pool '{parent_resource_pool} not found.")
 
             resource_config_spec = vim.ResourceConfigSpec()
 
@@ -54,17 +54,17 @@ class ResourcePoolManager(VCenter):
             resource_pool = parent_rp.CreateResourcePool(name=rp_name, spec=resource_config_spec)
             
 
-            print(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
+            self.logger.info(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
             return resource_pool
         except Exception as e:
-            print(f"Failed to create resource pool: {e}")
+            self.logger.error(f"Failed to create resource pool: {e}")
             return None
 
     def list_resource_pools(self, parent_resource_pool_name):
         """Lists all resource pools under the specified parent resource pool."""
         parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool_name)
         if parent_rp is None:
-            print(f"Resource pool '{parent_resource_pool_name}' not found.")
+            self.logger.error(f"Resource pool '{parent_resource_pool_name}' not found.")
             return []
         return self._list_rps(parent_rp)
     
@@ -82,15 +82,15 @@ class ResourcePoolManager(VCenter):
         try:
             rp = self.get_obj([vim.ResourcePool], rp_name)
             if rp is None:
-                print(f"Resource pool '{rp_name}' not found.")
+                self.logger.error(f"Resource pool '{rp_name}' not found.")
                 return False
 
             task = rp.Destroy_Task()
             self.wait_for_task(task)
-            print(f"Resource pool '{rp_name}' deleted successfully.")
+            self.logger.info(f"Resource pool '{rp_name}' deleted successfully.")
             return True
         except Exception as e:
-            print(f"Failed to delete resource pool '{rp_name}': {e}")
+            self.logger.error(f"Failed to delete resource pool '{rp_name}': {e}")
             return False
 
     def assign_role_to_resource_pool(self, resource_pool_name, user_name, role_name, propagate=True):
@@ -108,13 +108,13 @@ class ResourcePoolManager(VCenter):
                 break
 
         if role_id is None:
-            print(f"Role '{role_name}' not found.")
+            self.logger.error(f"Role '{role_name}' not found.")
             return
 
         # Find the resource pool by name
         resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
         if resource_pool is None:
-            print(f"Resource pool '{resource_pool_name}' not found.")
+            self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
             return
 
         # Create the permission spec
@@ -128,6 +128,6 @@ class ResourcePoolManager(VCenter):
         # Set the permission on the resource pool
         try:
             self.connection.content.authorizationManager.SetEntityPermissions(entity=resource_pool, permission=[permission])
-            print(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
+            self.logger.debug(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
         except Exception as e:
-            print(f"Failed to assign role to user on resource pool: {e}")
+            self.logger.error(f"Failed to assign role to user on resource pool: {e}")

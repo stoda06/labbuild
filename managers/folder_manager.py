@@ -18,28 +18,30 @@ class FolderManager(VCenter):
         :param new_folder_name: The name of the new folder to be created.
         :return: A message indicating success or failure.
         """
-        # Find the parent folder by name
         parent_folder = self.get_obj([vim.Folder], parent_folder_name)
         if not parent_folder:
-            return f"Parent folder '{parent_folder_name}' not found."
+            self.logger.error(f"Parent folder '{parent_folder_name}' not found.")
+            raise ValueError(f"Parent folder '{parent_folder_name}' not found.")
 
-        # Check if the new folder already exists under the parent folder
         for child in parent_folder.childEntity:
             if isinstance(child, vim.Folder) and child.name == new_folder_name:
-                return f"Folder '{new_folder_name}' already exists under '{parent_folder_name}'."
+                self.logger.info(f"Folder '{new_folder_name}' already exists under '{parent_folder_name}'.")
+                return None
 
-        # Create the new folder
         try:
             new_folder = parent_folder.CreateFolder(name=new_folder_name)
-            print(f"Folder '{new_folder_name}' created successfully under '{parent_folder_name}'.")
+            self.logger.info(f"Folder '{new_folder_name}' created successfully under '{parent_folder_name}'.")
             return new_folder
         except vim.fault.DuplicateName:
-            return f"A folder with the name '{new_folder_name}' already exists."
+            self.logger.error(f"A folder with the name '{new_folder_name}' already exists.")
+            return None
         except vim.fault.InvalidName:
-            return f"The folder name '{new_folder_name}' is invalid."
+            self.logger.error(f"The folder name '{new_folder_name}' is invalid.")
+            return None
         except Exception as e:
-            return f"Failed to create folder '{new_folder_name}': {str(e)}"
-        
+            self.logger.error(f"Failed to create folder '{new_folder_name}': {e}")
+            return None
+
     def assign_user_to_folder(self, folder_name, user_name, role_name, propagate=True):
         """
         Assigns a user to a folder with a specified role.
@@ -49,30 +51,29 @@ class FolderManager(VCenter):
         :param role_name: The name of the role to assign to the user.
         :param propagate: Whether the role should propagate down to child objects.
         """
-        # Find the specified folder
         folder = self.get_obj([vim.Folder], folder_name)
         if not folder:
+            self.logger.error(f"Folder '{folder_name}' not found.")
             raise ValueError(f"Folder '{folder_name}' not found.")
 
-        # Find the specified role
         role_id = self.get_role_id(role_name)
         if role_id is None:
+            self.logger.error(f"Role '{role_name}' not found.")
             raise ValueError(f"Role '{role_name}' not found.")
 
-        # Construct the permission spec
         permission = vim.AuthorizationManager.Permission()
         permission.principal = user_name
         permission.group = False
         permission.roleId = role_id
         permission.propagate = propagate
 
-        # Add the permission to the folder
         try:
             self.connection.content.authorizationManager.SetEntityPermissions(entity=folder, permission=[permission])
-            print(f"Assigned role '{role_name}' to user '{user_name}' on folder '{folder_name}'.")
+            self.logger.info(f"Assigned role '{role_name}' to user '{user_name}' on folder '{folder_name}'.")
         except vmodl.MethodFault as error:
-            raise Exception(f"Failed to assign user to folder: {error.msg}")
-    
+            self.logger.error(f"Failed to assign user to folder: {error.msg}")
+            raise
+
     def get_role_id(self, role_name):
         """
         Retrieve the role ID for a given role name.
@@ -81,4 +82,5 @@ class FolderManager(VCenter):
         for role in role_manager.roleList:
             if role.name == role_name:
                 return role.roleId
+        self.logger.error(f"Role '{role_name}' not found.")
         return None

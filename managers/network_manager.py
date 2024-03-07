@@ -17,11 +17,11 @@ class NetworkManager(VCenter):
         """
         try:
             host_network_system.AddPortGroup(portgrp=port_group_spec)
-            print(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
+            self.logger.debug(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
         except vim.fault.AlreadyExists:
-            print(f"Port group '{port_group_spec.name}' already exists on switch '{switch_name}'. Skipping.")
+            self.logger.warning(f"Port group '{port_group_spec.name}' already exists on switch '{switch_name}'. Skipping.")
         except Exception as e:
-            print(f"Failed to create port group '{port_group_spec.name}': {e}")
+            self.logger.error(f"Failed to create port group '{port_group_spec.name}': {e}")
     
     def create_vm_port_groups(self, host_name, switch_name, port_groups):
         """
@@ -34,7 +34,7 @@ class NetworkManager(VCenter):
         # Use the get_obj method to fetch the host by its name
         host = self.get_obj([vim.HostSystem], host_name)
         if not host:
-            print(f"Failed to retrieve host '{host_name}'.")
+            self.logger.error(f"Failed to retrieve host '{host_name}'.")
             return
 
         # Access the HostNetworkSystem directly from the retrieved host
@@ -58,7 +58,7 @@ class NetworkManager(VCenter):
                 try:
                     future.result()  # This will re-raise any exceptions caught in the task
                 except Exception as e:
-                    print(f"Failed to create one or more port groups: {e}")
+                    self.logger.error(f"Failed to create one or more port groups: {e}")
     
     def create_vswitch(self, host_name, vswitch_name, num_ports=128, mtu=1500):
         """
@@ -72,7 +72,7 @@ class NetworkManager(VCenter):
         try:
             host = self.get_obj([vim.HostSystem], host_name)
             if not host:
-                print(f"Resource pool '{host}' not found.")
+                self.logger.error(f"Resource pool '{host}' not found.")
                 return
 
             network_system = host.configManager.networkSystem
@@ -82,15 +82,15 @@ class NetworkManager(VCenter):
             vswitch_spec.mtu = mtu
 
             network_system.AddVirtualSwitch(vswitchName=vswitch_name, spec=vswitch_spec)
-            print(f"Virtual switch '{vswitch_name}' created successfully on host '{host_name}'.")
+            self.logger.info(f"Virtual switch '{vswitch_name}' created successfully on host '{host_name}'.")
         except vim.fault.AlreadyExists:
-            print(f"Virtual switch '{vswitch_name}' already exists on host '{host_name}'.")
+            self.logger.warning(f"Virtual switch '{vswitch_name}' already exists on host '{host_name}'.")
         except vim.fault.NotFound:
-            print(f"Host '{host_name}' not found.")
+            self.logger.error(f"Host '{host_name}' not found.")
         except vim.fault.ResourceInUse:
-            print(f"Virtual switch '{vswitch_name}' is in use and cannot be created.")
+            self.logger.error(f"Virtual switch '{vswitch_name}' is in use and cannot be created.")
         except Exception as e:
-            print(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
+            self.logger.error(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
 
     def delete_vswitch(self, host_name, vswitch_name):
         """
@@ -103,6 +103,7 @@ class NetworkManager(VCenter):
         host_system = self.get_obj([vim.HostSystem], host_name)
 
         if not host_system:
+            self.logger.error(f"Host '{host_name}' not found.")
             raise ValueError(f"Host '{host_name}' not found.")
 
         # Get the host's network system
@@ -111,17 +112,21 @@ class NetworkManager(VCenter):
         # Check if the vSwitch exists
         vswitch_exists = any(vswitch for vswitch in host_network_system.networkInfo.vswitch if vswitch.name == vswitch_name)
         if not vswitch_exists:
+            self.logger.error(f"vSwitch '{vswitch_name}' not found on host '{host_name}'.")
             raise ValueError(f"vSwitch '{vswitch_name}' not found on host '{host_name}'.")
 
         # Remove the vSwitch
         try:
             host_network_system.RemoveVirtualSwitch(vswitchName=vswitch_name)
-            print(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_name}'.")
+            self.logger.info(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_name}'.")
         except vim.fault.NotFound:
+            self.logger.error(f"vSwitch '{vswitch_name}' could not be found.")
             raise ValueError(f"vSwitch '{vswitch_name}' could not be found.")
         except vim.fault.ResourceInUse:
+            self.logger.error(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
             raise ValueError(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
         except Exception as e:
+            self.logger.error(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
             raise Exception(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
     
     def set_user_role_on_network(self, user_domain_name, role_name, network):
@@ -129,7 +134,8 @@ class NetworkManager(VCenter):
         Helper function to set a user role on a single network.
         """
         if network is None:
-            return "Network not found"
+            self.logger.error("Network not found")
+            return False
         
         # Retrieve the AuthorizationManager and the RoleManager
         auth_manager = self.connection.content.authorizationManager
@@ -143,7 +149,8 @@ class NetworkManager(VCenter):
                 break
         
         if role_id is None:
-            return f"Role '{role_name}' not found."
+            self.logger.error(f"Role '{role_name}' not found.")
+            return False
         
         # Construct the permission spec and apply it
         permission = vim.AuthorizationManager.Permission()
@@ -154,9 +161,11 @@ class NetworkManager(VCenter):
         
         try:
             auth_manager.SetEntityPermissions(entity=network, permission=[permission])
-            return f"Assigned role '{role_name}' to user '{user_domain_name}' on network '{network.name}'."
+            self.logger.info(f"Assigned role '{role_name}' to user '{user_domain_name}' on network '{network.name}'.")
+            return True
         except Exception as e:
-            return f"Failed to assign role to network '{network.name}': {e}"
+            self.logger.error(f"Failed to assign role to network '{network.name}': {e}")
+            return False
     
     def apply_user_role_to_networks(self, user_domain_name, role_name, network_names):
         """
@@ -175,7 +184,13 @@ class NetworkManager(VCenter):
             
             # Processing results
             for future in futures:
-                print(future.result())
+                try:
+                    result = future.result()  # This will re-raise any exceptions caught in the task
+                    # Handle successful cloning result
+                    self.logger.debug(result)
+                except Exception as e:
+                    # Handle cloning failure
+                    self.logger.error(f"Assigning user and role failed: {e}")
     
     def enable_promiscuous_mode(self, host_name, network_names):
         """

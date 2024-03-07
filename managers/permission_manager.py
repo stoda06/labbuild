@@ -15,12 +15,12 @@ class PermissionManager(VCenter):
         try:
             auth_manager = self.connection.content.authorizationManager
             role_id = auth_manager.AddAuthorizationRole(name=role_name, privIds=privileges)
-            print(f"Role '{role_name}' created with ID: {role_id}")
+            self.logger.info(f"Role '{role_name}' created with ID: {role_id}")
             return role_id
         except vmodl.fault.AlreadyExists:
-            print(f"Role '{role_name}' already exists.")
+            self.logger.warning(f"Role '{role_name}' already exists.")
         except Exception as e:
-            print(f"Error creating role '{role_name}': {e}")
+            self.logger.error(f"Error creating role '{role_name}': {e}")
     
     def delete_role(self, role_name):
         """Deletes a custom role."""
@@ -30,11 +30,11 @@ class PermissionManager(VCenter):
             for role in role_list:
                 if role.name == role_name:
                     auth_manager.RemoveAuthorizationRole(roleId=role.roleId, failIfUsed=False)
-                    print(f"Role '{role_name}' deleted.")
+                    self.logger.info(f"Role '{role_name}' deleted.")
                     return
-            print(f"Role '{role_name}' not found.")
+            self.logger.error(f"Role '{role_name}' not found.")
         except Exception as e:
-            print(f"Error deleting role '{role_name}': {e}")
+            self.logger.error(f"Error deleting role '{role_name}': {e}")
 
     def set_entity_permissions(self, entity, user, role_name):
         """Assigns a role to a user or group on a specific entity."""
@@ -54,9 +54,9 @@ class PermissionManager(VCenter):
             )
             
             auth_manager.SetEntityPermissions(entity=entity, permission=[permission])
-            print(f"Permissions set for user '{user}' on entity with role '{role_name}'.")
+            self.logger.debug(f"Permissions set for user '{user}' on entity with role '{role_name}'.")
         except Exception as e:
-            print(f"Error setting permissions for user '{user}': {e}")
+            self.logger.error(f"Error setting permissions for user '{user}': {e}")
 
     def get_role_id_by_name(self, role_name):
         """Helper function to find a role ID by its name."""
@@ -76,7 +76,7 @@ class PermissionManager(VCenter):
         """
         resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
         if resource_pool is None:
-            print(f"Resource pool '{resource_pool_name}' not found.")
+            self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
             return
 
         self.set_entity_permissions(entity=resource_pool, user=user, role_name=role_name)
@@ -91,7 +91,7 @@ class PermissionManager(VCenter):
         """
         folder = self.get_obj([vim.Folder], folder_name)
         if folder is None:
-            print(f"Resource pool '{folder_name}' not found.")
+            self.logger.error(f"Resource pool '{folder_name}' not found.")
             return
 
         self.set_entity_permissions(entity=folder, user=user, role_name=role_name)
