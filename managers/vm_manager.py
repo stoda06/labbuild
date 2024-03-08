@@ -125,6 +125,7 @@ class VmManager(VCenter):
             clone_spec.powerOn = power_on
 
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+            self.logger.info(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
                 self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
             else:
