@@ -128,5 +128,5 @@ class VCenter:
             self.logger.debug("Operation completed successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Operation failed: {e}")
+            self.logger.error(f"Operation failed: {e.msg}")
             return False
