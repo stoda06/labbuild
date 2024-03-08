@@ -1,5 +1,5 @@
 {
-    "CCHES-R81.20": {
+    "cches-r81.20": {
         "domain": "vcenter.rededucation.com",
         "user": "labcp-{X}",
         "role": "labcp-0-role",
@@ -164,7 +164,7 @@
                     "vlan_id": 410
                 }
             ],
-            "promiscious_mode": []
+            "promiscuous_mode": []
         }
 
     }
