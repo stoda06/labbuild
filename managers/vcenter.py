@@ -117,6 +117,19 @@ class VCenter:
         objects = [obj.obj for obj in retrieved_objects]
         return objects
     
+    def extract_error_message(exception):
+        """
+        Extracts the 'msg' attribute from a vSphere API exception, if available.
+        Falls back to the default string representation of the exception otherwise.
+
+        :param exception: The exception object to extract the message from.
+        :return: The extracted message or the full exception string if 'msg' is not available.
+        """
+        try:
+            return exception.msg
+        except AttributeError:
+            return str(exception)
+    
     def wait_for_task(self, task):
         """
         Waits for a vCenter task to finish using the WaitForTask method from pyVim.task.
@@ -128,5 +141,7 @@ class VCenter:
             self.logger.debug("Operation completed successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Operation failed: {e.msg}")
+            self.logger.error(f"Operation failed: {self.extract_error_message(e)}")
             return False
+    
+    
