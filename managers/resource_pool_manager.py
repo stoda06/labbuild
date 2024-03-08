@@ -24,7 +24,7 @@ class ResourcePoolManager(VCenter):
 
             return self.create_resource_pool(parent_rp, rp_name, cpu_allocation, memory_allocation)
         except Exception as e:
-            self.logger.error(f"Failed to create resource pool under host '{host_name}': {e}")
+            self.logger.error(f"Failed to create resource pool under host '{host_name}': {self.extract_error_message(e)}")
             return None
 
     def create_resource_pool(self, parent_resource_pool, rp_name, cpu_allocation, memory_allocation):
@@ -73,7 +73,7 @@ class ResourcePoolManager(VCenter):
             self.logger.info(f"Resource pool '{rp_name}' deleted successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to delete resource pool '{rp_name}': {e}")
+            self.logger.error(f"Failed to delete resource pool '{rp_name}': {self.extract_error_message(e)}")
             return False
 
     def assign_role_to_resource_pool(self, resource_pool_name, user_name, role_name, propagate=True):
@@ -122,4 +122,4 @@ class ResourcePoolManager(VCenter):
             self.connection.content.authorizationManager.SetEntityPermissions(entity=resource_pool, permission=[permission])
             self.logger.info(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
         except Exception as e:
-            self.logger.error(f"Failed to assign role to user on resource pool: {e}")
+            self.logger.error(f"Failed to assign role to user on resource pool: {self.extract_error_message(e)}")
