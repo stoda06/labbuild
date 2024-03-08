@@ -57,7 +57,7 @@ class ResourcePoolManager(VCenter):
             self.logger.info(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
             return resource_pool
         except Exception as e:
-            self.logger.error(f"Failed to create resource pool: {e}")
+            self.logger.error(f"Failed to create resource pool: {self.extract_error_message(e)}")
             return None
 
     def delete_resource_pool(self, rp_name):
