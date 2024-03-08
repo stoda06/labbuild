@@ -147,7 +147,7 @@ def deploy_lab(vc, args, pod_config, pod):
     
     # Start cloning the required VMs simultaneously.
     vm_manager = VmManager(vc)
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=args.thread) as executor:
         futures = []
         for component in pod_config["components"]:
             clone_future = executor.submit(
@@ -219,6 +219,7 @@ def main():
     setup_parser.add_argument('-rp','--parent-resource-pool', required=True, help='Name of the resource pool in which the pods has to be created.')
     setup_parser.add_argument('-fd','--parent-folder', required=True, help='Name of the folder in which the pod folder has to be created.')
     setup_parser.add_argument('-ds','--datastore', required=False, default="vms", help='Name of the folder in which the pod folder has to be created.')
+    setup_parser.add_argument('-t','--thread', type=int, required=False, default=4, help='Number of worker for the cloning process.')
     setup_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
 
     setup_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
