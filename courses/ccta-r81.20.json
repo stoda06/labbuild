@@ -11,6 +11,13 @@
  
         "components": [
             {
+                "component_name": "R81.20-CCSE-vr",
+                "base_vm": "cp-R81.20-CCSE-vr",
+                "clone_name": "cp-R81-vr-{X}",
+                "prtg_monitor": "",
+                "prtg_container": ""
+            },
+            {
                 "component_name": "A-DMZ-CCTA-R81.20",
                 "base_vm": "A-DMZ-CCTA-R81.20",
                 "clone_name": "A-DMZ-{X}",
