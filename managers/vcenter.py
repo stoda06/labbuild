@@ -117,7 +117,7 @@ class VCenter:
         objects = [obj.obj for obj in retrieved_objects]
         return objects
     
-    def extract_error_message(exception):
+    def extract_error_message(self, exception):
         """
         Extracts the 'msg' attribute from a vSphere API exception, if available.
         Falls back to the default string representation of the exception otherwise.
