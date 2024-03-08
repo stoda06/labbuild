@@ -120,6 +120,6 @@ class ResourcePoolManager(VCenter):
         # Set the permission on the resource pool
         try:
             self.connection.content.authorizationManager.SetEntityPermissions(entity=resource_pool, permission=[permission])
-            self.logger.debug(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
+            self.logger.info(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
         except Exception as e:
             self.logger.error(f"Failed to assign role to user on resource pool: {e}")
