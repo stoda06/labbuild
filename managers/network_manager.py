@@ -129,7 +129,7 @@ class NetworkManager(VCenter):
             self.logger.error(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
             raise Exception(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
     
-    def set_user_role_on_network(self, user_domain_name, role_name, network):
+    def set_user_role_on_network(self, user_domain_name, role_name, network, propagate=True):
         """
         Helper function to set a user role on a single network.
         """
@@ -140,6 +140,15 @@ class NetworkManager(VCenter):
         # Retrieve the AuthorizationManager and the RoleManager
         auth_manager = self.connection.content.authorizationManager
         role_list = auth_manager.roleList
+
+        # Retrieve current permissions of the folder
+        current_permissions = self.connection.content.authorizationManager.RetrieveEntityPermissions(entity=network, inherited=False)
+
+        # Check if the user already has the specified role assigned
+        for perm in current_permissions:
+            if perm.principal == user_domain_name and perm.roleId == role_id and perm.propagate == propagate:
+                self.logger.info(f"User '{user_domain_name}' already has role '{role_name}' on network '{network.name}' with identical propagation setting.")
+                return  # Skip the assignment
         
         # Find the specified role ID
         role_id = None
@@ -157,7 +166,7 @@ class NetworkManager(VCenter):
         permission.principal = user_domain_name
         permission.group = False
         permission.roleId = role_id
-        permission.propagate = True
+        permission.propagate = propagate
         
         try:
             auth_manager.SetEntityPermissions(entity=network, permission=[permission])

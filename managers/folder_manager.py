@@ -61,12 +61,22 @@ class FolderManager(VCenter):
             self.logger.error(f"Role '{role_name}' not found.")
             raise ValueError(f"Role '{role_name}' not found.")
 
+        # Retrieve current permissions of the folder
+        current_permissions = self.connection.content.authorizationManager.RetrieveEntityPermissions(entity=folder, inherited=False)
+
+        # Check if the user already has the specified role assigned
+        for perm in current_permissions:
+            if perm.principal == user_name and perm.roleId == role_id and perm.propagate == propagate:
+                self.logger.info(f"User '{user_name}' already has role '{role_name}' on folder '{folder_name}' with identical propagation setting.")
+                return  # Skip the assignment
+
         permission = vim.AuthorizationManager.Permission()
         permission.principal = user_name
         permission.group = False
         permission.roleId = role_id
         permission.propagate = propagate
 
+        # Assign the permission to the folder if not already assigned
         try:
             self.connection.content.authorizationManager.SetEntityPermissions(entity=folder, permission=[permission])
             self.logger.info(f"Assigned role '{role_name}' to user '{user_name}' on folder '{folder_name}'.")

@@ -60,23 +60,6 @@ class ResourcePoolManager(VCenter):
             self.logger.error(f"Failed to create resource pool: {e}")
             return None
 
-    def list_resource_pools(self, parent_resource_pool_name):
-        """Lists all resource pools under the specified parent resource pool."""
-        parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool_name)
-        if parent_rp is None:
-            self.logger.error(f"Resource pool '{parent_resource_pool_name}' not found.")
-            return []
-        return self._list_rps(parent_rp)
-    
-    def _list_rps(self, resource_pool, rps=None):
-        """Recursively lists all resource pools starting from a given resource pool."""
-        if rps is None:
-            rps = []
-        rps.append(resource_pool.name)
-        for rp in resource_pool.resourcePool:
-            self._list_rps(rp, rps)
-        return rps
-    
     def delete_resource_pool(self, rp_name):
         """Deletes the specified resource pool."""
         try:
@@ -116,6 +99,15 @@ class ResourcePoolManager(VCenter):
         if resource_pool is None:
             self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
             return
+        
+        # Retrieve current permissions of the folder
+        current_permissions = self.connection.content.authorizationManager.RetrieveEntityPermissions(entity=resource_pool, inherited=False)
+
+        # Check if the user already has the specified role assigned
+        for perm in current_permissions:
+            if perm.principal == user_name and perm.roleId == role_id and perm.propagate == propagate:
+                self.logger.info(f"User '{user_name}' already has role '{role_name}' on resource pool '{resource_pool_name}' with identical propagation setting.")
+                return  # Skip the assignment
 
         # Create the permission spec
         permission = vim.AuthorizationManager.Permission(
