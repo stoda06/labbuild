@@ -172,7 +172,7 @@ def deploy_lab(vc, args, pod_config, pod):
             )
             futures.append(update_future)
             # Update MAC address on the VR with the pod number with HEX base.
-            if component["base_vm"] == "cp-R81.20-vr":
+            if "cp-R81-vr" in component["clone_name"]:
                 vm_manager.update_mac_address(component["clone_name"], 
                                               "Network adapter 1", 
                                               "00:50:56:04:00:" + "{:02x}".format(pod))
