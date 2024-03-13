@@ -75,56 +75,57 @@
             }
 
         ],
-        "network": {
-            "switch_name": "vs{X}-cp",
-            "port_groups": [
-                {
-                    "port_group_name": "cp-mgt-vs{X}-cp",
-                    "vlan_id": 401
-                },
-                {
-                    "port_group_name": "cp-inta-vs{X}-cp",
-                    "vlan_id": 402
-                },
-                {
-                    "port_group_name": "cp-dmz-vs{X}-cp",
-                    "vlan_id": 403
-                },
-                {
-                    "port_group_name": "cp-wifi-vs{X}-cp",
-                    "vlan_id": 404
-                },
-                {
-                    "port_group_name": "cp-sync-vs{X}-cp",
-                    "vlan_id": 405
-                },
-                {
-                    "port_group_name": "cp-ext-vs{X}-cp",
-                    "vlan_id": 406
-                },
-                {
-                    "port_group_name": "cp-intb-vs{X}-cp",
-                    "vlan_id": 407
-                },
-                {
-                    "port_group_name": "cp-none1-vs{X}-cp",
-                    "vlan_id": 408
-                },
-                {
-                    "port_group_name": "cp-none2-vs{X}-cp",
-                    "vlan_id": 409
-                },
-                {
-                    "port_group_name": "cp-mgmtb-vs{X}-cp",
-                    "vlan_id": 410
-                },
-                {
-                    "port_group_name": "cp-ext-b-vs{X}-cp",
-                    "vlan_id": 411
-                }
-            ],
-            "promiscuous_mode": []
-        }
- 
+        "network": [
+            {
+                "switch_name": "vs{X}-cp",
+                "port_groups": [
+                    {
+                        "port_group_name": "cp-mgt-vs{X}-cp",
+                        "vlan_id": 401
+                    },
+                    {
+                        "port_group_name": "cp-inta-vs{X}-cp",
+                        "vlan_id": 402
+                    },
+                    {
+                        "port_group_name": "cp-dmz-vs{X}-cp",
+                        "vlan_id": 403
+                    },
+                    {
+                        "port_group_name": "cp-wifi-vs{X}-cp",
+                        "vlan_id": 404
+                    },
+                    {
+                        "port_group_name": "cp-sync-vs{X}-cp",
+                        "vlan_id": 405
+                    },
+                    {
+                        "port_group_name": "cp-ext-vs{X}-cp",
+                        "vlan_id": 406
+                    },
+                    {
+                        "port_group_name": "cp-intb-vs{X}-cp",
+                        "vlan_id": 407
+                    },
+                    {
+                        "port_group_name": "cp-none1-vs{X}-cp",
+                        "vlan_id": 408
+                    },
+                    {
+                        "port_group_name": "cp-none2-vs{X}-cp",
+                        "vlan_id": 409
+                    },
+                    {
+                        "port_group_name": "cp-mgmtb-vs{X}-cp",
+                        "vlan_id": 410
+                    },
+                    {
+                        "port_group_name": "cp-ext-b-vs{X}-cp",
+                        "vlan_id": 411
+                    }
+                ],
+                "promiscuous_mode": []
+            }
+        ]
     }
 }
