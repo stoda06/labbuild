@@ -41,7 +41,7 @@
             {
                 "component_name": "A-GW-CCVS-R81.10",
                 "base_vm": "A-GW-CCVS-R81.10",
-                "clone_name": "A-Host-{X}",
+                "clone_name": "A-GW-{X}",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
