@@ -133,17 +133,17 @@ def deploy_lab(vc, args, pod_config, pod):
     
     # Create a vSwitch
     network_manager = NetworkManager(vc)
-    network_manager.create_vswitch(host, pod_config['network']['switch_name'])
-    # Create necessary port groups/networks.
-    network_manager.create_vm_port_groups(host, pod_config["network"]["switch_name"],
-                                          pod_config["network"]["port_groups"])
-    # Assign user and role to created port groups/networks.
-    network_names = [pg["port_group_name"] for pg in pod_config["network"]["port_groups"]]
-    network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
-                                                pod_config["role"], network_names)
-    # Check if any of the created networks need to be set to promisci
-    if pod_config['network']['promiscuous_mode']:
-        network_manager.enable_promiscuous_mode(host, pod_config['network']['promiscuous_mode'])
+    for network in pod_config['network']:
+        network_manager.create_vswitch(host, network['switch_name'])
+        # Create necessary port groups/networks.
+        network_manager.create_vm_port_groups(host, network["switch_name"], network["port_groups"])
+        # Assign user and role to created port groups/networks.
+        network_names = [pg["port_group_name"] for pg in network["port_groups"]]
+        network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
+                                                    pod_config["role"], network_names)
+        # Check if any of the created networks need to be set to promisci
+        if network['promiscuous_mode']:
+            network_manager.enable_promiscuous_mode(host, network['promiscuous_mode'])
     
     # Start cloning the required VMs simultaneously.
     vm_manager = VmManager(vc)
