@@ -131,7 +131,7 @@ def deploy_lab(vc, args, pod_config, pod):
                                          pod_config["domain"]+"\\"+pod_config["user"],
                                          pod_config["role"])
     
-    # Create a vSwitch
+    # Create vSwitches
     network_manager = NetworkManager(vc)
     for network in pod_config['network']:
         network_manager.create_vswitch(host, network['switch_name'])
@@ -172,7 +172,7 @@ def deploy_lab(vc, args, pod_config, pod):
             )
             futures.append(update_future)
             # Update MAC address on the VR with the pod number with HEX base.
-            if "cp-R81-vr" in component["clone_name"]:
+            if "cp-R81-vr" in component["clone_name"] or "CP-VR-CCVS-R81.10" in component["clone_name"]:
                 vm_manager.update_mac_address(component["clone_name"], 
                                               "Network adapter 1", 
                                               "00:50:56:04:00:" + "{:02x}".format(pod))
