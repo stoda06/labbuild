@@ -193,6 +193,9 @@ def deploy_lab(vc, args, pod_config, pod):
 
         for component in pod_config["components"]:
             # Schedule the VM cloning task
+            if "state" in component:
+                if "poweroff" in component["state"]:
+                    continue
             poweron_future = executor.submit(
                 vm_manager.poweron_vm,
                 component["clone_name"]

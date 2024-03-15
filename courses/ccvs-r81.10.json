@@ -28,6 +28,7 @@
                 "component_name": "A-Guest-CCVS-R81.10",
                 "base_vm": "A-Guest-CCVS-R81.10",
                 "clone_name": "A-Guest-{X}",
+                "state": "poweroff",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
@@ -70,6 +71,7 @@
                 "component_name": "A-VSX-01-CCVS-R81.10",
                 "base_vm": "A-VSX-01-CCVS-R81.10",
                 "clone_name": "A-VSX-01-{X}",
+                "state": "poweroff",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
@@ -77,6 +79,7 @@
                 "component_name": "A-VSX-02-CCVS-R81.10",
                 "base_vm": "A-VSX-02-CCVS-R81.10",
                 "clone_name": "A-VSX-02-{X}",
+                "state": "poweroff",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
@@ -84,6 +87,7 @@
                 "component_name": "A-VSX-03-CCVS-R81.10",
                 "base_vm": "A-VSX-03-CCVS-R81.10",
                 "clone_name": "A-VSX-03-{X}",
+                "state": "poweroff",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
@@ -97,7 +101,7 @@
             {
                 "component_name": "CP-W10-CCVS-R81.10",
                 "base_vm": "CP-W10-CCVS-R81.10",
-                "clone_name": "cp-pod{X}",
+                "clone_name": "cp-w10-pod{X}",
                 "prtg_monitor": "",
                 "prtg_container": ""
             }
