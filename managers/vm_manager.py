@@ -505,10 +505,46 @@ class VmManager(VCenter):
                 self.logger.error(f"Failed to create snapshot for VM '{vm_name}': {e}")
         else:
             self.logger.error(f"VM '{vm_name}' not found.")
-
     
+    def snapshot_exists(self, vm_name, snapshot_name):
+        """
+        Checks if a snapshot with the given name exists on the specified VM.
 
+        :param vm: vim.VirtualMachine object
+            The VM to check for the snapshot.
+        :param snapshot_name: str
+            The name of the snapshot to search for.
 
+        :return: bool
+            True if the snapshot exists, False otherwise.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return None
+        
+        def _search_snapshot_tree(snapshot_tree):
+            """
+            Recursively search through the snapshot tree for a snapshot with the given name.
+
+            :param snapshot_tree: list
+                A list of snapshot tree nodes to search through.
+
+            :return: bool
+                True if the snapshot exists, False otherwise.
+            """
+            for snapshot in snapshot_tree:
+                if snapshot.name == snapshot_name:
+                    return True
+                if snapshot.childSnapshotList:
+                    if _search_snapshot_tree(snapshot.childSnapshotList):
+                        return True
+            return False
+
+        if vm.snapshot is None:
+            return False
+
+        return _search_snapshot_tree(vm.snapshot.rootSnapshotList)
 
     
 
