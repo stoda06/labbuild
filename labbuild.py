@@ -2,6 +2,7 @@ from managers.resource_pool_manager import ResourcePoolManager
 from managers.folder_manager import FolderManager
 from managers.network_manager import NetworkManager
 from managers.vm_manager import VmManager
+from managers.host_manager import HostManager
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ import logging
 import argparse
 import json
 import time
+import sys
 import os
 
 load_dotenv()
@@ -98,7 +100,13 @@ def setup_environment(args):
 
 def deploy_lab(vc, args, pod_config, pod):
 
+    host_manager = HostManager(vc)
     host = args.host + ".rededucation.com"
+    try:
+        host_manager.get_host(host)
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        sys.exit(1)
 
     # Create resource pool for the pod.
     resource_pool_manager = ResourcePoolManager(vc)
@@ -114,10 +122,14 @@ def deploy_lab(vc, args, pod_config, pod):
         'expandable_reservation': True,
         'shares': 163840
     }
-    resource_pool_manager.create_resource_pool(args.parent_resource_pool, 
-                                               pod_config["group_name"], 
-                                                cpu_allocation, 
-                                                memory_allocation)
+    try:
+        resource_pool_manager.create_resource_pool(args.parent_resource_pool, 
+                                                pod_config["group_name"], 
+                                                    cpu_allocation, 
+                                                    memory_allocation)
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        sys.exit(1)
     # Assign user and role to the created resource pool.
     resource_pool_manager.assign_role_to_resource_pool(pod_config["group_name"], 
                                                        pod_config["domain"]+"\\"+pod_config["user"], 
