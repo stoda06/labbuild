@@ -93,8 +93,7 @@ def setup_environment(args):
 def deploy_lab(args, pod_config, pod):
 
     try:
-        host_name = args.host
-        host_details = get_host_by_name(host_name)
+        host_details = get_host_by_name(args.host)
 
         if host_details:
             logger.info(f"Host Details: Name - {host_details.fqdn}, Vcenter - {host_details.vcenter}")
