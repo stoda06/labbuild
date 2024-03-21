@@ -93,7 +93,7 @@ def setup_environment(args):
 def deploy_lab(args, pod_config, pod):
 
     try:
-        host_name = input("Enter the host name: ")
+        host_name = args.host
         host_details = get_host_by_name(host_name)
 
         if host_details:
