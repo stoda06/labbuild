@@ -4,6 +4,7 @@ from managers.network_manager import NetworkManager
 from managers.vm_manager import VmManager
 from managers.host_manager import HostManager
 from managers.vcenter import VCenter
+from hosts.host import get_host_by_name
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from logger.log_config import setup_logger
@@ -56,15 +57,7 @@ def wait_for_futures(futures):
 
 
 def setup_environment(args):
-    vc_host = args.vcenter
-    vc_user = os.getenv("VC_USER")
-    vc_password = os.getenv("VC_PASS")
-    vc_port = 443  # Default port for vCenter connection
-    logger.info("Gathering user info.")
-    # Add your setup environment logic here
-
-    vc = VCenter(vc_host, vc_user, vc_password, vc_port)
-    vc.connect()
+    
 
     course_config = get_setup_config(args.course)
 
@@ -78,7 +71,6 @@ def setup_environment(args):
                 pod_config = replace_placeholder(course_config, pod)
                 deploy_futures = executor.submit(
                     deploy_lab,
-                    vc,
                     args,
                     pod_config,
                     pod
@@ -98,10 +90,32 @@ def setup_environment(args):
     logger.info(f"The program took {duration_minutes:.2f} minutes to run.")
 
 
-def deploy_lab(vc, args, pod_config, pod):
+def deploy_lab(args, pod_config, pod):
+
+    try:
+        host_name = input("Enter the host name: ")
+        host_details = get_host_by_name(host_name)
+
+        if host_details:
+            logger.info(f"Host Details: Name - {host_details.fqdn}, Vcenter - {host_details.vcenter}")
+        else:
+            logger.error("Host not found. Please ensure you've entered the correct host name.")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        sys.exit(1)
+
+    vc_host = host_details.vcenter
+    vc_user = os.getenv("VC_USER")
+    vc_password = os.getenv("VC_PASS")
+    vc_port = 443  # Default port for vCenter connection
+    logger.info("Gathering user info.")
+    # Add your setup environment logic here
+
+    vc = VCenter(vc_host, vc_user, vc_password, vc_port)
+    vc.connect()
 
     host_manager = HostManager(vc)
-    host = args.host + ".rededucation.com"
+    host = host_details.fqdn
     try:
         host_manager.get_host(host)
     except Exception as e:
@@ -124,9 +138,9 @@ def deploy_lab(vc, args, pod_config, pod):
     }
     try:
         resource_pool_manager.create_resource_pool(args.parent_resource_pool, 
-                                                pod_config["group_name"], 
-                                                    cpu_allocation, 
-                                                    memory_allocation)
+                                                pod_config["group_name"],
+                                                cpu_allocation, 
+                                                memory_allocation)
     except Exception as e:
         logger.error(f"An error occurred: {e}")
         sys.exit(1)
@@ -228,7 +242,6 @@ def main():
 
     # Subparser for the 'setup' command
     setup_parser = subparsers.add_parser('setup', help='Set-up the lab environment')
-    setup_parser.add_argument('--vcenter', required=True, help='Specify the vcenter for conenction.')
     setup_parser.add_argument('--course', required=True, help='Path to the configuration file.')
     setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
@@ -237,7 +250,9 @@ def main():
     setup_parser.add_argument('-fd','--parent-folder', required=True, help='Name of the folder in which the pod folder has to be created.')
     setup_parser.add_argument('-ds','--datastore', required=False, default="vms", help='Name of the folder in which the pod folder has to be created.')
     setup_parser.add_argument('-t','--thread', type=int, required=False, default=4, help='Number of worker for the cloning process.')
+    setup_parser.add_argument('-r','--re-build', action='store_true', help='Enable re-build to clear any existing resources for the given build and proceed with the build')
     setup_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
+    setup_parser.add_argument('-q','--quiet', action='store_true', help='Suppress output to display only warnings or errors')
 
     setup_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
     setup_parser.add_argument('-cs','--create-snapshot', required=True, help='Name of the snapshot.')
