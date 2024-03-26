@@ -328,10 +328,12 @@ class VmManager(VCenter):
         """
         folder = self.get_obj([vim.Folder], folder_name)
         if not folder:
-            return f"Folder '{folder_name}' not found."
+            self.logger.error(f"Folder '{folder_name}' not found.")
+            return None
         
         if folder.childEntity and not force:
-            return f"Folder '{folder_name}' is not empty. Cannot delete without enabling the force option."
+            self.logger.error(f"Folder '{folder_name}' is not empty. Cannot delete without enabling the force option.")
+            return None
 
         if force and folder.childEntity:
             # Filter for VMs only if we need to force delete
