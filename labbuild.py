@@ -114,6 +114,11 @@ def deploy_lab(args, pod_config, pod):
     vc.connect()
 
     host_manager = HostManager(vc)
+    resource_pool_manager = ResourcePoolManager(vc)
+    folder_manager = FolderManager(vc)
+    network_manager = NetworkManager(vc)
+    vm_manager = VmManager(vc)
+
     host = host_details.fqdn
     try:
         host_manager.get_host(host)
@@ -121,8 +126,13 @@ def deploy_lab(args, pod_config, pod):
         logger.error(f"An error occurred: {e}")
         sys.exit(1)
 
+    if args.re_build:
+        
+        vm_manager.delete_folder(pod_config["folder_name"], force=True)
+        network_manager.delete_vswitch(host_details.fqdn, pod_config["network"]["switch_name"])
+        resource_pool_manager.delete_resource_pool(pod_config["group_name"])
+
     # Create resource pool for the pod.
-    resource_pool_manager = ResourcePoolManager(vc)
     cpu_allocation = {
         'limit': -1,
         'reservation': 0,
@@ -149,7 +159,6 @@ def deploy_lab(args, pod_config, pod):
                                                        pod_config["role"])
     
     # Create pod folder
-    folder_manager = FolderManager(vc)
     folder_manager.create_folder(args.parent_folder, pod_config['folder_name'])
     # Assign user and role to the created folder.
     folder_manager.assign_user_to_folder(pod_config["folder_name"],
@@ -157,7 +166,6 @@ def deploy_lab(args, pod_config, pod):
                                          pod_config["role"])
     
     # Create vSwitches
-    network_manager = NetworkManager(vc)
     for network in pod_config['network']:
         network_manager.create_vswitch(host, network['switch_name'])
         # Create necessary port groups/networks.
@@ -171,7 +179,6 @@ def deploy_lab(args, pod_config, pod):
             network_manager.enable_promiscuous_mode(host, network['promiscuous_mode'])
     
     # Start cloning the required VMs simultaneously.
-    vm_manager = VmManager(vc)
     with ThreadPoolExecutor(max_workers=args.thread) as executor:
         futures = []
         for component in pod_config["components"]:
