@@ -146,7 +146,7 @@ def deploy_lab(args, pod_config, pod):
         'shares': 163840
     }
     try:
-        resource_pool_manager.create_resource_pool(args.parent_resource_pool, 
+        resource_pool_manager.create_resource_pool(host_details.resource_pool, 
                                                 pod_config["group_name"],
                                                 cpu_allocation, 
                                                 memory_allocation)
@@ -159,7 +159,7 @@ def deploy_lab(args, pod_config, pod):
                                                        pod_config["role"])
     
     # Create pod folder
-    folder_manager.create_folder(args.parent_folder, pod_config['folder_name'])
+    folder_manager.create_folder(host_details.folder, pod_config['folder_name'])
     # Assign user and role to the created folder.
     folder_manager.assign_user_to_folder(pod_config["folder_name"],
                                          pod_config["domain"]+"\\"+pod_config["user"],
@@ -252,8 +252,6 @@ def main():
     setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
     setup_parser.add_argument('--host', required=True, help='Name of the host to create the pods.')
-    setup_parser.add_argument('-rp','--parent-resource-pool', required=True, help='Name of the resource pool in which the pods has to be created.')
-    setup_parser.add_argument('-fd','--parent-folder', required=True, help='Name of the folder in which the pod folder has to be created.')
     setup_parser.add_argument('-ds','--datastore', required=False, default="vms", help='Name of the folder in which the pod folder has to be created.')
     setup_parser.add_argument('-t','--thread', type=int, required=False, default=4, help='Number of worker for the cloning process.')
     setup_parser.add_argument('-r','--re-build', action='store_true', help='Enable re-build to clear any existing resources for the given build and proceed with the build')
