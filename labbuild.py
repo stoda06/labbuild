@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.folder_manager import FolderManager
 from managers.network_manager import NetworkManager
