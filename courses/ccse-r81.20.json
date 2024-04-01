@@ -70,6 +70,7 @@
                 "component_name": "A-Remote-R81.20-CCSE",
                 "base_vm": "A-Remote-R81.20-CCSE",
                 "clone_name": "A-Remote-{X}",
+                "state": "poweroff",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
@@ -112,6 +113,7 @@
                 "component_name": "C-GW-CCSE-R81.20",
                 "base_vm": "C-GW-CCSE-R81.20",
                 "clone_name": "C-GW-{X}",
+                "state": "poweroff",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
@@ -119,6 +121,7 @@
                 "component_name": "C-Host-CCSE-R81.20",
                 "base_vm": "C-Host-CCSE-R81.20",
                 "clone_name": "C-Host-{X}",
+                "state": "poweroff",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
