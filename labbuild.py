@@ -129,7 +129,8 @@ def deploy_lab(args, pod_config, pod):
     if args.re_build:
         
         vm_manager.delete_folder(pod_config["folder_name"], force=True)
-        network_manager.delete_vswitch(host_details.fqdn, pod_config["network"]["switch_name"])
+        for network in pod_config['network']:
+            network_manager.delete_vswitch(host_details.fqdn, network['switch_name'])
         resource_pool_manager.delete_resource_pool(pod_config["group_name"])
 
     # Create resource pool for the pod.
