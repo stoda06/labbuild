@@ -11,58 +11,6 @@ class VmManager(VCenter):
         self.connection = vcenter_instance.connection
         self.logger = vcenter_instance.logger
 
-    def create_vm(self, vm_name, resource_pool_name, datastore_name, network_name, num_cpus=1, memory_mb=1024, guest_id='otherGuest'):
-        """
-        Creates a new virtual machine within a specified resource pool.
-
-        :param vm_name: Name of the virtual machine.
-        :param resource_pool_name: Name of the resource pool where the VM will be created.
-        :param datastore_name: Name of the datastore for the VM's files.
-        :param network_name: Name of the network for the VM.
-        :param num_cpus: Number of CPUs allocated to the VM.
-        :param memory_mb: Amount of memory (in MB) allocated to the VM.
-        :param guest_id: Identifier for the guest OS type.
-        """
-        try:
-            resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
-            if not resource_pool:
-                self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
-                return
-
-            datastore = self.get_obj([vim.Datastore], datastore_name)
-            network = self.get_obj([vim.Network], network_name)
-
-            # Assuming vm_folder is determined by your infrastructure setup
-            vm_folder = self.connection.content.rootFolder  # Adjust as necessary
-
-            vm_config_spec = vim.vm.ConfigSpec(
-                name=vm_name,
-                memoryMB=memory_mb,
-                numCPUs=num_cpus,
-                guestId=guest_id,
-                files=vim.vm.FileInfo(vmPathName=f'[{datastore.name}]'),
-                # Additional configuration such as network adapter, disk, etc.
-            )
-
-            # Example: Adding a network adapter to the VM configuration
-            nic_spec = vim.vm.device.VirtualDeviceSpec()
-            nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-            nic_spec.device = vim.vm.device.VMXNET3()
-            nic_spec.device.backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
-            nic_spec.device.backing.network = network
-            nic_spec.device.backing.deviceName = network_name
-            nic_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
-            nic_spec.device.connectable.startConnected = True
-
-            vm_config_spec.deviceChange = [nic_spec]
-
-            # Create the VM
-            create_vm_task = vm_folder.CreateVM_Task(config=vm_config_spec, pool=resource_pool, host=None)
-            self.wait_for_task(create_vm_task)
-            self.logger.info(f"VM '{vm_name}' created successfully in resource pool '{resource_pool_name}'.")
-        except Exception as e:
-            self.logger.error(f"Failed to create VM '{vm_name}': {e}")
-
     def poweron_vm(self, vm_name):
         
         """
