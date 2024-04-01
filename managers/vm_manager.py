@@ -95,6 +95,12 @@ class VmManager(VCenter):
         :param power_on: Whether to power on the cloned VM after creation.
         """
         try:
+            # Check if the cloning VM already exists in the target directory (VM folder)
+            existing_vm = self.get_obj([vim.VirtualMachine], clone_name)
+            if existing_vm:
+                self.logger.error(f"VM '{clone_name}' already exists.")
+                return
+            
             base_vm = self.get_obj([vim.VirtualMachine], base_name)
             if not base_vm:
                 self.logger.error(f"Base VM '{base_name}' not found.")
@@ -450,7 +456,7 @@ class VmManager(VCenter):
                 self.wait_for_task(task)
                 self.logger.info(f"Network interfaces on VM '{vm_name}' updated successfully.")
             else:
-                self.logger.error("No network interface changes detected or applicable.")
+                self.logger.error(f"No network interface changes detected or applicable on VM {vm_name}.")
         except vmodl.MethodFault as error:
             self.logger.error(f"Failed to update network interfaces for VM '{vm_name}': {error.msg}")
             raise Exception(f"Failed to update network interfaces for VM '{vm_name}': {error.msg}")
