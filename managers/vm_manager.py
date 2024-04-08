@@ -359,7 +359,7 @@ class VmManager(VCenter):
 
         return network_objects
 
-    def update_vm_networks(self, vm_name, folder_name, pod_number):
+    def update_vm_networks(self, vm_name, pod_number):
         """
         Updates the networks of an existing VM by changing the vSwitch number in the network names
         that contain a 'vs' pattern. Networks without 'vs' in their names are ignored.
@@ -368,7 +368,7 @@ class VmManager(VCenter):
         :param folder_name: The name of the folder containing the VM.
         :param new_vs_number: The new vSwitch number to apply to the VM's network interfaces.
         """
-        vm = self.get_vm_by_name_and_folder(vm_name, folder_name)
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
             raise ValueError(f"VM '{vm_name}' not found.")
@@ -382,6 +382,7 @@ class VmManager(VCenter):
         for device in vm.config.hardware.device:
             if isinstance(device, vim.vm.device.VirtualEthernetCard):
                 current_network_name = device.backing.deviceName
+                network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
                 # Check if 'vs' is in the current network name
                 if 'vs' in current_network_name:
                     # Perform string manipulation to change only the 'vs' number part of the network name
@@ -389,16 +390,20 @@ class VmManager(VCenter):
                     new_network_name = f"{prefix}vs{pod_number}{suffix}"
 
                     # Set up network backing with the new network name
-                    network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
                     network_backing.deviceName = new_network_name
 
-                    # Configure the NIC spec
-                    nic_spec = vim.vm.device.VirtualDeviceSpec()
-                    nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
-                    nic_spec.device = device
-                    nic_spec.device.backing = network_backing
+                if 'internal' in current_network_name:
+                    new_network_name = f"pa-internal-cortex-{pod_number}"
+                    # Set up network backing with the new network name
+                    network_backing.deviceName = new_network_name
 
-                    device_changes.append(nic_spec)
+                # Configure the NIC spec
+                nic_spec = vim.vm.device.VirtualDeviceSpec()
+                nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                nic_spec.device = device
+                nic_spec.device.backing = network_backing
+
+                device_changes.append(nic_spec)
 
         # Apply the changes in a batch job within a try-except block
         try:
