@@ -1,50 +1,51 @@
 {
-    "name": "cortex",
-    "vendor": "pa",
-    "network": [
-        {
-            "switch_name": "vs0-pa",
-            "port_groups": [
-                {
-                    "port_group_name": "pa-internal-cortex-{X}",
-                    "vlan_id": 701
-                }
-            ]
-        }
-    ],
-    "components": [
-        {
-            "component_name": "pa-cortex-vr",
-            "base_vm": "pa-cortex-vr",
-            "clone_name": "pa-cortex-vr-{X}",
-            "pod_ip": "172.30.7.200+X",
-            "pod_port": 22
-        },
-        {
-            "component_name": "pa-cortex-endpoint-b",
-            "base_vm": "pa-cortex-endpoint-b",
-            "clone_name": "pa-cortex-endpoint-b-{X}",
-            "pod_ip": "172.30.7.200+X",
-            "pod_port": 3389
-        },
-        {
-            "component_name": "pa-cortex-endpoint-a",
-            "base_vm": "pa-cortex-endpoint-a",
-            "clone_name": "pa-cortex-endpoint-a-{X}",
-            "pod_ip": "172.30.7.200+X",
-            "pod_port": 3389
-        },
-        {
-            "component_name": "pa-cortex-endpoint-c",
-            "base_vm": "pa-cortex-endpoint-c",
-            "clone_name": "pa-cortex-endpoint-c-{X}",
-            "pod_ip": "172.30.7.200+X",
-            "pod_port": 422
-        },
-        {
-            "component_name": "pa-cortex-broker",
-            "base_vm": "pa-cortex-broker",
-            "clone_name": "pa-cortex-broker-{X}"
-        }
-    ]
+    "cortex": {
+        "vendor": "pa",
+        "network": [
+            {
+                "switch_name": "vs0-pa",
+                "port_groups": [
+                    {
+                        "port_group_name": "pa-internal-cortex-{X}",
+                        "vlan_id": 701
+                    }
+                ]
+            }
+        ],
+        "components": [
+            {
+                "component_name": "pa-cortex-vr",
+                "base_vm": "pa-cortex-vr",
+                "clone_name": "pa-cortex-vr-{X}",
+                "pod_ip": "172.30.7.200+X",
+                "pod_port": 22
+            },
+            {
+                "component_name": "pa-cortex-endpoint-b",
+                "base_vm": "pa-cortex-endpoint-b",
+                "clone_name": "pa-cortex-endpoint-b-{X}",
+                "pod_ip": "172.30.7.200+X",
+                "pod_port": 3389
+            },
+            {
+                "component_name": "pa-cortex-endpoint-a",
+                "base_vm": "pa-cortex-endpoint-a",
+                "clone_name": "pa-cortex-endpoint-a-{X}",
+                "pod_ip": "172.30.7.200+X",
+                "pod_port": 3389
+            },
+            {
+                "component_name": "pa-cortex-endpoint-c",
+                "base_vm": "pa-cortex-endpoint-c",
+                "clone_name": "pa-cortex-endpoint-c-{X}",
+                "pod_ip": "172.30.7.200+X",
+                "pod_port": 422
+            },
+            {
+                "component_name": "pa-cortex-broker",
+                "base_vm": "pa-cortex-broker",
+                "clone_name": "pa-cortex-broker-{X}"
+            }
+        ]
+    }
 }
