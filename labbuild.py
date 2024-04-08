@@ -103,7 +103,8 @@ def setup_environment(args):
                 for network in pod_config["network"]:
                     network_manager.create_vm_port_groups(host_details.fqdn,
                                                             network["switch_name"],
-                                                            network["port_groups"])
+                                                            network["port_groups"],
+                                                            pod_number=pod)
                 # Step-3: Clone VMs
                 with ThreadPoolExecutor() as executor:
                     futures = []
