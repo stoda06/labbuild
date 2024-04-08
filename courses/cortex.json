@@ -7,7 +7,7 @@
                 "port_groups": [
                     {
                         "port_group_name": "pa-internal-cortex-{X}",
-                        "vlan_id": 701
+                        "vlan_id": 700
                     }
                 ]
             }
