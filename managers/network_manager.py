@@ -45,7 +45,10 @@ class NetworkManager(VCenter):
             for pg in port_groups:
                 port_group_spec = vim.host.PortGroup.Specification()
                 port_group_spec.name = pg["port_group_name"]
-                port_group_spec.vlanId = pg.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
+                if "pa" in switch_name:
+                    port_group_spec.vlanId = pg.get('vlan_id', 0)+1  # Default VLAN ID is 0 if not specified
+                else:
+                    port_group_spec.vlanId = pg.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
                 port_group_spec.vswitchName = switch_name
                 port_group_spec.policy = vim.host.NetworkPolicy()
 
