@@ -31,7 +31,7 @@ class VmManager(VCenter):
             self.logger.info(f"VM '{vm_name}' powered on successfully.")
 
 
-    def clone_vm(self, base_name, clone_name, resource_pool_name, directory_name, datastore_name=None, power_on=False):
+    def clone_vm(self, base_name, clone_name, resource_pool_name, directory_name=None, datastore_name=None, power_on=False):
         """
         Clones a VM from an existing template into a specified directory (VM folder).
 
@@ -59,10 +59,11 @@ class VmManager(VCenter):
                 self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return
 
-            vm_folder = self.get_obj([vim.Folder], directory_name)
-            if not vm_folder:
-                self.logger.error(f"VM Folder '{directory_name}' not found.")
-                return
+            if directory_name:
+                vm_folder = self.get_obj([vim.Folder], directory_name)
+                if not vm_folder:
+                    self.logger.error(f"VM Folder '{directory_name}' not found.")
+                    return
 
             if datastore_name:
                 datastore = self.get_obj([vim.Datastore], datastore_name)
@@ -78,7 +79,10 @@ class VmManager(VCenter):
             clone_spec.location.datastore = datastore
             clone_spec.powerOn = power_on
 
-            task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+            if vm_folder:
+                task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+            else:
+                task = base_vm.CloneVM_Task(name=clone_name, spec=clone_spec)
             self.logger.info(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
                 self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
