@@ -185,7 +185,7 @@ class VmManager(VCenter):
         try:
             task = vm.ReconfigVM_Task(config_spec)
             self.wait_for_task(task)
-            self.logger.debug(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'.")
+            self.logger.info(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'.")
         except vmodl.MethodFault as error:
             self.logger.error(f"Error updating MAC address: {error.msg}")
             raise Exception(f"Error updating MAC address: {error.msg}")
