@@ -154,7 +154,8 @@ class VmManager(VCenter):
     
     def update_mac_address(self, vm_name, adapter_label, new_mac_address):
         """
-        Updates the MAC address of a specified network adapter on a VM.
+        Updates the MAC address of a specified network adapter on a VM without altering its network connection,
+        and logs the current network name along with the adapter label.
 
         :param vm_name: The name of the VM to update.
         :param adapter_label: The label of the network adapter (e.g., "Network adapter 1").
@@ -167,13 +168,22 @@ class VmManager(VCenter):
         
         # Find the specified network adapter
         nic_spec = None
+        current_network_name = None  # Initialize variable to store current network name
         for device in vm.config.hardware.device:
             if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.deviceInfo.label == adapter_label:
+                # Attempt to extract current network name
+                if hasattr(device.backing, 'network'):
+                    network = device.backing.network
+                    if network:
+                        current_network_name = network.name if hasattr(network, 'name') else 'Unknown Network'
+                
                 nic_spec = vim.vm.device.VirtualDeviceSpec()
                 nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
                 nic_spec.device = device
                 nic_spec.device.macAddress = new_mac_address
-                nic_spec.device.addressType = 'manual'  # Important for setting custom MAC
+                nic_spec.device.addressType = 'manual'  # Set custom MAC
+                nic_spec.device.wakeOnLanEnabled = device.wakeOnLanEnabled
+                nic_spec.device.backing = device.backing  # Preserve network connection
                 break
 
         if not nic_spec:
@@ -182,13 +192,9 @@ class VmManager(VCenter):
 
         # Apply the configuration change
         config_spec = vim.vm.ConfigSpec(deviceChange=[nic_spec])
-        try:
-            task = vm.ReconfigVM_Task(config_spec)
-            self.wait_for_task(task)
-            self.logger.info(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'.")
-        except vmodl.MethodFault as error:
-            self.logger.error(f"Error updating MAC address: {error.msg}")
-            raise Exception(f"Error updating MAC address: {error.msg}")
+        task = vm.ReconfigVM_Task(config_spec)
+        self.wait_for_task(task)
+        self.logger.info(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'. Current network: {current_network_name}.")
 
     def delete_vm(self, vm_name):
         """

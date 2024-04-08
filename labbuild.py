@@ -134,10 +134,10 @@ def setup_environment(args):
                         futures.append(network_futures)
                         # Update MAC address on the VR with the pod number with HEX base.
                         if "vr" in component["clone_name"]:
-                            num = 100 + int(pod)
+                            new_mac = "00:50:56:07:00:" + "{:02x}".format(100+pod)
                             vm_manager.update_mac_address(component["clone_name"], 
-                                                        "Network adapter 1", 
-                                                        "00:50:56:07:00:" + "{:02x}".format(num))
+                                                          "Network adapter 1", 
+                                                          new_mac)
                     wait_for_futures(futures)
                     futures.clear()
                 
