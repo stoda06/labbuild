@@ -3,6 +3,7 @@
         "domain": "vcenter.rededucation.com",
         "user": "labcp-{X}",
         "role": "labcp-0-role",
+        "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
         "prtg_monitor": "",
