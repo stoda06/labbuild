@@ -67,18 +67,81 @@ def setup_environment(args):
     start_time = time.perf_counter()
 
     if course_config:
-        with ThreadPoolExecutor() as executor:
-            futures = []
+        if course_config["vendor"] == "cp":
+            with ThreadPoolExecutor() as executor:
+                futures = []
+                for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    pod_config = replace_placeholder(course_config, pod)
+                    deploy_futures = executor.submit(
+                        deploy_lab,
+                        args,
+                        pod_config,
+                        pod
+                    )
+                    futures.append(deploy_futures)
+                wait_for_futures(futures)
+        if course_config["vendor"] == "pa":
+            host_details = get_host_by_name(args.host)
+
+            # Step-1: Connect to vcenter
+            vc_host = host_details.vcenter
+            vc_user = os.getenv("VC_USER")
+            vc_password = os.getenv("VC_PASS")
+            vc_port = 443  # Default port for vCenter connection
+            logger.info("Gathering user info.")
+
+            service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
+            service_instance.connect()
+
+            network_manager = NetworkManager(service_instance)
+            vm_manager = VmManager(service_instance)
+
             for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                 pod_config = replace_placeholder(course_config, pod)
-                deploy_futures = executor.submit(
-                    deploy_lab,
-                    args,
-                    pod_config,
-                    pod
-                )
-                futures.append(deploy_futures)
-            wait_for_futures(futures)
+
+                # Step-2: Create Network
+                for network in pod_config["network"]:
+                    network_manager.create_vm_port_groups(host_details.fqdn,
+                                                            network["switch_name"],
+                                                            network["port_groups"])
+                # Step-3: Clone VMs
+                with ThreadPoolExecutor() as executor:
+                    futures = []
+                    for component in pod_config["components"]:
+                        if args.re_build:
+                            vm_manager.delete_vm(component["clone_name"])
+                        clone_futures = executor.submit(
+                            vm_manager.clone_vm,
+                            component["base_vm"],
+                            component["clone_name"],
+                            component["component_name"],
+                            datastore_name=args.datastore
+                        )
+                        futures.append(clone_futures)
+                    wait_for_futures(futures)
+                    futures.clear()
+
+                # Step-4: Update VM Network
+                with ThreadPoolExecutor() as executor:
+                    futures = []
+                    for component in pod_config["components"]:
+                        network_futures = executor.submit(
+                            vm_manager.update_vm_networks,
+                            component["clone_name"],
+                            pod
+                        )
+                        futures.append(network_futures)
+                        # Update MAC address on the VR with the pod number with HEX base.
+                        if "vr" in component["clone_name"]:
+                            vm_manager.update_mac_address(component["clone_name"], 
+                                                        "Network adapter 1", 
+                                                        "00:50:56:07:00:" + "{:02x}".format(pod))
+                    wait_for_futures(futures)
+                    futures.clear()
+                
+                # Step-5: Poweron VMs
+                for component in pod_config["components"]:
+                    vm_manager.poweron_vm(component["clone_name"])
 
     # Capture the end time with higher precision
     end_time = time.perf_counter()
@@ -202,7 +265,6 @@ def deploy_lab(args, pod_config, pod):
             update_future = executor.submit(
                 vm_manager.update_vm_networks,
                 component["clone_name"],
-                pod_config["folder_name"],
                 pod
             )
             futures.append(update_future)
