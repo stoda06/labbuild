@@ -65,6 +65,9 @@ class VmManager(VCenter):
                 if not vm_folder:
                     self.logger.error(f"VM Folder '{directory_name}' not found.")
                     return
+            else:
+                datacenter = self.get_obj([vim.Datacenter], "Red Education")
+                vm_folder = datacenter.vmFolder
 
             if datastore_name:
                 datastore = self.get_obj([vim.Datastore], datastore_name)
@@ -80,10 +83,7 @@ class VmManager(VCenter):
             clone_spec.location.datastore = datastore
             clone_spec.powerOn = power_on
 
-            if vm_folder:
-                task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-            else:
-                task = base_vm.CloneVM_Task(name=clone_name, spec=clone_spec)
+            task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
             self.logger.info(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
                 self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
