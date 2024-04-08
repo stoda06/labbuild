@@ -17,7 +17,7 @@ class NetworkManager(VCenter):
         """
         try:
             host_network_system.AddPortGroup(portgrp=port_group_spec)
-            self.logger.debug(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
+            self.logger.info(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
         except vim.fault.AlreadyExists:
             self.logger.warning(f"Port group '{port_group_spec.name}' already exists on switch '{switch_name}'. Skipping.")
         except Exception as e:
