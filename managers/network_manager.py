@@ -23,7 +23,7 @@ class NetworkManager(VCenter):
         except Exception as e:
             self.logger.error(f"Failed to create port group '{port_group_spec.name}': {e}")
     
-    def create_vm_port_groups(self, host_name, switch_name, port_groups):
+    def create_vm_port_groups(self, host_name, switch_name, port_groups, pod_number=None):
         """
         Creates multiple virtual machine port groups on a specified standard switch concurrently for a given host.
 
@@ -46,7 +46,7 @@ class NetworkManager(VCenter):
                 port_group_spec = vim.host.PortGroup.Specification()
                 port_group_spec.name = pg["port_group_name"]
                 if "pa" in switch_name:
-                    port_group_spec.vlanId = pg.get('vlan_id', 0)+1  # Default VLAN ID is 0 if not specified
+                    port_group_spec.vlanId = pg.get('vlan_id', 0)+pod_number  # Default VLAN ID is 0 if not specified
                 else:
                     port_group_spec.vlanId = pg.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
                 port_group_spec.vswitchName = switch_name
