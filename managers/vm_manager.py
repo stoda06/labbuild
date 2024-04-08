@@ -59,6 +59,7 @@ class VmManager(VCenter):
                 self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return
 
+            vm_folder = None
             if directory_name:
                 vm_folder = self.get_obj([vim.Folder], directory_name)
                 if not vm_folder:
