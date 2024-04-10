@@ -1,0 +1,48 @@
+{
+    "61131": {
+        "vendor": "av",
+        "group": "av-pod{X}",
+        "components": [
+            {
+                "component_name": "aams-pod{X}",
+                "vm_name": "aams",
+                "snapshot": "61451 Day 1"
+            },
+            {
+                "component_name": "aux-aams-pod{X}",
+                "vm_name": "aux-aams",
+                "snapshot": "H323 Trunk Pod"
+            },
+            {
+                "component_name": "aux-cm-pod{X}",
+                "vm_name": "aux-cm",
+                "snapshot": "H323 Trunk Pod"
+            },
+            {
+                "component_name": "cm1-pod{X}",
+                "vm_name": "cm1",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "cm2-pod{X}",
+                "vm_name": "cm2",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "sma-pod{X}",
+                "vm_name": "sma",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "smb-pod{X}",
+                "vm_name": "smb",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "smgr-pod{X}",
+                "vm_name": "smgr",
+                "snapshot": "61131 Day 1"
+            }
+        ]
+    }
+}
