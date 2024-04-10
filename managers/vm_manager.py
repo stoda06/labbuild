@@ -517,6 +517,46 @@ class VmManager(VCenter):
             return False
 
         return _search_snapshot_tree(vm.snapshot.rootSnapshotList)
+    
+    def revert_to_snapshot(self, vm_name, snapshot_name):
+        """
+        Reverts the specified VM to a snapshot by its name.
+
+        :param vm_name: Name of the VM to revert.
+        :param snapshot_name: Name of the snapshot to revert the VM to.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if vm is None:
+            self.logger.error(f"VM {vm_name} not found")
+            return
+
+        snapshot = self.find_snapshot_in_tree(vm.snapshot.rootSnapshotList, snapshot_name)
+        if snapshot:
+            try:
+                revert_task = snapshot.snapshot.RevertToSnapshot_Task()
+                self.wait_for_task(revert_task)
+                self.logger.info(f"VM '{vm_name}' successfully reverted to snapshot '{snapshot_name}'")
+            except vmodl.MethodFault as error:
+                self.logger.error(f"Error reverting to snapshot: {error.msg}")
+        else:
+            self.logger.error(f"Snapshot '{snapshot_name}' not found in VM '{vm_name}'")
+
+    def find_snapshot_in_tree(self, snapshot_tree, snapshot_name):
+        """
+        Recursively search for a snapshot by name in a snapshot tree.
+
+        :param snapshot_tree: List of snapshot tree nodes.
+        :param snapshot_name: Name of the snapshot to find.
+        :return: Snapshot object if found, else None.
+        """
+        for node in snapshot_tree:
+            if node.name == snapshot_name:
+                return node
+            elif node.childSnapshotList:
+                snapshot = self.find_snapshot_in_tree(node.childSnapshotList, snapshot_name)
+                if snapshot:
+                    return snapshot
+        return None
 
     
 
