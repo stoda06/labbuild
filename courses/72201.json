@@ -1,0 +1,72 @@
+{
+    "72201": {
+        "vendor": "av",
+        "group": "av-pod{X}",
+        "components": [
+            {
+                "component_name": "av-vr-{X}",
+                "snapshot": "base"
+            },
+            {
+                "component_name": "av-pod{X}-w10-a",
+                "snapshot": "Aura Student Desktop"
+            },
+            {
+                "component_name": "av-pod{X}-w10-b",
+                "snapshot": "Aura Student Desktop"
+            },
+            {
+                "component_name": "av-pod{X}-w10-c",
+                "snapshot": "Team Desktop"
+            },
+            {
+                "component_name": "aads-pod{X}",
+                "snapshot": "72201 Day 1"
+            },
+            {
+                "component_name": "aams-pod{X}",
+                "snapshot": "61451 Day 1"
+            },
+            {
+                "component_name": "aux-aams-pod{X}",
+                "snapshot": "ISP Trunk Pod"
+            },
+            {
+                "component_name": "aux-cm-pod{X}",
+                "snapshot": "ISP Trunk Pod"
+            },
+            {
+                "component_name": "cm1-pod{X}",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "cm2-pod{X}",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "ems-pod{X}",
+                "snapshot": "72301 Day 1"
+            },
+            {
+                "component_name": "sbca-pod{X}",
+                "snapshot": "72301 Day 1"
+            },
+            {
+                "component_name": "sbcb-pod{X}",
+                "snapshot": "72301 Day 1"
+            },
+            {
+                "component_name": "sma-pod{X}",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "smb-pod{X}",
+                "snapshot": "61131 Day 1"
+            },
+            {
+                "component_name": "smgr-pod{X}",
+                "snapshot": "61131 Day 1"
+            }
+        ]
+    }
+}
