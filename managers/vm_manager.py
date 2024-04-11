@@ -529,6 +529,13 @@ class VmManager(VCenter):
         if vm is None:
             self.logger.error(f"VM {vm_name} not found")
             return
+        
+        # Check if the VM is powered on. If so, power it off first.
+        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
+            self.logger.warning(f"VM '{vm_name}' is powered on. Attempting to power off before deletion.")
+            power_off_task = vm.PowerOffVM_Task()
+            self.wait_for_task(power_off_task)
+            self.logger.info(f"VM '{vm_name}' powered off successfully.")
 
         snapshot = self.find_snapshot_in_tree(vm.snapshot.rootSnapshotList, snapshot_name)
         if snapshot:
