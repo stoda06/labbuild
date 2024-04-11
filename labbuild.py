@@ -14,6 +14,7 @@ import logging
 import argparse
 import json
 import time
+import labs.avaya
 import sys
 import os
 
@@ -144,6 +145,29 @@ def setup_environment(args):
                 # Step-5: Poweron VMs
                 for component in pod_config["components"]:
                     vm_manager.poweron_vm(component["clone_name"])
+        
+        if course_config["vendor"] == "av":
+            host_details = get_host_by_name(args.host)
+
+            # Step-1: Connect to vcenter
+            vc_host = host_details.vcenter
+            vc_user = os.getenv("VC_USER")
+            vc_password = os.getenv("VC_PASS")
+            vc_port = 443  # Default port for vCenter connection
+            logger.info("Gathering user info.")
+
+            service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
+            service_instance.connect()
+            
+            with ThreadPoolExecutor() as executor:
+                futures = []
+                for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    pod_config = replace_placeholder(course_config, pod)
+                    build_futures = executor.submit(labs.avaya.build_pod,
+                                        service_instance, pod_config)
+                    futures.append(build_futures)
+                wait_for_futures(futures)
+                futures.clear()
 
     # Capture the end time with higher precision
     end_time = time.perf_counter()
