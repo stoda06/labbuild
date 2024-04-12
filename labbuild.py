@@ -159,8 +159,8 @@ def setup_environment(args):
             service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
             service_instance.connect()
             
+            futures = []
             with ThreadPoolExecutor() as executor:
-                futures = []
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     if pod_config["version"] == "aura":
@@ -171,7 +171,6 @@ def setup_environment(args):
                                             service_instance, pod_config)
                     futures.append(build_futures)
                 wait_for_futures(futures)
-                futures.clear()
 
     # Capture the end time with higher precision
     end_time = time.perf_counter()

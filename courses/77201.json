@@ -1,72 +1,38 @@
 {
-    "72201": {
+    "77201": {
         "vendor": "av",
         "version": "ipo",
-        "group": "av-pod{X}",
+        "group": "av-ipo-pod{X}",
         "components": [
             {
-                "component_name": "av-vr-{X}",
-                "snapshot": "base"
+                "component_name": "ipo-vr",
+                "base_vm": "av-base-ipo-vr",
+                "clone_name": "av-ipo-vr-{X}"
             },
             {
-                "component_name": "av-pod{X}-w10-a",
-                "snapshot": "Aura Student Desktop"
+                "component_name": "ipo-w10-a",
+                "base_vm": "av-ipo-base-w10-a",
+                "clone_name": "av-ipo-pod{X}-w10-b"
             },
             {
-                "component_name": "av-pod{X}-w10-b",
-                "snapshot": "Aura Student Desktop"
+                "component_name": "ipo-w10-b",
+                "base_vm": "av-ipo-base-w10-b",
+                "clone_name": "av-ipo-pod{X}-w10-b"
             },
             {
-                "component_name": "av-pod{X}-w10-c",
-                "snapshot": "Team Desktop"
+                "component_name": "ipo1-77201",
+                "base_vm": "ipo1-77201-base",
+                "clone_name": "ipo1-77201-pod{X}"
             },
             {
-                "component_name": "aads-pod{X}",
-                "snapshot": "72201 Day 1"
+                "component_name": "ipo2-77201",
+                "base_vm": "ipo2-77201-base",
+                "clone_name": "ipo2-77201-pod{X}"
             },
             {
-                "component_name": "aams-pod{X}",
-                "snapshot": "61451 Day 1"
-            },
-            {
-                "component_name": "aux-aams-pod{X}",
-                "snapshot": "ISP Trunk Pod"
-            },
-            {
-                "component_name": "aux-cm-pod{X}",
-                "snapshot": "ISP Trunk Pod"
-            },
-            {
-                "component_name": "cm1-pod{X}",
-                "snapshot": "61131 Day 1"
-            },
-            {
-                "component_name": "cm2-pod{X}",
-                "snapshot": "61131 Day 1"
-            },
-            {
-                "component_name": "ems-pod{X}",
-                "snapshot": "72301 Day 1"
-            },
-            {
-                "component_name": "sbca-pod{X}",
-                "snapshot": "72301 Day 1"
-            },
-            {
-                "component_name": "sbcb-pod{X}",
-                "snapshot": "72301 Day 1"
-            },
-            {
-                "component_name": "sma-pod{X}",
-                "snapshot": "61131 Day 1"
-            },
-            {
-                "component_name": "smb-pod{X}",
-                "snapshot": "61131 Day 1"
-            },
-            {
-                "component_name": "smgr-pod{X}",
-                "snapshot": "61131 Day 1"
+                "component_name": "ipo3-77201",
+                "base_vm": "ipo3-77201-base",
+                "clone_name": "ipo3-77201-pod{X}"
             }
         ]
     }
