@@ -14,7 +14,7 @@ def wait_for_futures(futures):
                 # Handle cloning failure
                 print(f"Cloning task failed: {e}")
 
-def build_pod(service_instance, pod_config):
+def build_aura_pod(service_instance, pod_config):
     
     vm_manager = VmManager(service_instance)
 
