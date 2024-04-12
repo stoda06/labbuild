@@ -1,6 +1,7 @@
 {
     "61131": {
         "vendor": "av",
+        "version": "aura",
         "group": "av-pod{X}",
         "components": [
             {

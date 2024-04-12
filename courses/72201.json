@@ -1,6 +1,7 @@
 {
     "72201": {
         "vendor": "av",
+        "version": "ipo",
         "group": "av-pod{X}",
         "components": [
             {

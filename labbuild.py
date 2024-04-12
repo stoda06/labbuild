@@ -163,8 +163,12 @@ def setup_environment(args):
                 futures = []
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
-                    build_futures = executor.submit(labs.avaya.build_aura_pod,
-                                        service_instance, pod_config)
+                    if pod_config["version"] == "aura":
+                        build_futures = executor.submit(labs.avaya.build_aura_pod,
+                                            service_instance, pod_config)
+                    if pod_config["version"] == "ipo":
+                        build_futures = executor.submit(labs.avaya.build_ipo_pod,
+                                            service_instance, pod_config)
                     futures.append(build_futures)
                 wait_for_futures(futures)
                 futures.clear()
