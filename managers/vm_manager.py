@@ -564,6 +564,53 @@ class VmManager(VCenter):
                 if snapshot:
                     return snapshot
         return None
+    
+    def get_vm_uuid(self, vm_name):
+        """
+        Retrieve the UUID of a virtual machine given its name.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if vm:
+            self.logger.info(f"VM: {vm_name} UUID is {vm.config.uuid}")
+            return vm.config.uuid
+        else:
+            self.logger.error("Virtual machine not found.")
+            return None
+    
+    def change_vm_uuid(self, vm_name, new_uuid):
+        """
+        Attempts to manually set the UUID of a virtual machine, which is not a supported operation by VMware.
+        Use with extreme caution and at your own risk.
+
+        :param vm_name: The name of the virtual machine.
+        :param new_uuid: The new UUID to set.
+        :return: True if the operation was successful, otherwise False.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return False
+
+        # Creating a config spec for the VM to modify the UUID
+        spec = vim.vm.ConfigSpec()
+        option = vim.option.OptionValue()
+        option.key = "uuid.bios"
+        option.value = new_uuid
+        spec.extraConfig = [option]
+
+        # Execute the ReconfigVM_Task to apply the new UUID
+        try:
+            task = vm.ReconfigVM_Task(spec)
+            if self.wait_for_task(task):
+                self.logger.info(f"UUID of VM '{vm_name}' changed successfully to '{new_uuid}'.")
+                return True
+            else:
+                self.logger.error(f"Failed to change UUID for VM '{vm_name}'.")
+                return False
+        except vmodl.MethodFault as error:
+            self.logger.error(f"Failed to change UUID due to: {error.msg}")
+            return False
+        
 
     
 
