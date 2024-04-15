@@ -1,3 +1,4 @@
+import paramiko
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -577,38 +578,76 @@ class VmManager(VCenter):
             self.logger.error("Virtual machine not found.")
             return None
     
+    def download_vmx_file(self, remote_path, local_path):
+        """
+        Downloads a VMX file from the ESXi host using SSH.
+        """
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(self.vcenter.host, username=self.vcenter.user, password=self.vcenter.password)
+            print(f"Host {self.vcenter.host}")
+            sftp = ssh.open_sftp()
+            sftp.get(remote_path, local_path)
+            sftp.close()
+            ssh.close()
+            self.logger.info(f"VMX file downloaded from {remote_path} to {local_path}.")
+        except Exception as e:
+            self.logger.error(f"Error downloading VMX file: {str(e)}")
+            raise
+
+    def upload_vmx_file(self, local_path, remote_path):
+        """
+        Uploads a VMX file to the ESXi host using SSH.
+        """
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(self.vcenter.host, username=self.vcenter.user, password=self.vcenter.password)
+            sftp = ssh.open_sftp()
+            sftp.put(local_path, remote_path)
+            sftp.close()
+            ssh.close()
+            self.logger.info(f"VMX file uploaded from {local_path} to {remote_path}.")
+        except Exception as e:
+            self.logger.error(f"Error uploading VMX file: {str(e)}")
+            raise
+
     def change_vm_uuid(self, vm_name, new_uuid):
         """
-        Attempts to manually set the UUID of a virtual machine, which is not a supported operation by VMware.
-        Use with extreme caution and at your own risk.
-
-        :param vm_name: The name of the virtual machine.
-        :param new_uuid: The new UUID to set.
-        :return: True if the operation was successful, otherwise False.
+        Changes the UUID of a VM by directly modifying its VMX file on the ESXi host.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
             return False
 
-        # Creating a config spec for the VM to modify the UUID
-        spec = vim.vm.ConfigSpec()
-        option = vim.option.OptionValue()
-        option.key = "uuid.bios"
-        option.value = new_uuid
-        spec.extraConfig = [option]
-
-        # Execute the ReconfigVM_Task to apply the new UUID
         try:
-            task = vm.ReconfigVM_Task(spec)
-            if self.wait_for_task(task):
-                self.logger.info(f"UUID of VM '{vm_name}' changed successfully to '{new_uuid}'.")
-                return True
-            else:
-                self.logger.error(f"Failed to change UUID for VM '{vm_name}'.")
-                return False
-        except vmodl.MethodFault as error:
-            self.logger.error(f"Failed to change UUID due to: {error.msg}")
+            vmx_path = vm.config.files.vmPathName
+            local_vmx_path = "/tmp/" + vm_name + ".vmx"
+
+            # Download the VMX file
+            self.download_vmx_file(vmx_path, local_vmx_path)
+
+            # Modify the VMX file locally
+            with open(local_vmx_path, 'r') as file:
+                vmx_contents = file.readlines()
+            with open(local_vmx_path, 'w') as file:
+                for line in vmx_contents:
+                    if 'uuid.bios =' in line:
+                        line = f'uuid.bios = "{new_uuid}"\n'
+                    file.write(line)
+
+            # Upload the modified VMX file
+            self.upload_vmx_file(local_vmx_path, vmx_path)
+
+            # Reload the VM to apply changes
+            vm.ReloadVirtualMachine()
+
+            self.logger.info(f"VM '{vm_name}' UUID changed to '{new_uuid}'.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to change UUID for VM '{vm_name}': {str(e)}")
             return False
         
 
