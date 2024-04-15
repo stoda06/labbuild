@@ -23,12 +23,12 @@ class VCenter:
                                            pwd=self.password,
                                            port=self.port)
             atexit.register(Disconnect, self.connection)
-            print("Connected to vCenter server securely.")
+            self.logger.debug("Connected to vCenter server securely.")
         except ssl.SSLError as ssl_error:
-            print(f"SSL Error encountered: {ssl_error}")
-            print("Check your SSL certificate or connection settings.")
+            self.logger.error(f"SSL Error encountered: {ssl_error}")
+            self.logger.error("Check your SSL certificate or connection settings.")
         except Exception as e:
-            print(f"Failed to connect to vCenter: {e}")
+            self.logger.error(f"Failed to connect to vCenter: {e}")
             self.connection = None
     
     def is_connected(self):
