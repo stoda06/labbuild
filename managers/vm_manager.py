@@ -1,7 +1,10 @@
+import urllib3
 import requests
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class VmManager(VCenter):
 
@@ -597,28 +600,36 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
-            print(f"VM '{vm_name}' not found.")
+            self.logger.error(f"VM '{vm_name}' not found.")
             return False
 
-        # Get the datastore URL
-        datastore = vm.datastore[0]
-        datacenter = vm.runtime.host.parent.datacenter
-        vmx_path = vm.config.files.vmPathName
-        url = self.get_vmx_file_url(datacenter, datastore, vmx_path)
-        print("Here")
+        try:
+            # Get the Datacenter object
+            datacenter = self.get_datacenter(vm.runtime.host)
+            datastore = vm.datastore[0]
+            vmx_path = vm.config.files.vmPathName
 
-        if url:
-            try:
-                self.download_file(url, local_path)
-                print(f"VMX file downloaded successfully to {local_path}")
-                return True
-            except Exception as e:
-                print(f"Error downloading VMX file: {e}")
-                return False
+            url, session_cookie = self.get_vmx_file_url(datacenter, datastore, vmx_path)
+
+            self.download_file(url, local_path, session_cookie)
+            self.logger.info(f"VMX file downloaded successfully to {local_path}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error downloading VMX file: {e}")
+            return False
+
+    def get_datacenter(self, host):
+        """
+        Recursively move up in the vSphere API hierarchy to find the Datacenter for a given host.
+
+        :param host: The HostSystem object.
+        :return: The Datacenter object.
+        """
+        if isinstance(host.parent, vim.Datacenter):
+            return host.parent
         else:
-            print("Unable to construct the URL for the VMX file.")
-            return False
-    
+            return self.get_datacenter(host.parent)
+
     def get_vmx_file_url(self, datacenter, datastore, vmx_path):
         """
         Construct the URL to access the VMX file on the datastore.
@@ -626,28 +637,42 @@ class VmManager(VCenter):
         :param datacenter: The Datacenter object where the datastore is located.
         :param datastore: The Datastore object where the VMX file is stored.
         :param vmx_path: The path to the VMX file on the datastore.
-        :return: The full URL to download the VMX file.
+        :return: The full URL to download the VMX file, and the session cookie.
         """
-        service_instance_content = self.connection.content
+        vc_host = self.vcenter.host  # Use the vCenter hostname or IP stored in vcenter object
         datacenter_name = datacenter.name
-        datastore_name = datastore.debug.name
+        datastore_name = datastore.name
         path = f"/folder/{vmx_path.split('] ')[1]}"
 
-        url = f"https://{service_instance_content.setting['vcip'].settingValue}/folder/{path}?dcPath={datacenter_name}&dsName={datastore_name}"
+        url = f"https://{vc_host}{path}?dcPath={datacenter_name}&dsName={datastore_name}"
 
         # Add the session cookie to the HTTP request header
         session_cookie = self.connection._stub.cookie.split('=', 1)[1].strip()
         return url, session_cookie
 
-    def download_file(self, url, local_path):
+    def download_file(self, url, local_path, session_cookie):
         """
-        Download a file from a given URL.
+        Download a file from a given URL using a session cookie for authentication.
 
         :param url: The URL from which to download the file.
         :param local_path: The local path where the file should be saved.
+        :param session_cookie: The session cookie for authenticated access.
         """
-        with open(local_path, 'wb') as file:
-            response = requests.get(url, verify=False, stream=True)
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:  # filter out keep-alive new chunks
-                    file.write(chunk)
+        headers = {
+            'Cookie': f'vmware_soap_session={session_cookie}'
+        }
+        try:
+            with requests.get(url, headers=headers, stream=True, verify=False) as response:
+                response.raise_for_status()  # Raises HTTPError for bad responses
+                with open(local_path, 'wb') as file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:  # filter out keep-alive new chunks
+                            file.write(chunk)
+            self.logger.debug(f"VMX file downloaded successfully to {local_path}")
+            return True
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"HTTP Error downloading VMX file: {e}")
+            return False
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error downloading VMX file: {e}")
+            return False
