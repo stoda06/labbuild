@@ -1,4 +1,4 @@
-import paramiko
+import requests
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,12 +13,10 @@ class VmManager(VCenter):
         self.logger = vcenter_instance.logger
 
     def poweron_vm(self, vm_name):
-        
         """
         Powers On a new virtual machine within a specified resource pool.
         :param vm_name: Name of the virtual machine.
         """
-
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
@@ -26,10 +24,10 @@ class VmManager(VCenter):
 
         # Check if the VM is powered off. If so, power it on.
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOff:
-            self.logger.info(f"VM '{vm_name}' is powered off. Attempting to power on")
+            self.logger.debug(f"VM '{vm_name}' is powered off. Attempting to power on")
             power_on_task = vm.PowerOnVM_Task()
             self.wait_for_task(power_on_task)
-            self.logger.info(f"VM '{vm_name}' powered on successfully.")
+            self.logger.debug(f"VM '{vm_name}' powered on successfully.")
 
 
     def clone_vm(self, base_name, clone_name, resource_pool_name, directory_name=None, datastore_name=None, power_on=False):
@@ -85,9 +83,9 @@ class VmManager(VCenter):
             clone_spec.powerOn = power_on
 
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-            self.logger.info(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
+            self.logger.debug(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
-                self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
+                self.logger.debug(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
             else:
                 self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
         except Exception as e:
@@ -161,17 +159,18 @@ class VmManager(VCenter):
         :param vm_name: The name of the VM to update.
         :param adapter_label: The label of the network adapter (e.g., "Network adapter 1").
         :param new_mac_address: The new MAC address to assign to the adapter.
+        :return: True if the MAC address was successfully updated, False otherwise.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
-            raise ValueError(f"VM '{vm_name}' not found.")
+            return False
         
         # Find the specified network adapter
         nic_spec = None
         current_network_name = None  # Initialize variable to store current network name
         for device in vm.config.hardware.device:
-            if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.deviceInfo.label == adapter_label:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.devicedebug.label == adapter_label:
                 # Attempt to extract current network name
                 if hasattr(device.backing, 'network'):
                     network = device.backing.network
@@ -189,13 +188,17 @@ class VmManager(VCenter):
 
         if not nic_spec:
             self.logger.error(f"Network adapter '{adapter_label}' not found on VM '{vm_name}'.")
-            raise ValueError(f"Network adapter '{adapter_label}' not found on VM '{vm_name}'.")
+            return False
 
         # Apply the configuration change
         config_spec = vim.vm.ConfigSpec(deviceChange=[nic_spec])
         task = vm.ReconfigVM_Task(config_spec)
-        self.wait_for_task(task)
-        self.logger.info(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'. Current network: {current_network_name}.")
+        if self.wait_for_task(task):
+            self.logger.debug(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'. Current network: {current_network_name}.")
+            return True
+        else:
+            self.logger.error(f"Failed to change MAC address for '{adapter_label}' on VM '{vm_name}'.")
+            return False
 
     def delete_vm(self, vm_name):
         """
@@ -319,7 +322,7 @@ class VmManager(VCenter):
         try:
             delete_task = folder.Destroy_Task()
             self.wait_for_task(delete_task)
-            self.logger.info(f"Folder '{folder_name}' and its contents were deleted successfully.")
+            self.logger.debug(f"Folder '{folder_name}' and its contents were deleted successfully.")
             return None
         except Exception as e:
             self.logger.error(f"Failed to delete folder '{folder_name}': {str(e)}")
@@ -342,24 +345,24 @@ class VmManager(VCenter):
             return None
 
         # Filter port groups for those associated with the specified vSwitch
-        self.logger.info("Fetching associated port groups")
+        self.logger.debug("Fetching associated port groups")
         associated_portgroups = [pg for pg in host.config.network.portgroup if pg.spec.vswitchName == vswitch_name]
-        self.logger.info("Done")
+        self.logger.debug("Done")
 
         if not associated_portgroups:
             self.logger.error(f"No port groups found for vSwitch '{vswitch_name}' on host '{host_name}'.")
             return None
 
         # Create a dictionary mapping network names to network objects for the host
-        self.logger.info("Creating Network Dict")
+        self.logger.debug("Creating Network Dict")
         network_dict = {network.name: network for network in host.network if vswitch_name in network.name}
         # network_dict = {network.name: network for network in host.network}
-        self.logger.info("Done")
+        self.logger.debug("Done")
 
         # Retrieve the network objects corresponding to the filtered port groups
-        self.logger.info("Retrieve Network objects")
+        self.logger.debug("Retrieve Network objects")
         network_objects = [network_dict.get(pg.spec.name) for pg in associated_portgroups if pg.spec.name in network_dict]
-        self.logger.info("Done")
+        self.logger.debug("Done")
 
         if not network_objects:
             self.logger.error(f"No network objects found for port groups on vSwitch '{vswitch_name}'.")
@@ -390,7 +393,7 @@ class VmManager(VCenter):
         for device in vm.config.hardware.device:
             if isinstance(device, vim.vm.device.VirtualEthernetCard):
                 current_network_name = device.backing.deviceName
-                network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
+                network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingdebug()
                 # Check if 'vs' is in the current network name
                 if 'vs' in current_network_name:
                     # Perform string manipulation to change only the 'vs' number part of the network name
@@ -419,7 +422,7 @@ class VmManager(VCenter):
                 spec = vim.vm.ConfigSpec(deviceChange=device_changes)
                 task = vm.ReconfigVM_Task(spec=spec)
                 self.wait_for_task(task)
-                self.logger.info(f"Network interfaces on VM '{vm_name}' updated successfully.")
+                self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
             else:
                 self.logger.error(f"No network interface changes detected or applicable on VM {vm_name}.")
         except vmodl.MethodFault as error:
@@ -459,25 +462,32 @@ class VmManager(VCenter):
 
     def create_snapshot(self, vm_name, snapshot_name, description="", memory=False, quiesce=False):
         """
-        Creates a snapshot of the specified virtual machine.
+        Creates a snapshot of the specified virtual machine. Returns True if the snapshot is successfully created, otherwise False.
 
         :param vm_name: The name of the virtual machine.
         :param snapshot_name: The name for the new snapshot.
         :param description: An optional description for the snapshot.
         :param memory: Whether to include the virtual machine's memory in the snapshot.
         :param quiesce: Whether to quiesce the file system in the virtual machine.
+        :return: True if the snapshot was successfully created, False otherwise.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
-        if vm:
-            try:
-                task = vm.CreateSnapshot_Task(name=snapshot_name, description=description,
-                                              memory=memory, quiesce=quiesce)
-                self.wait_for_task(task)
-                self.logger.info(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
-            except Exception as e:
-                self.logger.error(f"Failed to create snapshot for VM '{vm_name}': {e}")
-        else:
+        if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
+            return False
+
+        try:
+            task = vm.CreateSnapshot_Task(name=snapshot_name, description=description,
+                                        memory=memory, quiesce=quiesce)
+            if self.wait_for_task(task):
+                self.logger.debug(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
+                return True
+            else:
+                self.logger.error(f"Task failed to create snapshot '{snapshot_name}' for VM '{vm_name}'.")
+                return False
+        except Exception as e:
+            self.logger.error(f"Failed to create snapshot for VM '{vm_name}': {e}")
+            return False
     
     def snapshot_exists(self, vm_name, snapshot_name):
         """
@@ -536,14 +546,14 @@ class VmManager(VCenter):
             self.logger.warning(f"VM '{vm_name}' is powered on. Attempting to power off before deletion.")
             power_off_task = vm.PowerOffVM_Task()
             self.wait_for_task(power_off_task)
-            self.logger.info(f"VM '{vm_name}' powered off successfully.")
+            self.logger.debug(f"VM '{vm_name}' powered off successfully.")
 
         snapshot = self.find_snapshot_in_tree(vm.snapshot.rootSnapshotList, snapshot_name)
         if snapshot:
             try:
                 revert_task = snapshot.snapshot.RevertToSnapshot_Task()
                 self.wait_for_task(revert_task)
-                self.logger.info(f"VM '{vm_name}' successfully reverted to snapshot '{snapshot_name}'")
+                self.logger.debug(f"VM '{vm_name}' successfully reverted to snapshot '{snapshot_name}'")
             except vmodl.MethodFault as error:
                 self.logger.error(f"Error reverting to snapshot: {error.msg}")
         else:
@@ -572,92 +582,71 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if vm:
-            self.logger.info(f"VM: {vm_name} UUID is {vm.config.uuid}")
+            self.logger.debug(f"VM: {vm_name} UUID is {vm.config.uuid}")
             return vm.config.uuid
         else:
             self.logger.error("Virtual machine not found.")
             return None
     
-    def download_vmx_file(self, remote_path, local_path):
+    def download_vmx_file(self, vm_name, local_path):
         """
-        Downloads a VMX file from the ESXi host using SSH.
-        """
-        try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(self.vcenter.host, username=self.vcenter.user, password=self.vcenter.password)
-            print(f"Host {self.vcenter.host}")
-            sftp = ssh.open_sftp()
-            sftp.get(remote_path, local_path)
-            sftp.close()
-            ssh.close()
-            self.logger.info(f"VMX file downloaded from {remote_path} to {local_path}.")
-        except Exception as e:
-            self.logger.error(f"Error downloading VMX file: {str(e)}")
-            raise
+        Downloads the VMX file for a specified VM.
 
-    def upload_vmx_file(self, local_path, remote_path):
-        """
-        Uploads a VMX file to the ESXi host using SSH.
-        """
-        try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(self.vcenter.host, username=self.vcenter.user, password=self.vcenter.password)
-            sftp = ssh.open_sftp()
-            sftp.put(local_path, remote_path)
-            sftp.close()
-            ssh.close()
-            self.logger.info(f"VMX file uploaded from {local_path} to {remote_path}.")
-        except Exception as e:
-            self.logger.error(f"Error uploading VMX file: {str(e)}")
-            raise
-
-    def change_vm_uuid(self, vm_name, new_uuid):
-        """
-        Changes the UUID of a VM by directly modifying its VMX file on the ESXi host.
+        :param vm_name: The name of the VM to download the VMX file for.
+        :param local_path: The local path where the VMX file should be saved.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
-            self.logger.error(f"VM '{vm_name}' not found.")
+            print(f"VM '{vm_name}' not found.")
             return False
 
-        try:
-            vmx_path = vm.config.files.vmPathName
-            local_vmx_path = "/tmp/" + vm_name + ".vmx"
+        # Get the datastore URL
+        datastore = vm.datastore[0]
+        datacenter = vm.runtime.host.parent.datacenter
+        vmx_path = vm.config.files.vmPathName
+        url = self.get_vmx_file_url(datacenter, datastore, vmx_path)
 
-            # Download the VMX file
-            self.download_vmx_file(vmx_path, local_vmx_path)
-
-            # Modify the VMX file locally
-            with open(local_vmx_path, 'r') as file:
-                vmx_contents = file.readlines()
-            with open(local_vmx_path, 'w') as file:
-                for line in vmx_contents:
-                    if 'uuid.bios =' in line:
-                        line = f'uuid.bios = "{new_uuid}"\n'
-                    file.write(line)
-
-            # Upload the modified VMX file
-            self.upload_vmx_file(local_vmx_path, vmx_path)
-
-            # Reload the VM to apply changes
-            vm.ReloadVirtualMachine()
-
-            self.logger.info(f"VM '{vm_name}' UUID changed to '{new_uuid}'.")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to change UUID for VM '{vm_name}': {str(e)}")
+        if url:
+            try:
+                self.download_file(url, local_path)
+                print(f"VMX file downloaded successfully to {local_path}")
+                return True
+            except Exception as e:
+                print(f"Error downloading VMX file: {e}")
+                return False
+        else:
+            print("Unable to construct the URL for the VMX file.")
             return False
-        
-
     
+    def get_vmx_file_url(self, datacenter, datastore, vmx_path):
+        """
+        Construct the URL to access the VMX file on the datastore.
 
+        :param datacenter: The Datacenter object where the datastore is located.
+        :param datastore: The Datastore object where the VMX file is stored.
+        :param vmx_path: The path to the VMX file on the datastore.
+        :return: The full URL to download the VMX file.
+        """
+        service_instance_content = self.connection.content
+        datacenter_name = datacenter.name
+        datastore_name = datastore.debug.name
+        path = f"/folder/{vmx_path.split('] ')[1]}"
 
+        url = f"https://{service_instance_content.setting['vcip'].settingValue}/folder/{path}?dcPath={datacenter_name}&dsName={datastore_name}"
 
+        # Add the session cookie to the HTTP request header
+        session_cookie = self.connection._stub.cookie.split('=', 1)[1].strip()
+        return url, session_cookie
 
+    def download_file(self, url, local_path):
+        """
+        Download a file from a given URL.
 
-    """
-    F5 bigip and prtg link iso image in cd/dvd [keg2 podiso/pod-54-a.iso]
-    """
-
+        :param url: The URL from which to download the file.
+        :param local_path: The local path where the file should be saved.
+        """
+        with open(local_path, 'wb') as file:
+            response = requests.get(url, verify=False, stream=True)
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:  # filter out keep-alive new chunks
+                    file.write(chunk)
