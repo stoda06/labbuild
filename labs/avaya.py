@@ -58,7 +58,8 @@ def build_ipo_pod(service_instance, pod_config):
         vm_manager.logger.info(f"Changing ipo VM UUIDs and Update MAC address on VR")
         for component in pod_config["components"]:
             if "77201" in component["component_name"]:
-                uuid = vm_manager.get_vm_uuid(component["base_vm"])
+                # uuid = vm_manager.get_vm_uuid(component["base_vm"])
+                uuid = component["uuid"]
                 status_futures = executor.submit(vm_manager.change_vm_uuid, 
                                                  component["clone_name"],
                                                  uuid)
@@ -72,10 +73,10 @@ def build_ipo_pod(service_instance, pod_config):
         futures.clear()
 
         # Step-3: Power-on VMs
-        vm_manager.logger.info(f"Begin poweron process.")
-        for component in pod_config["components"]:
-            poweron_future = executor.submit(vm_manager.poweron_vm,
-                            component["clone_name"])
-            futures.append(poweron_future)
-        wait_for_task(futures)
-        futures.clear()
+        # vm_manager.logger.info(f"Begin poweron process.")
+        # for component in pod_config["components"]:
+        #     poweron_future = executor.submit(vm_manager.poweron_vm,
+        #                     component["clone_name"])
+        #     futures.append(poweron_future)
+        # wait_for_task(futures)
+        # futures.clear()
