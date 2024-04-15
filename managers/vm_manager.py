@@ -170,7 +170,7 @@ class VmManager(VCenter):
         nic_spec = None
         current_network_name = None  # Initialize variable to store current network name
         for device in vm.config.hardware.device:
-            if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.devicedebug.label == adapter_label:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.deviceInfo.label == adapter_label:
                 # Attempt to extract current network name
                 if hasattr(device.backing, 'network'):
                     network = device.backing.network
@@ -605,6 +605,7 @@ class VmManager(VCenter):
         datacenter = vm.runtime.host.parent.datacenter
         vmx_path = vm.config.files.vmPathName
         url = self.get_vmx_file_url(datacenter, datastore, vmx_path)
+        print("Here")
 
         if url:
             try:
