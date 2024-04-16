@@ -36,13 +36,21 @@ def build_aura_pod(service_instance, pod_config):
             futures.append(power_futures)
         wait_for_task(futures)
 
-def build_ipo_pod(service_instance, pod_config):
+def build_ipo_pod(service_instance, pod_config, rebuild=False):
     
     # Step-1: Clone VMs.
     vm_manager = VmManager(service_instance)
     futures = []
 
     with ThreadPoolExecutor() as executor:
+        if rebuild:
+            vm_manager.logger.info(f"Teardown {pod_config['group']} components.")
+            for component in pod_config["components"]:
+                delete_future = executor.submit(vm_manager.delete_vm,
+                                                component["clone_name"])
+                futures.append(delete_future)
+            wait_for_task(futures)
+            futures.clear()
         vm_manager.logger.info(f"Begin cloning {pod_config['group']} components.")
         for component in pod_config["components"]:
             clone_future = executor.submit(vm_manager.clone_vm, 
@@ -57,26 +65,24 @@ def build_ipo_pod(service_instance, pod_config):
         # Step-2: Change VM UUIDs and MAC on VR.
         vm_manager.logger.info(f"Changing ipo VM UUIDs and Update MAC address on VR")
         for component in pod_config["components"]:
-            if "77201" in component["component_name"]:
-                # uuid = vm_manager.get_vm_uuid(component["base_vm"])
-                uuid = component["uuid"]
-                status_futures = executor.submit(vm_manager.change_vm_uuid, 
-                                                 component["clone_name"],
-                                                 uuid)
-                futures.append(status_futures)
             if "vr" in component["component_name"]:
                 pod = int(component["clone_name"].split("av-ipo-vr-")[1])
                 vm_manager.update_mac_address(component["clone_name"],
                                               "Network adapter 1",
                                               "00:50:56:0f:00:" + "{:02x}".format(pod))
+            if "77201" in component["component_name"]:
+                vm_manager.download_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
+                vm_manager.update_vm_uuid(f"/tmp/{component['clone_name']}.vmx", component["uuid"])
+                vm_manager.upload_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
+                # vm_manager.register_vm(component["clone_name"])
         wait_for_task(futures)
         futures.clear()
 
         # Step-3: Power-on VMs
-        # vm_manager.logger.info(f"Begin poweron process.")
-        # for component in pod_config["components"]:
-        #     poweron_future = executor.submit(vm_manager.poweron_vm,
-        #                     component["clone_name"])
-        #     futures.append(poweron_future)
-        # wait_for_task(futures)
-        # futures.clear()
+        vm_manager.logger.info(f"Begin poweron process.")
+        for component in pod_config["components"]:
+            poweron_future = executor.submit(vm_manager.poweron_vm,
+                            component["clone_name"])
+            futures.append(poweron_future)
+        wait_for_task(futures)
+        futures.clear()
