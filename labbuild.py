@@ -60,7 +60,6 @@ def wait_for_futures(futures):
 
 
 def setup_environment(args):
-    
 
     course_config = get_setup_config(args.course)
 
@@ -168,7 +167,7 @@ def setup_environment(args):
                                             service_instance, pod_config)
                     if pod_config["version"] == "ipo":
                         build_futures = executor.submit(labs.avaya.build_ipo_pod,
-                                            service_instance, pod_config)
+                                            service_instance, pod_config, rebuild=args.re_build)
                     futures.append(build_futures)
                 wait_for_futures(futures)
 
