@@ -1,0 +1,38 @@
+{
+    "1100-210": {
+        "vendor": "pa",
+        "version": "1100-210",
+        "components": [
+            {
+                "component_name": "11.0-vr",
+                "group_name": "pa-00-ATC-vr",
+                "base_vm": "11.0-vr",
+                "clone_name": "11.0-vr-{X}"
+            },
+            {
+                "component_name": "01-ATC-11-firewall-a",
+                "group_name": "pa-01-ATC-firewall-a",
+                "vm_name": "pa-vm-pod{X}-v11",
+                "snapshot": "1100-210"
+            },
+            {
+                "component_name": "11.0-client-a",
+                "group_name": "pa-01-ATC-firewall-a",
+                "base_vm": "11.0-client-a",
+                "clone_name": "11.0-client-a-{X}"
+            },
+            {
+                "component_name": "11.0-client-a",
+                "group_name": "pa-04-ATC-client-a",
+                "base_vm": "11.0-client-a",
+                "clone_name": "11.0-client-a-{X}"
+            },
+            {
+                "component_name": "11.0-dmz",
+                "group_name": "pa-06-ATC-dmz",
+                "base_vm": "11.0-dmz",
+                "clone_name": "11.0-dmz-{X}"
+            }
+        ]
+    }
+}
