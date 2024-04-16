@@ -17,12 +17,6 @@
             },
             {
                 "component_name": "11.0-client-a",
-                "group_name": "pa-01-ATC-firewall-a",
-                "base_vm": "11.0-client-a",
-                "clone_name": "11.0-client-a-{X}"
-            },
-            {
-                "component_name": "11.0-client-a",
                 "group_name": "pa-04-ATC-client-a",
                 "base_vm": "11.0-client-a",
                 "clone_name": "11.0-client-a-{X}"
