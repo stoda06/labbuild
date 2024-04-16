@@ -48,7 +48,7 @@ class VmManager(VCenter):
             # Check if the cloning VM already exists in the target directory (VM folder)
             existing_vm = self.get_obj([vim.VirtualMachine], clone_name)
             if existing_vm:
-                self.logger.error(f"VM '{clone_name}' already exists.")
+                self.logger.warning(f"VM '{clone_name}' already exists.")
                 return
             
             base_vm = self.get_obj([vim.VirtualMachine], base_name)
@@ -612,7 +612,7 @@ class VmManager(VCenter):
             url, session_cookie = self.get_vmx_file_url(datacenter, datastore, vmx_path)
 
             self.download_file(url, local_path, session_cookie)
-            self.logger.info(f"VMX file downloaded successfully to {local_path}")
+            self.logger.debug(f"VMX file downloaded successfully to {local_path}")
             return True
         except Exception as e:
             self.logger.error(f"Error downloading VMX file: {e}")
@@ -675,4 +675,71 @@ class VmManager(VCenter):
             return False
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error downloading VMX file: {e}")
+            return False
+    
+    def upload_vmx_file(self, vm_name, local_vmx_path):
+        """
+        Uploads a local VMX file to the VM's datastore location on the server.
+
+        :param vm_name: The name of the VM to upload the VMX file for.
+        :param local_vmx_path: The absolute path to the local VMX file.
+        :return: True if the upload was successful, False otherwise.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return False
+
+        vmx_path = vm.config.files.vmPathName
+        datacenter = self.get_datacenter(vm.runtime.host)
+        datastore = vm.datastore[0]
+        url, session_cookie = self.get_vmx_file_url(datacenter, datastore, vmx_path)
+
+        headers = {
+            'Cookie': f'vmware_soap_session={session_cookie}'
+        }
+
+        try:
+            with open(local_vmx_path, 'rb') as file:
+                response = requests.put(url, data=file, headers=headers, verify=False)
+                if response.status_code == 200:
+                    self.logger.debug(f"Successfully uploaded VMX file to '{url}'.")
+                    return True
+                else:
+                    self.logger.error(f"Failed to upload VMX file. Server responded with status code: {response.status_code}")
+                    return False
+        except Exception as e:
+            self.logger.error(f"Failed to upload VMX file: {str(e)}")
+            return False
+    
+    def update_vm_uuid(self, vmx_file_path, new_uuid):
+        """
+        Updates the 'uuid.bios' entry in a VMX file with a new UUID.
+
+        :param vmx_file_path: The absolute path to the VMX file.
+        :param new_uuid: The new UUID to set for the virtual machine.
+        :return: True if the update was successful, False otherwise.
+        """
+        try:
+            with open(vmx_file_path, 'r') as file:
+                lines = file.readlines()
+        
+            updated = False
+            for i, line in enumerate(lines):
+                if line.strip().startswith('uuid.bios'):
+                    lines[i] = f"uuid.bios = \"{new_uuid}\"\n"
+                    updated = True
+                    break
+            
+            if not updated:
+                self.logger.error("uuid.bios entry not found in the VMX file.")
+                return False
+
+            with open(vmx_file_path, 'w') as file:
+                file.writelines(lines)
+            
+            self.logger.debug(f"UUID updated successfully in the VMX file: {vmx_file_path}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to update the VMX file '{vmx_file_path}': {str(e)}")
             return False
