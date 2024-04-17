@@ -12,9 +12,10 @@ from dotenv import load_dotenv
 from logger.log_config import setup_logger
 import logging
 import argparse
+import labs.avaya
+import labs.palo
 import json
 import time
-import labs.avaya
 import sys
 import os
 
@@ -92,58 +93,10 @@ def setup_environment(args):
 
             service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
             service_instance.connect()
-
-            network_manager = NetworkManager(service_instance)
-            vm_manager = VmManager(service_instance)
-
-            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
-                pod_config = replace_placeholder(course_config, pod)
-
-                # Step-2: Create Network
-                for network in pod_config["network"]:
-                    network_manager.create_vm_port_groups(host_details.fqdn,
-                                                            network["switch_name"],
-                                                            network["port_groups"],
-                                                            pod_number=pod)
-                # Step-3: Clone VMs
-                with ThreadPoolExecutor() as executor:
-                    futures = []
-                    for component in pod_config["components"]:
-                        if args.re_build:
-                            vm_manager.delete_vm(component["clone_name"])
-                        clone_futures = executor.submit(
-                            vm_manager.clone_vm,
-                            component["base_vm"],
-                            component["clone_name"],
-                            component["component_name"],
-                            datastore_name=args.datastore
-                        )
-                        futures.append(clone_futures)
-                    wait_for_futures(futures)
-                    futures.clear()
-
-                # Step-4: Update VM Network
-                with ThreadPoolExecutor() as executor:
-                    futures = []
-                    for component in pod_config["components"]:
-                        network_futures = executor.submit(
-                            vm_manager.update_vm_networks,
-                            component["clone_name"],
-                            pod
-                        )
-                        futures.append(network_futures)
-                        # Update MAC address on the VR with the pod number with HEX base.
-                        if "vr" in component["clone_name"]:
-                            new_mac = "00:50:56:07:00:" + "{:02x}".format(100+pod)
-                            vm_manager.update_mac_address(component["clone_name"], 
-                                                          "Network adapter 1", 
-                                                          new_mac)
-                    wait_for_futures(futures)
-                    futures.clear()
-                
-                # Step-5: Poweron VMs
-                for component in pod_config["components"]:
-                    vm_manager.poweron_vm(component["clone_name"])
+            if course_config["version"] == "cortex":
+                labs.palo.build_cortex_pod(service_instance, host_details, 
+                                           pod_config, datastore=args.datastore, 
+                                           rebuild=args.re_build)
         
         if course_config["vendor"] == "av":
             host_details = get_host_by_name(args.host)

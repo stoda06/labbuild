@@ -1,6 +1,7 @@
 {
     "cortex": {
         "vendor": "pa",
+        "pod_number": "{X}",
         "network": [
             {
                 "switch_name": "vs0-pa",
