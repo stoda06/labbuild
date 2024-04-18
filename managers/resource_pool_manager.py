@@ -54,7 +54,7 @@ class ResourcePoolManager(VCenter):
             resource_pool = parent_rp.CreateResourcePool(name=rp_name, spec=resource_config_spec)
             
 
-            self.logger.info(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
+            self.logger.debug(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
             return resource_pool
         except Exception as e:
             self.logger.error(f"Failed to create resource pool: {self.extract_error_message(e)}")
@@ -70,7 +70,7 @@ class ResourcePoolManager(VCenter):
 
             task = rp.Destroy_Task()
             self.wait_for_task(task)
-            self.logger.info(f"Resource pool '{rp_name}' deleted successfully.")
+            self.logger.debug(f"Resource pool '{rp_name}' deleted successfully.")
             return True
         except Exception as e:
             self.logger.error(f"Failed to delete resource pool '{rp_name}': {self.extract_error_message(e)}")
@@ -106,7 +106,7 @@ class ResourcePoolManager(VCenter):
         # Check if the user already has the specified role assigned
         for perm in current_permissions:
             if perm.principal == user_name and perm.roleId == role_id and perm.propagate == propagate:
-                self.logger.info(f"User '{user_name}' already has role '{role_name}' on resource pool '{resource_pool_name}' with identical propagation setting.")
+                self.logger.debug(f"User '{user_name}' already has role '{role_name}' on resource pool '{resource_pool_name}' with identical propagation setting.")
                 return  # Skip the assignment
 
         # Create the permission spec
@@ -120,6 +120,6 @@ class ResourcePoolManager(VCenter):
         # Set the permission on the resource pool
         try:
             self.connection.content.authorizationManager.SetEntityPermissions(entity=resource_pool, permission=[permission])
-            self.logger.info(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
+            self.logger.debug(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
         except Exception as e:
             self.logger.error(f"Failed to assign role to user on resource pool: {self.extract_error_message(e)}")
