@@ -49,6 +49,14 @@
                 "snapshot": "61131 Day 1"
             },
             {
+                "component_name": "smc-pod{X}",
+                "snapshot": "71201 Day 1"
+            },
+            {
+                "component_name": "smd-pod{X}",
+                "snapshot": "71201 Day 1"
+            },
+            {
                 "component_name": "smgr-pod{X}",
                 "snapshot": "61131 Day 1"
             }
