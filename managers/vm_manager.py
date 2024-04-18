@@ -396,7 +396,7 @@ class VmManager(VCenter):
         for device in vm.config.hardware.device:
             if isinstance(device, vim.vm.device.VirtualEthernetCard):
                 current_network_name = device.backing.deviceName
-                network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingdebug()
+                network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
                 # Check if 'vs' is in the current network name
                 if 'vs' in current_network_name:
                     # Perform string manipulation to change only the 'vs' number part of the network name
