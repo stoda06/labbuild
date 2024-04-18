@@ -15,7 +15,7 @@ class PermissionManager(VCenter):
         try:
             auth_manager = self.connection.content.authorizationManager
             role_id = auth_manager.AddAuthorizationRole(name=role_name, privIds=privileges)
-            self.logger.info(f"Role '{role_name}' created with ID: {role_id}")
+            self.logger.debug(f"Role '{role_name}' created with ID: {role_id}")
             return role_id
         except vmodl.fault.AlreadyExists:
             self.logger.warning(f"Role '{role_name}' already exists.")
@@ -30,7 +30,7 @@ class PermissionManager(VCenter):
             for role in role_list:
                 if role.name == role_name:
                     auth_manager.RemoveAuthorizationRole(roleId=role.roleId, failIfUsed=False)
-                    self.logger.info(f"Role '{role_name}' deleted.")
+                    self.logger.debug(f"Role '{role_name}' deleted.")
                     return
             self.logger.error(f"Role '{role_name}' not found.")
         except Exception as e:
@@ -42,7 +42,7 @@ class PermissionManager(VCenter):
             auth_manager = self.connection.content.authorizationManager
             role_id = self.get_role_id_by_name(role_name)
             if role_id is None:
-                print(f"Role '{role_name}' not found.")
+                self.logger.error(f"Role '{role_name}' not found.")
                 return
             
             permission = vim.AuthorizationManager.Permission(
