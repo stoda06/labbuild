@@ -89,7 +89,6 @@ def setup_environment(args):
             vc_user = os.getenv("VC_USER")
             vc_password = os.getenv("VC_PASS")
             vc_port = 443  # Default port for vCenter connection
-            logger.info("Gathering user info.")
 
             service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
             service_instance.connect()
@@ -106,7 +105,6 @@ def setup_environment(args):
             vc_user = os.getenv("VC_USER")
             vc_password = os.getenv("VC_PASS")
             vc_port = 443  # Default port for vCenter connection
-            logger.info("Gathering user info.")
 
             service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
             service_instance.connect()
@@ -142,7 +140,7 @@ def deploy_lab(args, pod_config, pod):
         host_details = get_host_by_name(args.host)
 
         if host_details:
-            logger.info(f"Host Details: Name - {host_details.fqdn}, Vcenter - {host_details.vcenter}")
+            logger.debug(f"Host Details: Name - {host_details.fqdn}, Vcenter - {host_details.vcenter}")
         else:
             logger.error("Host not found. Please ensure you've entered the correct host name.")
     except Exception as e:
@@ -153,7 +151,6 @@ def deploy_lab(args, pod_config, pod):
     vc_user = os.getenv("VC_USER")
     vc_password = os.getenv("VC_PASS")
     vc_port = 443  # Default port for vCenter connection
-    logger.info("Gathering user info.")
     # Add your setup environment logic here
 
     vc = VCenter(vc_host, vc_user, vc_password, vc_port)
@@ -327,7 +324,7 @@ def main():
 
     # Execute based on switches
     if args.command == 'setup':
-        print(f"Setting up environment with config...")
+        logger.info(f"Building setup for {args.course} on {args.host}")
         setup_environment(args)
         if args.verbose:
             print("Verbose mode enabled.")
