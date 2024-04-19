@@ -92,10 +92,17 @@ def setup_environment(args):
 
             service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
             service_instance.connect()
-            if course_config["version"] == "cortex":
-                labs.palo.build_cortex_pod(service_instance, host_details, 
-                                           pod_config, datastore=args.datastore, 
-                                           rebuild=args.re_build)
+            futures = []
+            with ThreadPoolExecutor() as executor:
+                for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    pod_config = replace_placeholder(course_config, pod)
+                    if course_config["version"] == "cortex":
+                        build_futures = executor.submit(labs.palo.build_cortex_pod,
+                                                        service_instance, host_details, 
+                                                        pod_config, datastore=args.datastore, 
+                                                        rebuild=args.re_build)
+                    futures.append(build_futures)
+                wait_for_futures(futures)
         
         if course_config["vendor"] == "av":
             host_details = get_host_by_name(args.host)
