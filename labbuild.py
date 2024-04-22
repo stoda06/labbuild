@@ -12,11 +12,11 @@ from dotenv import load_dotenv
 from logger.log_config import setup_logger
 import logging
 import argparse
+import labs.checkpoint
 import labs.avaya
 import labs.palo
 import json
 import time
-import sys
 import os
 
 load_dotenv()
@@ -57,7 +57,7 @@ def wait_for_futures(futures):
                 logger.debug(result)
             except Exception as e:
                 # Handle cloning failure
-                logger.error(f"Cloning task failed: {e}")
+                logger.error(f"Task failed: {e}")
 
 
 def setup_environment(args):
@@ -69,15 +69,27 @@ def setup_environment(args):
 
     if course_config:
         if course_config["vendor"] == "cp":
+            # Step-1: Connect to vcenter
+            vc_host = host_details.vcenter
+            vc_user = os.getenv("VC_USER")
+            vc_password = os.getenv("VC_PASS")
+            vc_port = 443  # Default port for vCenter connection
+
+            service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
+            service_instance.connect()
+
             with ThreadPoolExecutor() as executor:
                 futures = []
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     deploy_futures = executor.submit(
-                        deploy_lab,
-                        args,
-                        pod_config,
-                        pod
+                        labs.checkpoint.build_cp_pod,
+                        service_instance,
+                        args.host,
+                        pod,
+                        rebuild=args.re_build,
+                        thread=args.thread,
+                        datastore=args.datastore
                     )
                     futures.append(deploy_futures)
                 wait_for_futures(futures)
@@ -139,153 +151,6 @@ def setup_environment(args):
     duration_minutes = duration_seconds / 60
 
     logger.info(f"The program took {duration_minutes:.2f} minutes to run.")
-
-
-def deploy_lab(args, pod_config, pod):
-
-    try:
-        host_details = get_host_by_name(args.host)
-
-        if host_details:
-            logger.debug(f"Host Details: Name - {host_details.fqdn}, Vcenter - {host_details.vcenter}")
-        else:
-            logger.error("Host not found. Please ensure you've entered the correct host name.")
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        sys.exit(1)
-
-    vc_host = host_details.vcenter
-    vc_user = os.getenv("VC_USER")
-    vc_password = os.getenv("VC_PASS")
-    vc_port = 443  # Default port for vCenter connection
-    # Add your setup environment logic here
-
-    vc = VCenter(vc_host, vc_user, vc_password, vc_port)
-    vc.connect()
-
-    host_manager = HostManager(vc)
-    resource_pool_manager = ResourcePoolManager(vc)
-    folder_manager = FolderManager(vc)
-    network_manager = NetworkManager(vc)
-    vm_manager = VmManager(vc)
-
-    host = host_details.fqdn
-    try:
-        host_manager.get_host(host)
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        sys.exit(1)
-
-    if args.re_build:
-        
-        vm_manager.delete_folder(pod_config["folder_name"], force=True)
-        for network in pod_config['network']:
-            network_manager.delete_vswitch(host_details.fqdn, network['switch_name'])
-        resource_pool_manager.delete_resource_pool(pod_config["group_name"])
-
-    # Create resource pool for the pod.
-    cpu_allocation = {
-        'limit': -1,
-        'reservation': 0,
-        'expandable_reservation': True,
-        'shares': 4000
-    }
-    memory_allocation = {
-        'limit': -1,
-        'reservation': 0,
-        'expandable_reservation': True,
-        'shares': 163840
-    }
-    try:
-        resource_pool_manager.create_resource_pool(host_details.resource_pool, 
-                                                pod_config["group_name"],
-                                                cpu_allocation, 
-                                                memory_allocation)
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        sys.exit(1)
-    # Assign user and role to the created resource pool.
-    resource_pool_manager.assign_role_to_resource_pool(pod_config["group_name"], 
-                                                       pod_config["domain"]+"\\"+pod_config["user"], 
-                                                       pod_config["role"])
-    
-    # Create pod folder
-    folder_manager.create_folder(host_details.folder, pod_config['folder_name'])
-    # Assign user and role to the created folder.
-    folder_manager.assign_user_to_folder(pod_config["folder_name"],
-                                         pod_config["domain"]+"\\"+pod_config["user"],
-                                         pod_config["role"])
-    
-    # Create vSwitches
-    for network in pod_config['network']:
-        network_manager.create_vswitch(host, network['switch_name'])
-        # Create necessary port groups/networks.
-        network_manager.create_vm_port_groups(host, network["switch_name"], network["port_groups"])
-        # Assign user and role to created port groups/networks.
-        network_names = [pg["port_group_name"] for pg in network["port_groups"]]
-        network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
-                                                    pod_config["role"], network_names)
-        # Check if any of the created networks need to be set to promisci
-        if network['promiscuous_mode']:
-            network_manager.enable_promiscuous_mode(host, network['promiscuous_mode'])
-    
-    # Start cloning the required VMs simultaneously.
-    with ThreadPoolExecutor(max_workers=args.thread) as executor:
-        futures = []
-        for component in pod_config["components"]:
-            clone_future = executor.submit(
-                vm_manager.clone_vm,
-                component["base_vm"], 
-                component["clone_name"], 
-                pod_config["group_name"], 
-                pod_config["folder_name"], 
-                datastore_name=args.datastore
-            )
-            futures.append(clone_future)
-        wait_for_futures(futures)
-        futures.clear()
-
-        for component in pod_config["components"]:
-            # Update cloned VMs with the created network(s).
-            update_future = executor.submit(
-                vm_manager.update_vm_networks,
-                component["clone_name"],
-                pod
-            )
-            futures.append(update_future)
-            # Update MAC address on the VR with the pod number with HEX base.
-            if "cp-R81-vr" in component["clone_name"] or "cpvr" in component["clone_name"]:
-                vm_manager.update_mac_address(component["clone_name"], 
-                                              "Network adapter 1", 
-                                              "00:50:56:04:00:" + "{:02x}".format(pod))
-        wait_for_futures(futures)
-        futures.clear()
-
-        snapshot_name = "base"
-        for component in pod_config["components"]:
-            # Create a snapshot of all the cloned VMs to save base config.
-            if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
-                snapshot_futures = executor.submit(
-                    vm_manager.create_snapshot,
-                    component["clone_name"],
-                    snapshot_name,
-                    description=f"Snapshot of {component['clone_name']}"
-                )
-                futures.append(snapshot_futures)
-        wait_for_futures(futures)
-        futures.clear()
-
-        for component in pod_config["components"]:
-            # Schedule the VM cloning task
-            if "state" in component:
-                if "poweroff" in component["state"]:
-                    continue
-            poweron_future = executor.submit(
-                vm_manager.poweron_vm,
-                component["clone_name"]
-            )
-            futures.append(poweron_future)
-        wait_for_futures(futures)
 
 
 def teardown_lab():
