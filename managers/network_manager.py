@@ -95,42 +95,40 @@ class NetworkManager(VCenter):
         except Exception as e:
             self.logger.error(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
 
-    def delete_vswitch(self, host_name, vswitch_name):
+    def delete_vswitch(self, vswitch_name):
         """
-        Deletes a specified vSwitch from a host.
+        Deletes a specified vSwitch from all hosts managed by the connected vCenter using the Property Collector for efficiency.
 
-        :param host_name: The name of the host from which to delete the vSwitch.
         :param vswitch_name: The name of the vSwitch to delete.
         """
-        # Find the host system by name
-        host_system = self.get_obj([vim.HostSystem], host_name)
+        content = self.get_content()
+        property_collector = content.propertyCollector
+        container = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
 
-        if not host_system:
-            self.logger.error(f"Host '{host_name}' not found.")
-            raise ValueError(f"Host '{host_name}' not found.")
+        # Property Specification
+        prop_spec = vmodl.query.PropertyCollector.PropertySpec(type=vim.HostSystem, pathSet=["configManager.networkSystem"])
+        obj_spec = vmodl.query.PropertyCollector.ObjectSpec(obj=container, skip=False)
+        filter_spec = vmodl.query.PropertyCollector.FilterSpec(objectSet=[obj_spec], propSet=[prop_spec])
 
-        # Get the host's network system
-        host_network_system = host_system.configManager.networkSystem
+        # Retrieve data
+        retrieved_data = property_collector.RetrieveContents([filter_spec])
 
-        # Check if the vSwitch exists
-        vswitch_exists = any(vswitch for vswitch in host_network_system.networkInfo.vswitch if vswitch.name == vswitch_name)
-        if not vswitch_exists:
-            self.logger.error(f"vSwitch '{vswitch_name}' not found on host '{host_name}'.")
-            raise ValueError(f"vSwitch '{vswitch_name}' not found on host '{host_name}'.")
+        for data in retrieved_data:
+            host_system = data.obj
+            network_system = data.propSet[0].val
 
-        # Remove the vSwitch
-        try:
-            host_network_system.RemoveVirtualSwitch(vswitchName=vswitch_name)
-            self.logger.debug(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_name}'.")
-        except vim.fault.NotFound:
-            self.logger.error(f"vSwitch '{vswitch_name}' could not be found.")
-            raise ValueError(f"vSwitch '{vswitch_name}' could not be found.")
-        except vim.fault.ResourceInUse:
-            self.logger.error(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
-            raise ValueError(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
-        except Exception as e:
-            self.logger.error(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
-            raise Exception(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
+            try:
+                if any(vswitch for vswitch in network_system.networkInfo.vswitch if vswitch.name == vswitch_name):
+                    network_system.RemoveVirtualSwitch(vswitchName=vswitch_name)
+                    self.logger.debug(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_system.name}'.")
+            except vim.fault.NotFound:
+                self.logger.error(f"vSwitch '{vswitch_name}' not found on host '{host_system.name}'.")
+            except vim.fault.ResourceInUse:
+                self.logger.error(f"vSwitch '{vswitch_name}' is in use and cannot be deleted on host '{host_system.name}'.")
+            except Exception as e:
+                self.logger.error(f"An error occurred while deleting vSwitch '{vswitch_name}' on host '{host_system.name}': {str(e)}")
+
+        container.Destroy()
     
     def set_user_role_on_network(self, user_domain_name, role_name, network, propagate=True):
         """
