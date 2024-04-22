@@ -69,7 +69,7 @@ def build_ipo_pod(service_instance, pod_config, rebuild=False):
                 pod = int(component["clone_name"].split("av-ipo-vr-")[1])
                 vm_manager.update_mac_address(component["clone_name"],
                                               "Network adapter 1",
-                                              "00:50:56:0f:00:" + "{:02x}".format(pod))
+                                              "00:50:56:0f:" + "{:02x}".format(pod) + ":00")
             if "77201" in component["component_name"]:
                 vm_manager.download_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
                 vm_manager.update_vm_uuid(f"/tmp/{component['clone_name']}.vmx", component["uuid"])
