@@ -406,10 +406,16 @@ class VmManager(VCenter):
                     # Set up network backing with the new network name
                     network_backing.deviceName = new_network_name
 
-                if 'internal' in current_network_name:
+                elif 'internal' in current_network_name:
                     new_network_name = f"pa-internal-cortex-{pod_number}"
                     # Set up network backing with the new network name
                     network_backing.deviceName = new_network_name
+                
+                elif 'ipo' in current_network_name:
+                    if 'rdp' not in current_network_name:
+                        new_network_name = f"av-ipo-{pod_number}"
+                        # Set up network backing with the new network name
+                        network_backing.deviceName = new_network_name
 
                 # Configure the NIC spec
                 nic_spec = vim.vm.device.VirtualDeviceSpec()
