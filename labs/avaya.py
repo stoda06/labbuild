@@ -36,7 +36,7 @@ def build_aura_pod(service_instance, pod_config):
             futures.append(power_futures)
         wait_for_task(futures)
 
-def build_ipo_pod(service_instance, pod_config, rebuild=False):
+def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
     
     # Step-1: Clone VMs.
     vm_manager = VmManager(service_instance)
@@ -63,13 +63,16 @@ def build_ipo_pod(service_instance, pod_config, rebuild=False):
         vm_manager.logger.info(f"Cloning {pod_config['group']} components completed.")
 
         # Step-2: Change VM UUIDs and MAC on VR.
-        vm_manager.logger.info(f"Changing ipo VM UUIDs and Update MAC address on VR")
+        vm_manager.logger.info(f"Changing ipo VM UUIDs, Update MAC address on VR and change Networks on cloned VMs..")
         for component in pod_config["components"]:
+            # Change VM Network
+            vm_manager.update_vm_networks(component["clone_name"], pod)
+            # Update VR MAC Address
             if "vr" in component["component_name"]:
-                pod = int(component["clone_name"].split("av-ipo-vr-")[1])
                 vm_manager.update_mac_address(component["clone_name"],
                                               "Network adapter 1",
                                               "00:50:56:0f:" + "{:02x}".format(pod) + ":00")
+            # Update IPO components' UUIDs
             if "77201" in component["component_name"]:
                 vm_manager.download_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
                 vm_manager.update_vm_uuid(f"/tmp/{component['clone_name']}.vmx", component["uuid"])

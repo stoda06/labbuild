@@ -137,7 +137,7 @@ def setup_environment(args):
                                             service_instance, pod_config)
                     if pod_config["version"] == "ipo":
                         build_futures = executor.submit(labs.avaya.build_ipo_pod,
-                                            service_instance, pod_config, rebuild=args.re_build)
+                                            service_instance, pod_config, pod, rebuild=args.re_build)
                     futures.append(build_futures)
                 wait_for_futures(futures)
 
