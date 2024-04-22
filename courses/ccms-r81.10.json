@@ -82,14 +82,14 @@
             {
                 "component_name": "B-GW-CCMS-R81.10",
                 "base_vm": "B-GW-CCMS-R81.10",
-                "clone_name": "B-GW-pod{X}",
+                "clone_name": "B-GW-{X}",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
             {
                 "component_name": "B-Host-CCMS-R81.10",
                 "base_vm": "B-Host-CCMS-R81.10",
-                "clone_name": "B-Host-pod{X}",
+                "clone_name": "B-Host-{X}",
                 "prtg_monitor": "",
                 "prtg_container": ""
             },
