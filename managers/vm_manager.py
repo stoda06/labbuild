@@ -743,3 +743,51 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"Failed to update the VMX file '{vmx_file_path}': {str(e)}")
             return False
+        
+    def create_linked_clone(self, base_vm_name, clone_name, snapshot_name, resource_pool_name, datastore_name=None):
+        """
+        Creates a linked clone from an existing snapshot.
+
+        :param base_vm_name: The name of the source VM.
+        :param clone_name: The name of the new cloned VM.
+        :param snapshot_name: The name of the snapshot to clone from.
+        :param resource_pool_name: The name of the resource pool to place the cloned VM.
+        :param datastore_name: The name of the datastore where the cloned VM will be placed. If None, uses the same datastore as the source VM.
+        :return: True if the clone was created successfully, False otherwise.
+        """
+        try:
+            base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
+            if not base_vm:
+                self.logger.error(f"Base VM '{base_vm_name}' not found.")
+                return False
+
+            if not base_vm.snapshot:
+                self.logger.error(f"No snapshots found for VM '{base_vm_name}'.")
+                return False
+
+            snapshot = self.find_snapshot_in_tree(base_vm, snapshot_name)
+            if not snapshot:
+                self.logger.error(f"Snapshot '{snapshot_name}' not found in VM '{base_vm_name}'.")
+                return False
+
+            resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
+            if not resource_pool:
+                self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
+                return False
+
+            datastore = self.get_obj([vim.Datastore], datastore_name) if datastore_name else base_vm.datastore[0]
+
+            clone_spec = vim.vm.CloneSpec()
+            clone_spec.location = vim.vm.RelocateSpec()
+            clone_spec.location.pool = resource_pool
+            clone_spec.location.datastore = datastore
+            clone_spec.location.diskMoveType = 'createNewChildDiskBacking'
+            clone_spec.snapshot = snapshot
+
+            task = base_vm.CloneVM_Task(folder=base_vm.parent, name=clone_name, spec=clone_spec)
+            if self.wait_for_task(task):
+                self.logger.info(f"Linked clone '{clone_name}' created successfully.")
+                return True
+        except Exception as e:
+            self.logger.error(f"Failed to create linked clone: {e}")
+            return False
