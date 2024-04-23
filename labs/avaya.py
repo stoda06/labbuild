@@ -81,6 +81,20 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
         wait_for_task(futures)
         futures.clear()
 
+        snapshot_name = "base"
+        for component in pod_config["components"]:
+            # Create a snapshot of all the cloned VMs to save base config.
+            if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
+                snapshot_futures = executor.submit(
+                    vm_manager.create_snapshot,
+                    component["clone_name"],
+                    snapshot_name,
+                    description=f"Snapshot of {component['clone_name']}"
+                )
+                futures.append(snapshot_futures)
+        wait_for_task(futures)
+        futures.clear()
+
         # Step-3: Power-on VMs
         vm_manager.logger.info(f"Begin poweron process.")
         for component in pod_config["components"]:
