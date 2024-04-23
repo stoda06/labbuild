@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 
-from managers.resource_pool_manager import ResourcePoolManager
-from managers.folder_manager import FolderManager
-from managers.network_manager import NetworkManager
-from managers.vm_manager import VmManager
-from managers.host_manager import HostManager
-from managers.vcenter import VCenter
-from hosts.host import get_host_by_name
 from concurrent.futures import ThreadPoolExecutor
-from dotenv import load_dotenv
 from logger.log_config import setup_logger
-import logging
-import argparse
+from hosts.host import get_host_by_name
+from managers.vcenter import VCenter
+from dotenv import load_dotenv
 import labs.checkpoint
 import labs.avaya
 import labs.palo
+import argparse
+import logging
 import json
 import time
 import os
@@ -68,18 +63,20 @@ def setup_environment(args):
     start_time = time.perf_counter()
 
     if course_config:
+        host_details = get_host_by_name(args.host)
+
+        # Step-1: Connect to vcenter
+        vc_host = host_details.vcenter
+        vc_user = os.getenv("VC_USER")
+        vc_password = os.getenv("VC_PASS")
+        vc_port = 443  # Default port for vCenter connection
+
+        service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
+        service_instance.connect()
+        futures = []
+
         if course_config["vendor"] == "cp":
-            # Step-1: Connect to vcenter
-            vc_host = host_details.vcenter
-            vc_user = os.getenv("VC_USER")
-            vc_password = os.getenv("VC_PASS")
-            vc_port = 443  # Default port for vCenter connection
-
-            service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
-            service_instance.connect()
-
             with ThreadPoolExecutor() as executor:
-                futures = []
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     deploy_futures = executor.submit(
@@ -94,17 +91,6 @@ def setup_environment(args):
                     futures.append(deploy_futures)
                 wait_for_futures(futures)
         if course_config["vendor"] == "pa":
-            host_details = get_host_by_name(args.host)
-
-            # Step-1: Connect to vcenter
-            vc_host = host_details.vcenter
-            vc_user = os.getenv("VC_USER")
-            vc_password = os.getenv("VC_PASS")
-            vc_port = 443  # Default port for vCenter connection
-
-            service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
-            service_instance.connect()
-            futures = []
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
@@ -117,18 +103,6 @@ def setup_environment(args):
                 wait_for_futures(futures)
         
         if course_config["vendor"] == "av":
-            host_details = get_host_by_name(args.host)
-
-            # Step-1: Connect to vcenter
-            vc_host = host_details.vcenter
-            vc_user = os.getenv("VC_USER")
-            vc_password = os.getenv("VC_PASS")
-            vc_port = 443  # Default port for vCenter connection
-
-            service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
-            service_instance.connect()
-            
-            futures = []
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
@@ -172,6 +146,8 @@ def main():
     setup_parser.add_argument('-r','--re-build', action='store_true', help='Enable re-build to clear any existing resources for the given build and proceed with the build')
     setup_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
     setup_parser.add_argument('-q','--quiet', action='store_true', help='Suppress output to display only warnings or errors')
+    setup_parser.add_argument('-c','--component', help='Build a specific component for a course.')
+    setup_parser.add_argument('--link', action='store_true', help='Create linked clones to conserve storage space')
 
     setup_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
     setup_parser.add_argument('-cs','--create-snapshot', required=True, help='Name of the snapshot.')
