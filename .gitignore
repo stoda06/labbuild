@@ -2,5 +2,5 @@
 __pycache__
 *.log
 *.log.*
+*.code-workspace
 examples
-labbuild.code-workspace
