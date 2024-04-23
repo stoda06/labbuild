@@ -38,31 +38,31 @@ def build_aura_pod(service_instance, pod_config):
 
 def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
     
-    # Step-1: Clone VMs.
+    # Step-1: Create an instance on VmManager.
     vm_manager = VmManager(service_instance)
     futures = []
-
     with ThreadPoolExecutor() as executor:
+        # Step-1.1: If Reb-build flag is set, delete the existing components.
         if rebuild:
             vm_manager.logger.info(f"Teardown {pod_config['group']} components.")
             for component in pod_config["components"]:
-                delete_future = executor.submit(vm_manager.delete_vm,
+                delete_future = executor.submit(vm_manager.delete_vm, 
                                                 component["clone_name"])
                 futures.append(delete_future)
             wait_for_task(futures)
             futures.clear()
+
+        # Step-2: Start cloning the components mentioned in the pod_config.
         vm_manager.logger.info(f"Begin cloning {pod_config['group']} components.")
         for component in pod_config["components"]:
-            clone_future = executor.submit(vm_manager.clone_vm, 
-                                           component["base_vm"], 
-                                           component["clone_name"], 
-                                           pod_config["group"])
+            clone_future = executor.submit(vm_manager.clone_vm, component["base_vm"], 
+                                           component["clone_name"], pod_config["group"])
             futures.append(clone_future)
         wait_for_task(futures)
         futures.clear()
         vm_manager.logger.info(f"Cloning {pod_config['group']} components completed.")
 
-        # Step-2: Change VM UUIDs and MAC on VR.
+        # Step-3: Change VM UUIDs and MAC on VR.
         vm_manager.logger.info(f"Changing ipo VM UUIDs, Update MAC address on VR and change Networks on cloned VMs..")
         for component in pod_config["components"]:
             # Change VM Network
@@ -81,6 +81,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
         wait_for_task(futures)
         futures.clear()
 
+        # Step-4: Create a "base" snapshot on the cloned components.
         snapshot_name = "base"
         for component in pod_config["components"]:
             # Create a snapshot of all the cloned VMs to save base config.
@@ -95,7 +96,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
         wait_for_task(futures)
         futures.clear()
 
-        # Step-3: Power-on VMs
+        # Step-5: Power-on all the components.
         vm_manager.logger.info(f"Begin poweron process.")
         for component in pod_config["components"]:
             poweron_future = executor.submit(vm_manager.poweron_vm,
