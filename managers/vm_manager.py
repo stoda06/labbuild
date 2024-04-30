@@ -154,54 +154,80 @@ class VmManager(VCenter):
 
         return network_adapters
     
+    def refresh_vm(self, vm):
+        try:
+            vm.Reload()
+            self.logger.info(f"VM configuration for '{vm.name}' has been reloaded.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to reload VM configuration for '{vm.name}': {str(e)}")
+            return False
+    
     def update_mac_address(self, vm_name, adapter_label, new_mac_address):
         """
-        Updates the MAC address of a specified network adapter on a VM without altering its network connection,
-        and logs the current network name along with the adapter label.
+        Updates the MAC address of a specified network adapter on a VM and verifies the update.
 
         :param vm_name: The name of the VM to update.
         :param adapter_label: The label of the network adapter (e.g., "Network adapter 1").
         :param new_mac_address: The new MAC address to assign to the adapter.
-        :return: True if the MAC address was successfully updated, False otherwise.
+        :return: True if the MAC address was successfully updated and verified, False otherwise.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
             return False
         
-        # Find the specified network adapter
+        # Retrieve the network adapter based on the label
+        network_name = None
         nic_spec = None
-        current_network_name = None  # Initialize variable to store current network name
         for device in vm.config.hardware.device:
             if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.deviceInfo.label == adapter_label:
-                # Attempt to extract current network name
                 if hasattr(device.backing, 'network'):
-                    network = device.backing.network
-                    if network:
-                        current_network_name = network.name if hasattr(network, 'name') else 'Unknown Network'
-                
-                nic_spec = vim.vm.device.VirtualDeviceSpec()
-                nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
-                nic_spec.device = device
-                nic_spec.device.macAddress = new_mac_address
-                nic_spec.device.addressType = 'manual'  # Set custom MAC
-                nic_spec.device.wakeOnLanEnabled = device.wakeOnLanEnabled
-                nic_spec.device.backing = device.backing  # Preserve network connection
-                break
+                    network_name = device.backing.network.name if hasattr(device.backing.network, 'name') else None
+                    if network_name:
+                        nic_spec = vim.vm.device.VirtualDeviceSpec()
+                        nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                        nic_spec.device = device
+                        nic_spec.device.macAddress = new_mac_address
+                        nic_spec.device.addressType = 'manual'
+                        break
 
         if not nic_spec:
-            self.logger.error(f"Network adapter '{adapter_label}' not found on VM '{vm_name}'.")
+            self.logger.error(f"Network adapter '{adapter_label}' not found on VM '{vm_name}', or it is not connected to a network.")
             return False
 
         # Apply the configuration change
         config_spec = vim.vm.ConfigSpec(deviceChange=[nic_spec])
         task = vm.ReconfigVM_Task(config_spec)
         if self.wait_for_task(task):
-            self.logger.debug(f"MAC address of '{adapter_label}' on VM '{vm_name}' updated to '{new_mac_address}'. Current network: {current_network_name}.")
-            return True
+            # Verify the MAC address update
+            return self.verify_mac_address(vm, adapter_label, new_mac_address, network_name)
         else:
             self.logger.error(f"Failed to change MAC address for '{adapter_label}' on VM '{vm_name}'.")
             return False
+
+    def verify_mac_address(self, vm, adapter_label, expected_mac, expected_network):
+        """
+        Verifies the MAC address and network name of a specified adapter on a VM.
+
+        :param vm: The VirtualMachine object.
+        :param adapter_label: The label of the network adapter.
+        :param expected_mac: The expected MAC address.
+        :param expected_network: The expected network name.
+        :return: True if the verification passes, False otherwise.
+        """
+        for device in vm.config.hardware.device:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.deviceInfo.label == adapter_label:
+                actual_mac = device.macAddress
+                network_name = device.backing.network.name if hasattr(device.backing.network, 'name') else None
+                if actual_mac == expected_mac and network_name == expected_network:
+                    self.logger.debug(f"MAC address and network verified for '{adapter_label}' on VM '{vm.name}'.")
+                    return True
+                else:
+                    self.logger.error(f"Verification failed for MAC or network on '{adapter_label}' for VM '{vm.name}'.")
+                    return False
+        self.logger.error(f"Network adapter '{adapter_label}' not found during verification on VM '{vm.name}'.")
+        return False
 
     def delete_vm(self, vm_name):
         """
@@ -441,8 +467,6 @@ class VmManager(VCenter):
             self.logger.error(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
             raise Exception(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
 
-
-    
     def get_vm_by_name_and_folder(self, vm_name, folder_name):
         """
         Retrieves a VM object based on the VM name and the name of its containing folder.

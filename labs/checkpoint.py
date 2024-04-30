@@ -26,7 +26,6 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
     resource_pool_manager = ResourcePoolManager(service_instance)
 
     if rebuild:
-        
         vm_manager.delete_folder(pod_config["folder_name"], force=True)
         for network in pod_config['network']:
             network_manager.delete_vswitch(host.fqdn, network['switch_name'])
