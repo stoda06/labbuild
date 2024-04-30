@@ -33,6 +33,11 @@ class ResourcePoolManager(VCenter):
             parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool)
             if parent_rp is None:
                 self.logger.error(f"Parent Resource pool '{parent_resource_pool}' not found.")
+            
+            child_rp = self.get_obj([vim.ResourcePool], rp_name)
+            if child_rp:
+                self.logger.error(f"Resource pool '{parent_resource_pool}' already exists. Skipping.")
+                return child_rp
 
             resource_config_spec = vim.ResourceConfigSpec()
 
