@@ -127,3 +127,15 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
             )
             futures.append(poweron_future)
         wait_for_futures(futures)
+
+def teardown_pod(service_instance, pod_config, hostname):
+
+    host = get_host_by_name(hostname)
+    vm_manager = VmManager(service_instance)
+    network_manager = NetworkManager(service_instance)
+    resource_pool_manager = ResourcePoolManager(service_instance)
+
+    vm_manager.delete_folder(pod_config["folder_name"], force=True)
+    for network in pod_config['network']:
+        network_manager.delete_vswitch(host.fqdn, network['switch_name'])
+    resource_pool_manager.delete_resource_pool(pod_config["group_name"])
