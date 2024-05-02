@@ -127,10 +127,36 @@ def setup_environment(args):
 
     logger.info(f"The program took {duration_minutes:.2f} minutes to run.")
 
+def teardown_environment(args):
 
-def teardown_lab():
-    print("Tearing down lab...")
-    # Add your teardown lab logic here
+    host_details = get_host_by_name(args.host)
+
+    # Step-1: Connect to vcenter
+    vc_host = host_details.vcenter
+    vc_user = os.getenv("VC_USER")
+    vc_password = os.getenv("VC_PASS")
+    vc_port = 443  # Default port for vCenter connection
+
+    service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
+    service_instance.connect()
+
+    course_config = get_setup_config(args.course)
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+            pod_config = replace_placeholder(course_config, pod)
+            logger.info(f"Deleting {pod_config['group_name']}")
+            if course_config["vendor"] == "cp":
+                teardown_future = executor.submit(
+                    labs.checkpoint.teardown_pod,
+                    service_instance,
+                    pod_config,
+                    args.host
+                )
+            futures.append(teardown_future)
+        wait_for_futures(futures)
+    
+    logger.info(f"Teardown process complete.")
 
 def main():
     parser = argparse.ArgumentParser(prog='labbuild', description="Lab Build Management Tool")
@@ -157,11 +183,11 @@ def main():
 
     # Subparser for the 'teardown' command
     teardown_parser = subparsers.add_parser('teardown', help='Teardown the lab environment')
-    teardown_parser.add_argument('-rp', '--resource-pool',required=True, help='Name of the resource pool to be deleted.')
-    teardown_parser.add_argument('-fd', '--resource-folder',required=True, help='Name of the folder to be deleted.')
-    teardown_parser.add_argument('-nt', '--network',required=True, help='Name of the network to be delete.')
-    teardown_parser.add_argument('--force', action='store_true', help='Force teardown without confirmation')
-
+    teardown_parser.add_argument('--course', required=True, help='Path to the configuration file.')
+    teardown_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
+    teardown_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
+    teardown_parser.add_argument('--host', required=True, help='Name of the host where the pod can be found.')
+    teardown_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
 
     # Parse arguments
     args = parser.parse_args()
@@ -180,10 +206,8 @@ def main():
     elif args.command == 'manage':
         pass
     elif args.command == 'teardown':
-        if args.force:
-            print("Forcing teardown without confirmation.")
-        else:
-            print("Teardown initiated with confirmation.")
+        logger.info("teardown environment.")
+        teardown_environment(args)
     else:
         parser.print_help()
 
