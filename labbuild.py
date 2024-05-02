@@ -82,6 +82,7 @@ def setup_environment(args):
                     deploy_futures = executor.submit(
                         labs.checkpoint.build_cp_pod,
                         service_instance,
+                        pod_config,
                         args.host,
                         pod,
                         rebuild=args.re_build,
