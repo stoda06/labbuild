@@ -65,6 +65,10 @@
                 "snapshot": "71301 Day 1"
             },
             {
+                "component_name": "bsm-pod{X}",
+                "snapshot": "71301 Day 1"
+            },
+            {
                 "component_name": "cm1-pod{X}",
                 "snapshot": "71301 Day 1"
             },
