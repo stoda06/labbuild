@@ -95,19 +95,12 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
 
         for component in pod_config["components"]:
             # Update cloned VMs with the created network(s).
-            update_future = executor.submit(
-                vm_manager.update_vm_networks,
-                component["clone_name"],
-                pod
-            )
-            futures.append(update_future)
+            vm_manager.update_vm_networks(component["clone_name"], pod)
             # Update MAC address on the VR with the pod number with HEX base.
             if "cp-R81-vr" in component["clone_name"] or "cpvr" in component["clone_name"]:
                 vm_manager.update_mac_address(component["clone_name"], 
                                               "Network adapter 1", 
                                               "00:50:56:04:00:" + "{:02x}".format(pod))
-        wait_for_futures(futures)
-        futures.clear()
 
         snapshot_name = "base"
         for component in pod_config["components"]:

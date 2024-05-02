@@ -162,7 +162,7 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"Failed to reload VM configuration for '{vm.name}': {str(e)}")
             return False
-    
+
     def update_mac_address(self, vm_name, adapter_label, new_mac_address):
         """
         Updates the MAC address of a specified network adapter on a VM and verifies the update.
@@ -402,53 +402,40 @@ class VmManager(VCenter):
     def update_vm_networks(self, vm_name, pod_number):
         """
         Updates the networks of an existing VM by changing the vSwitch number in the network names
-        that contain a 'vs' pattern. Networks without 'vs' in their names are ignored.
+        that contain a 'vs' pattern. Networks without 'vs' in their names remain unchanged.
 
         :param vm_name: The name of the VM to update.
-        :param folder_name: The name of the folder containing the VM.
-        :param new_vs_number: The new vSwitch number to apply to the VM's network interfaces.
+        :param pod_number: The new vSwitch number to apply to the VM's network interfaces.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
-            raise ValueError(f"VM '{vm_name}' not found.")
+            return False
 
         # Ensure VM is powered off for changes
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
-            self.logger.warning(f"Powering off VM '{vm_name}' for network update.")
+            self.logger.info(f"Powering off VM '{vm_name}' for network update.")
             self.wait_for_task(vm.PowerOffVM_Task())
 
         device_changes = []
         for device in vm.config.hardware.device:
             if isinstance(device, vim.vm.device.VirtualEthernetCard):
-                current_network_name = device.backing.deviceName
-                network_backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
-                # Check if 'vs' is in the current network name
-                if 'vs' in current_network_name:
-                    # Perform string manipulation to change only the 'vs' number part of the network name
-                    prefix, suffix = current_network_name.rsplit('vs0', 1)
-                    new_network_name = f"{prefix}vs{pod_number}{suffix}"
+                # Preserve the original network backing
+                network_backing = device.backing
 
-                    # Set up network backing with the new network name
-                    network_backing.deviceName = new_network_name
-
-                elif 'internal' in current_network_name:
-                    new_network_name = f"pa-internal-cortex-{pod_number}"
-                    # Set up network backing with the new network name
-                    network_backing.deviceName = new_network_name
-                
-                elif 'ipo' in current_network_name:
-                    if 'rdp' not in current_network_name:
-                        new_network_name = f"av-ipo-{pod_number}"
-                        # Set up network backing with the new network name
-                        network_backing.deviceName = new_network_name
+                if 'vs' in device.backing.deviceName:
+                    prefix, suffix = device.backing.deviceName.rsplit('vs0', 1)
+                    network_backing.deviceName = f"{prefix}vs{pod_number}{suffix}"
+                elif 'internal' in device.backing.deviceName:
+                    network_backing.deviceName = f"pa-internal-cortex-{pod_number}"
+                elif 'ipo' in device.backing.deviceName and 'rdp' not in device.backing.deviceName:
+                    network_backing.deviceName = f"av-ipo-{pod_number}"
 
                 # Configure the NIC spec
                 nic_spec = vim.vm.device.VirtualDeviceSpec()
                 nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
                 nic_spec.device = device
                 nic_spec.device.backing = network_backing
-
                 device_changes.append(nic_spec)
 
         # Apply the changes in a batch job within a try-except block
@@ -456,16 +443,18 @@ class VmManager(VCenter):
             if device_changes:
                 spec = vim.vm.ConfigSpec(deviceChange=device_changes)
                 task = vm.ReconfigVM_Task(spec=spec)
-                self.wait_for_task(task)
-                self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
+                if self.wait_for_task(task):
+                    self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
+                    return True
+                else:
+                    self.logger.error("Failed to update network interfaces due to task failure.")
+                    return False
             else:
-                self.logger.error(f"No network interface changes detected or applicable on VM {vm_name}.")
-        except vmodl.MethodFault as error:
-            self.logger.error(f"Failed to update network interfaces for VM '{vm_name}': {error.msg}")
-            raise Exception(f"Failed to update network interfaces for VM '{vm_name}': {error.msg}")
+                self.logger.warning("No network interface changes detected or applicable.")
+                return True
         except Exception as e:
             self.logger.error(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
-            raise Exception(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
+            raise
 
     def get_vm_by_name_and_folder(self, vm_name, folder_name):
         """
