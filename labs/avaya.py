@@ -2,17 +2,16 @@ from managers.vm_manager import VmManager
 from concurrent.futures import ThreadPoolExecutor
 
 def wait_for_task(futures):
-        
-        # Optionally, wait for all cloning tasks to complete and handle their results
-        for future in futures:
-            try:
-                result = future.result()  # This will re-raise any exceptions caught in the task
-                # Handle successful cloning result
-                if result:
-                    pass
-            except Exception as e:
-                # Handle cloning failure
-                print(f"Task failed: {e}")
+    # Optionally, wait for all cloning tasks to complete and handle their results
+    for future in futures:
+        try:
+            result = future.result()  # This will re-raise any exceptions caught in the task
+            # Handle successful cloning result
+            if result:
+                pass
+        except Exception as e:
+            # Handle cloning failure
+            print(f"Task failed: {e}")
 
 def build_aura_pod(service_instance, pod_config):
     
