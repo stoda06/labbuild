@@ -31,7 +31,23 @@ class VmManager(VCenter):
             power_on_task = vm.PowerOnVM_Task()
             self.wait_for_task(power_on_task)
             self.logger.debug(f"VM '{vm_name}' powered on successfully.")
-
+            return True
+    
+    def poweroff_vm(self, vm_name):
+        """
+        Powers off a single virtual machine.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return
+        
+        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
+            self.logger.debug(f"VM '{vm_name}' is powered on. Attempting to power off")
+            power_off_task = vm.PowerOffVM_Task()
+            self.wait_for_task(power_off_task)
+            self.logger.debug(f"VM '{vm_name}' powered off successfully.")
+            return True
 
     def clone_vm(self, base_name, clone_name, resource_pool_name, directory_name=None, datastore_name=None, power_on=False):
         """
@@ -309,7 +325,6 @@ class VmManager(VCenter):
         }
 
         return current_usage
-
 
     def power_off_vm(self, vm):
         """
