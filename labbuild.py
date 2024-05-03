@@ -5,6 +5,7 @@ from logger.log_config import setup_logger
 from hosts.host import get_host_by_name
 from managers.vcenter import VCenter
 from dotenv import load_dotenv
+import manage.vm_operations
 import labs.checkpoint
 import labs.avaya
 import labs.palo
@@ -58,9 +59,6 @@ def wait_for_futures(futures):
 def setup_environment(args):
 
     course_config = get_setup_config(args.course)
-
-    # Capture the start time with higher precision
-    start_time = time.perf_counter()
 
     if course_config:
         host_details = get_host_by_name(args.host)
@@ -116,17 +114,6 @@ def setup_environment(args):
                     futures.append(build_futures)
                 wait_for_futures(futures)
 
-    # Capture the end time with higher precision
-    end_time = time.perf_counter()
-
-    # Calculate the duration in seconds
-    duration_seconds = end_time - start_time
-
-    # Convert seconds to minutes
-    duration_minutes = duration_seconds / 60
-
-    logger.info(f"The program took {duration_minutes:.2f} minutes to run.")
-
 def teardown_environment(args):
 
     host_details = get_host_by_name(args.host)
@@ -158,6 +145,28 @@ def teardown_environment(args):
     
     logger.info(f"Teardown process complete.")
 
+def manage_environment(args):
+    host_details = get_host_by_name(args.host)
+
+    # Step-1: Connect to vcenter
+    vc_host = host_details.vcenter
+    vc_user = os.getenv("VC_USER")
+    vc_password = os.getenv("VC_PASS")
+    vc_port = 443  # Default port for vCenter connection
+
+    service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
+    service_instance.connect()
+    course_config = get_setup_config(args.course)
+    futures = []
+    
+    with ThreadPoolExecutor() as executor:
+        for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+            pod_config = replace_placeholder(course_config, pod)
+            operation_future = executor.submit(manage.vm_operations.perform_vm_operations,
+                                service_instance, pod_config, args.operation)
+            futures.append(operation_future)
+        wait_for_futures(futures)
+
 def main():
     parser = argparse.ArgumentParser(prog='labbuild', description="Lab Build Management Tool")
     subparsers = parser.add_subparsers(dest='command', title='commands', help='Available commands')
@@ -176,10 +185,16 @@ def main():
     setup_parser.add_argument('-c','--component', help='Build a specific component for a course.')
     setup_parser.add_argument('--link', action='store_true', help='Create linked clones to conserve storage space')
 
-    setup_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
-    setup_parser.add_argument('-cs','--create-snapshot', required=True, help='Name of the snapshot.')
-    setup_parser.add_argument('-mem','--memory', required=True, choices=['True','False'], help='''Include the virtual machine's memory in the snapshot.''')
-    setup_parser.add_argument('-qs','--quiesce', required=True, choices=['True','False'], default='False', help='Quiesce the file system in the virtual machine.')
+    manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
+    # manage_parser.add_argument('-cs','--create-snapshot', required=True, help='Name of the snapshot.')
+    # manage_parser.add_argument('-mem','--memory', required=True, choices=['True','False'], help='''Include the virtual machine's memory in the snapshot.''')
+    # manage_parser.add_argument('-qs','--quiesce', required=True, choices=['True','False'], default='False', help='Quiesce the file system in the virtual machine.')
+    manage_parser.add_argument('--course', required=True, help='Path to the configuration file.')
+    manage_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
+    manage_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
+    manage_parser.add_argument('--host', required=True, help='Name of the host where the pods reside.')
+    manage_parser.add_argument('-o', '--operation', choices=['start', 'stop', 'reboot'], required=True, help='Perform VM operations.')
+    manage_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
 
     # Subparser for the 'teardown' command
     teardown_parser = subparsers.add_parser('teardown', help='Teardown the lab environment')
@@ -201,10 +216,9 @@ def main():
     if args.command == 'setup':
         logger.info(f"Building setup for {args.course} on {args.host}")
         setup_environment(args)
-        if args.verbose:
-            print("Verbose mode enabled.")
     elif args.command == 'manage':
-        pass
+        if args.operation:
+            manage_environment(args)
     elif args.command == 'teardown':
         logger.info("teardown environment.")
         teardown_environment(args)
@@ -212,4 +226,16 @@ def main():
         parser.print_help()
 
 if __name__ == "__main__":
+    # Capture the start time with higher precision
+    start_time = time.perf_counter()
     main()
+    # Capture the end time with higher precision
+    end_time = time.perf_counter()
+
+    # Calculate the duration in seconds
+    duration_seconds = end_time - start_time
+
+    # Convert seconds to minutes
+    duration_minutes = duration_seconds / 60
+
+    logger.info(f"The program took {duration_minutes:.2f} minutes to run.")
