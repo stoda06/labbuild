@@ -5,10 +5,10 @@ from logger.log_config import setup_logger
 from hosts.host import get_host_by_name
 from managers.vcenter import VCenter
 from dotenv import load_dotenv
-import manage.vm_operations
-import labs.checkpoint
-import labs.avaya
-import labs.palo
+import labs.manage.vm_operations as manage
+import labs.setup.checkpoint as checkpoint
+import labs.setup.avaya as avaya
+import labs.setup.palo as palo
 import argparse
 import logging
 import json
@@ -78,7 +78,7 @@ def setup_environment(args):
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     deploy_futures = executor.submit(
-                        labs.checkpoint.build_cp_pod,
+                        checkpoint.build_cp_pod,
                         service_instance,
                         pod_config,
                         args.host,
@@ -94,7 +94,7 @@ def setup_environment(args):
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     if course_config["version"] == "cortex":
-                        build_futures = executor.submit(labs.palo.build_cortex_pod,
+                        build_futures = executor.submit(palo.build_cortex_pod,
                                                         service_instance, host_details, 
                                                         pod_config, datastore=args.datastore, 
                                                         rebuild=args.re_build)
@@ -106,10 +106,10 @@ def setup_environment(args):
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     if pod_config["version"] == "aura":
-                        build_futures = executor.submit(labs.avaya.build_aura_pod,
+                        build_futures = executor.submit(avaya.build_aura_pod,
                                             service_instance, pod_config)
                     if pod_config["version"] == "ipo":
-                        build_futures = executor.submit(labs.avaya.build_ipo_pod,
+                        build_futures = executor.submit(avaya.build_ipo_pod,
                                             service_instance, pod_config, pod, rebuild=args.re_build)
                     futures.append(build_futures)
                 wait_for_futures(futures)
@@ -135,7 +135,7 @@ def teardown_environment(args):
             logger.info(f"Deleting {pod_config['group_name']}")
             if course_config["vendor"] == "cp":
                 teardown_future = executor.submit(
-                    labs.checkpoint.teardown_pod,
+                    checkpoint.teardown_pod,
                     service_instance,
                     pod_config,
                     args.host
