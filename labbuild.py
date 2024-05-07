@@ -97,7 +97,8 @@ def setup_environment(args):
                         build_futures = executor.submit(palo.build_cortex_pod,
                                                         service_instance, host_details, 
                                                         pod_config, datastore=args.datastore, 
-                                                        rebuild=args.re_build)
+                                                        rebuild=args.re_build,
+                                                        linked=args.link)
                     futures.append(build_futures)
                 wait_for_futures(futures)
         
