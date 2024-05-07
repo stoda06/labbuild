@@ -32,7 +32,13 @@ def build_cortex_pod(service_instance, host_details, pod_config, datastore="vms"
         for component in pod_config["components"]:
             if rebuild:
                 vm_manager.delete_vm(component["clone_name"])
-            if host_details.name == "ultramagnus":
+            if host_details.name == "cliffjumper":
+                resource_pool = component["component_name"] + "-cl"
+            elif host_details.name == "apollo":
+                resource_pool = component["component_name"] + "-ap"
+            elif host_details.name == "nightbird":
+                resource_pool = component["component_name"] + "-ni"
+            elif host_details.name == "ultramagnus":
                 resource_pool = component["component_name"] + "-ul"
             else:
                 resource_pool = component["component_name"]
