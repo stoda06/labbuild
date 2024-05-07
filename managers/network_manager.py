@@ -13,13 +13,22 @@ class NetworkManager(VCenter):
     
     def create_port_group(self, host_network_system, switch_name, port_group_spec):
         """
-        Create a single port group on the specified switch.
+        Create a single port group on the specified switch, ensuring it does not already exist.
+
+        :param host_network_system: The network system of the host where the port group will be added.
+        :param switch_name: The name of the vSwitch where the port group will be created.
+        :param port_group_spec: Specification of the port group to be created.
         """
         try:
+            # Retrieve the current list of port groups to check if the port group already exists
+            existing_port_groups = host_network_system.networkConfig.portgroup
+            if any(pg.spec.name == port_group_spec.name for pg in existing_port_groups):
+                self.logger.warning(f"Port group '{port_group_spec.name}' already exists on switch '{switch_name}'. Skipping.")
+                return
+
+            # Proceed with creating the port group since it does not exist
             host_network_system.AddPortGroup(portgrp=port_group_spec)
             self.logger.debug(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
-        except vim.fault.AlreadyExists:
-            self.logger.warning(f"Port group '{port_group_spec.name}' already exists on switch '{switch_name}'. Skipping.")
         except Exception as e:
             self.logger.error(f"Failed to create port group '{port_group_spec.name}': {e}")
     
