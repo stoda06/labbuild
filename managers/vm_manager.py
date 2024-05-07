@@ -799,7 +799,7 @@ class VmManager(VCenter):
                 self.logger.error(f"No snapshots found for VM '{base_vm_name}'.")
                 return False
 
-            snapshot = self.find_snapshot_in_tree(base_vm, snapshot_name)
+            snapshot = self.find_snapshot_in_tree(base_vm.snapshot.rootSnapshotList, snapshot_name)
             if not snapshot:
                 self.logger.error(f"Snapshot '{snapshot_name}' not found in VM '{base_vm_name}'.")
                 return False
@@ -816,7 +816,7 @@ class VmManager(VCenter):
             clone_spec.location.pool = resource_pool
             clone_spec.location.datastore = datastore
             clone_spec.location.diskMoveType = 'createNewChildDiskBacking'
-            clone_spec.snapshot = snapshot
+            clone_spec.snapshot = snapshot.snapshot
 
             task = base_vm.CloneVM_Task(folder=base_vm.parent, name=clone_name, spec=clone_spec)
             if self.wait_for_task(task):
