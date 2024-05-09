@@ -414,7 +414,7 @@ class VmManager(VCenter):
 
         return network_objects
 
-    def update_vm_networks(self, vm_name, pod_number):
+    def update_vm_networks(self, vm_name, course_type, pod_number):
         """
         Updates the networks of an existing VM by changing the vSwitch number in the network names
         that contain a 'vs' pattern. Networks without 'vs' in their names remain unchanged.
@@ -438,13 +438,20 @@ class VmManager(VCenter):
                 # Preserve the original network backing
                 network_backing = device.backing
 
-                if 'vs' in device.backing.deviceName:
-                    prefix, suffix = device.backing.deviceName.rsplit('vs0', 1)
-                    network_backing.deviceName = f"{prefix}vs{pod_number}{suffix}"
-                elif 'internal' in device.backing.deviceName:
-                    network_backing.deviceName = f"pa-internal-cortex-{pod_number}"
-                elif 'ipo' in device.backing.deviceName and 'rdp' not in device.backing.deviceName:
-                    network_backing.deviceName = f"av-ipo-{pod_number}"
+                if 'checkpoint' in course_type:
+                    if 'vs' in device.backing.deviceName:
+                        prefix, suffix = device.backing.deviceName.rsplit('vs0', 1)
+                        network_backing.deviceName = f"{prefix}vs{pod_number}{suffix}"
+                if '1100-210' in course_type:
+                    if 'rdp' not in device.backing.deviceName:
+                        prefix = device.backing.deviceName.split('1')[0]
+                        network_backing.deviceName = f"{prefix}{pod_number}"
+                if 'cortex' in course_type:
+                    if 'internal' in device.backing.deviceName:
+                        network_backing.deviceName = f"pa-internal-cortex-{pod_number}"
+                if 'ipo' in course_type:
+                    if 'ipo' in device.backing.deviceName and 'rdp' not in device.backing.deviceName:
+                        network_backing.deviceName = f"av-ipo-{pod_number}"
 
                 # Configure the NIC spec
                 nic_spec = vim.vm.device.VirtualDeviceSpec()
