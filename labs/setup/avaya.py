@@ -65,7 +65,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
         vm_manager.logger.info(f"Changing ipo VM UUIDs, Update MAC address on VR and change Networks on cloned VMs..")
         for component in pod_config["components"]:
             # Change VM Network
-            vm_manager.update_vm_networks(component["clone_name"], pod)
+            vm_manager.update_vm_networks(component["clone_name"], "ipo", pod)
             # Update VR MAC Address
             if "vr" in component["component_name"]:
                 vm_manager.update_mac_address(component["clone_name"],
