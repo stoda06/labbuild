@@ -95,7 +95,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
 
         for component in pod_config["components"]:
             # Update cloned VMs with the created network(s).
-            vm_manager.update_vm_networks(component["clone_name"], pod)
+            vm_manager.update_vm_networks(component["clone_name"], "checkpoint", pod)
             # Update MAC address on the VR with the pod number with HEX base.
             if "vr" in component["clone_name"]:
                 vm_manager.update_mac_address(component["clone_name"], 
