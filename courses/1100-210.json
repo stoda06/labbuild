@@ -2,6 +2,7 @@
     "1100-210": {
         "vendor": "pa",
         "version": "1100-210",
+        "pod_number": "{X}",
         "components": [
             {
                 "component_name": "11.0-vr",

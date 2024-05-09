@@ -94,12 +94,18 @@ def setup_environment(args):
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     if course_config["version"] == "cortex":
-                        build_futures = executor.submit(palo.build_cortex_pod,
+                        build_future = executor.submit(palo.build_cortex_pod,
                                                         service_instance, host_details, 
-                                                        pod_config, datastore=args.datastore, 
+                                                        pod_config, 
                                                         rebuild=args.re_build,
                                                         linked=args.link)
-                    futures.append(build_futures)
+                    elif course_config["version"] == "1100-210":
+                        build_future = executor.submit(palo.build_1100_210_pod,
+                                                        service_instance, host_details, 
+                                                        pod_config, 
+                                                        rebuild=args.re_build,
+                                                        linked=args.link)
+                    futures.append(build_future)
                 wait_for_futures(futures)
         
         if course_config["vendor"] == "av":

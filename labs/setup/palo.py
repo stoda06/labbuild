@@ -1,12 +1,57 @@
 from managers.vm_manager import VmManager
 from managers.network_manager import NetworkManager
-from concurrent.futures import ThreadPoolExecutor
+from pyVmomi import vim
 
 
-def build_1100_210_pod(service_instance, pod_config):
+def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
     vm_manager = VmManager(service_instance)
+    pod = int(pod_config["pod_number"])
+    snapshot_name = "base"
+    # Step-3: Clone VMs
+    
+    for component in pod_config["components"]:
+        if rebuild:
+            if "firewall" not in component["component_name"]:
+                vm_manager.delete_vm(component["clone_name"])
+            else:
+                vm_manager.poweroff_vm(component["vm_name"])
 
-def build_cortex_pod(service_instance, host_details, pod_config, datastore="vms", rebuild=False, linked=False):
+        if host_details.name == "cliffjumper":
+            resource_pool = component["group_name"] + "-cl"
+        elif host_details.name == "apollo":
+            resource_pool = component["group_name"] + "-ap"
+        elif host_details.name == "nightbird":
+            resource_pool = component["group_name"] + "-ni"
+        elif host_details.name == "ultramagnus":
+            resource_pool = component["group_name"] + "-ul"
+        else:
+            resource_pool = component["group_name"]
+        if "firewall" not in component["component_name"]:
+            vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
+        else:
+            vm_manager.revert_to_snapshot(component["vm_name"], component["snapshot"])
+        
+        # Step-4: Update VM Network
+        if "firewall" not in component["component_name"]:
+            vm_manager.update_vm_networks(component["clone_name"], "1100-210", pod)
+            # Update MAC address on the VR with the pod number with HEX base.
+            if "vr" in component["clone_name"]:
+                new_mac = "00:50:56:07:00:" + "{:02x}".format(pod)
+                vm_manager.update_mac_address(component["clone_name"], 
+                                                "Network adapter 1", 
+                                                new_mac)
+            # Create a snapshot of all the cloned VMs to save base config.
+            if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
+                vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
+                                            description=f"Snapshot of {component['clone_name']}")
+        # Step-5: Poweron VMs
+    for component in pod_config["components"]:
+        if "firewall" not in component["component_name"]:
+            vm_manager.poweron_vm(component["clone_name"])
+        else:
+            vm_manager.poweron_vm(component["vm_name"])
+
+def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
     pod = int(pod_config["pod_number"])
@@ -38,7 +83,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, datastore="vms"
             vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
 
         # Step-4: Update VM Network
-        vm_manager.update_vm_networks(component["clone_name"], pod)
+        vm_manager.update_vm_networks(component["clone_name"], "cortex", pod)
         # Update MAC address on the VR with the pod number with HEX base.
         if "vr" in component["clone_name"]:
             new_mac = "00:50:56:07:00:" + "{:02x}".format(100+pod)
