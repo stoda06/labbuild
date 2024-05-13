@@ -25,12 +25,12 @@ class FolderManager(VCenter):
 
         for child in parent_folder.childEntity:
             if isinstance(child, vim.Folder) and child.name == new_folder_name:
-                self.logger.debug(f"Folder '{new_folder_name}' already exists under '{parent_folder_name}'.")
+                self.logger.info(f"Folder '{new_folder_name}' already exists under '{parent_folder_name}'.")
                 return None
 
         try:
             new_folder = parent_folder.CreateFolder(name=new_folder_name)
-            self.logger.debug(f"Folder '{new_folder_name}' created successfully under '{parent_folder_name}'.")
+            self.logger.info(f"Folder '{new_folder_name}' created successfully under '{parent_folder_name}'.")
             return new_folder
         except vim.fault.DuplicateName:
             self.logger.error(f"A folder with the name '{new_folder_name}' already exists.")
@@ -68,7 +68,7 @@ class FolderManager(VCenter):
             # Check if the user already has the specified role assigned with the exact permissions
             for perm in current_permissions:
                 if perm.principal == user_name and perm.roleId == role_id and perm.propagate == propagate:
-                    self.logger.debug(f"User '{user_name}' already has role '{role_name}' on folder '{folder_name}' with identical propagation setting.")
+                    self.logger.info(f"User '{user_name}' already has role '{role_name}' on folder '{folder_name}' with identical propagation setting.")
                     return True  # Skip the assignment since it's already correctly set
         except Exception as e:
             self.logger.error(f"Error retrieving permissions for folder '{folder_name}': {e}")
@@ -84,7 +84,7 @@ class FolderManager(VCenter):
         # Try to assign the permission
         try:
             self.connection.content.authorizationManager.SetEntityPermissions(entity=folder, permission=[permission])
-            self.logger.debug(f"Assigned role '{role_name}' to user '{user_name}' on folder '{folder_name}'.")
+            self.logger.info(f"Assigned role '{role_name}' to user '{user_name}' on folder '{folder_name}'.")
             return True
         except vmodl.MethodFault as error:
             self.logger.error(f"Failed to assign user to folder: {error.msg}")
