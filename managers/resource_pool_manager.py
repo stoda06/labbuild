@@ -128,3 +128,24 @@ class ResourcePoolManager(VCenter):
             self.logger.info(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
         except Exception as e:
             self.logger.error(f"Failed to assign role to user on resource pool: {self.extract_error_message(e)}")
+    
+    def poweroff_all_vms(self, resource_pool_name):
+        # Get the resource pool object
+        resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
+        if not resource_pool:
+            self.logger.error(f"Resource pool {resource_pool_name} not found.")
+            return
+        
+        # Get all VMs in the resource pool
+        vm_list = resource_pool.vm
+        for vm in vm_list:
+            if vm.runtime.powerState == vim.VirtualMachinePowerState.poweredOn:
+                try:
+                    task = vm.PowerOffVM_Task()
+                    self.logger.info(f"Powering off VM: {vm.name}")
+                    self.wait_for_task(task)
+                    self.logger.info(f"VM {vm.name} powered off successfully.")
+                except Exception as e:
+                    self.logger.error(f"Failed to power off VM {vm.name}: {e}")
+            else:
+                self.logger.info(f"VM {vm.name} is already powered off.")
