@@ -587,7 +587,7 @@ class VmManager(VCenter):
         
         # Check if the VM is powered on. If so, power it off first.
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
-            self.logger.warning(f"VM '{vm_name}' is powered on. Attempting to power off before deletion.")
+            self.logger.warning(f"VM '{vm_name}' is powered on. Attempting to power off before reverting to snapshot '{snapshot_name}'.")
             power_off_task = vm.PowerOffVM_Task()
             self.wait_for_task(power_off_task)
             self.logger.info(f"VM '{vm_name}' powered off successfully.")
