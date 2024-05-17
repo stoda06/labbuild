@@ -8,7 +8,7 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
     snapshot_name = "base"
     for component in pod_config["components"]:
         if rebuild:
-            if "firewall" not in component["component_name"]:
+            if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
                 vm_manager.delete_vm(component["clone_name"])
             else:
                 vm_manager.poweroff_vm(component["vm_name"])
