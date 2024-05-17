@@ -105,6 +105,12 @@ def setup_environment(args):
                                                         pod_config, 
                                                         rebuild=args.re_build,
                                                         linked=args.link)
+                    elif course_config["version"] == "1100-220":
+                        build_future = executor.submit(palo.build_1100_220_pod,
+                                                        service_instance, host_details, 
+                                                        pod_config, 
+                                                        rebuild=args.re_build,
+                                                        linked=args.link)
                     futures.append(build_future)
                 wait_for_futures(futures)
         
@@ -221,7 +227,6 @@ def main():
 
     # Execute based on switches
     if args.command == 'setup':
-        logger.info(f"Building setup for {args.course} on {args.host}")
         setup_environment(args)
     elif args.command == 'manage':
         if args.operation:
