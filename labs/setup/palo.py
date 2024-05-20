@@ -24,7 +24,7 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             resource_pool = component["group_name"]
 
-        if pod % 2:
+        if not pod % 2:
             if "firewall" in component["component_name"]:
                 vm_manager.revert_to_snapshot(component["vm_name"], component["snapshot"])
                 continue
