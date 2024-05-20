@@ -18,7 +18,7 @@ def build_aura_pod(service_instance, pod_config):
     
     vm_manager = VmManager(service_instance)
     resource_pool_manager = ResourcePoolManager(service_instance)
-    resource_pool_manager.poweroff_all_vms(pod_config["group_name"])
+    resource_pool_manager.poweroff_all_vms(pod_config["group"])
 
     futures = []
     # Step-2: Revert snapshot to base.
