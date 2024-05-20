@@ -86,8 +86,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
                 component["base_vm"], 
                 component["clone_name"], 
                 pod_config["group_name"], 
-                pod_config["folder_name"], 
-                datastore_name=datastore
+                pod_config["folder_name"]
             )
             futures.append(clone_future)
         wait_for_futures(futures)
