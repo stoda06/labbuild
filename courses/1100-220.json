@@ -30,7 +30,7 @@
             },
             {
                 "component_name": "11.0-client-b",
-                "group_name": "pa-04-ATC-client-b",
+                "group_name": "pa-05-ATC-client-b",
                 "base_vm": "11.0-client-b",
                 "clone_name": "11.0-client-b-{X}"
             },
