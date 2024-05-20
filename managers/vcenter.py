@@ -23,7 +23,7 @@ class VCenter:
                                            pwd=self.password,
                                            port=self.port)
             atexit.register(Disconnect, self.connection)
-            self.logger.info("Connected to vCenter server securely.")
+            self.logger.debug("Connected to vCenter server securely.")
         except ssl.SSLError as ssl_error:
             self.logger.error(f"SSL Error encountered: {ssl_error}")
             self.logger.error("Check your SSL certificate or connection settings.")
@@ -138,7 +138,7 @@ class VCenter:
         """
         try:
             WaitForTask(task)  # This will block until the task is complete
-            self.logger.info("Operation completed successfully.")
+            self.logger.debug("Operation completed successfully.")
             return True
         except Exception as e:
             self.logger.error(f"Operation failed: {self.extract_error_message(e)}")

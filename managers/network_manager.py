@@ -28,7 +28,7 @@ class NetworkManager(VCenter):
 
             # Proceed with creating the port group since it does not exist
             host_network_system.AddPortGroup(portgrp=port_group_spec)
-            self.logger.info(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
+            self.logger.debug(f"Port group '{port_group_spec.name}' created successfully on switch '{switch_name}'.")
         except Exception as e:
             self.logger.error(f"Failed to create port group '{port_group_spec.name}': {e}")
     
@@ -94,7 +94,7 @@ class NetworkManager(VCenter):
             vswitch_spec.mtu = mtu
 
             network_system.AddVirtualSwitch(vswitchName=vswitch_name, spec=vswitch_spec)
-            self.logger.info(f"Virtual switch '{vswitch_name}' created successfully on host '{host_name}'.")
+            self.logger.debug(f"Virtual switch '{vswitch_name}' created successfully on host '{host_name}'.")
         except vim.fault.AlreadyExists:
             self.logger.warning(f"Virtual switch '{vswitch_name}' already exists on host '{host_name}'.")
         except vim.fault.NotFound:
@@ -130,7 +130,7 @@ class NetworkManager(VCenter):
         # Remove the vSwitch
         try:
             host_network_system.RemoveVirtualSwitch(vswitchName=vswitch_name)
-            self.logger.info(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_name}'.")
+            self.logger.debug(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_name}'.")
         except vim.fault.NotFound:
             self.logger.error(f"vSwitch '{vswitch_name}' could not be found.")
             raise ValueError(f"vSwitch '{vswitch_name}' could not be found.")
@@ -159,7 +159,7 @@ class NetworkManager(VCenter):
         # Check if the user already has the specified role assigned
         for perm in current_permissions:
             if perm.principal == user_domain_name and perm.roleId == role_id and perm.propagate == propagate:
-                self.logger.info(f"User '{user_domain_name}' already has role '{role_name}' on network '{network.name}' with identical propagation setting.")
+                self.logger.debug(f"User '{user_domain_name}' already has role '{role_name}' on network '{network.name}' with identical propagation setting.")
                 return  # Skip the assignment
         
         # Find the specified role ID
@@ -182,7 +182,7 @@ class NetworkManager(VCenter):
         
         try:
             auth_manager.SetEntityPermissions(entity=network, permission=[permission])
-            self.logger.info(f"Assigned role '{role_name}' to user '{user_domain_name}' on network '{network.name}'.")
+            self.logger.debug(f"Assigned role '{role_name}' to user '{user_domain_name}' on network '{network.name}'.")
             return True
         except Exception as e:
             self.logger.error(f"Failed to assign role to network '{network.name}': {e}")
@@ -208,7 +208,7 @@ class NetworkManager(VCenter):
                 try:
                     result = future.result()  # This will re-raise any exceptions caught in the task
                     # Handle successful cloning result
-                    self.logger.info(result)
+                    self.logger.debug(result)
                 except Exception as e:
                     # Handle cloning failure
                     self.logger.error(f"Assigning user and role failed: {e}")
@@ -243,7 +243,7 @@ class NetworkManager(VCenter):
 
             try:
                 network_system.UpdatePortGroup(network_name, port_group_spec)
-                self.logger.info(f"Promiscuous mode enabled for port group '{network_name}' on host '{host_name}'.")
+                self.logger.debug(f"Promiscuous mode enabled for port group '{network_name}' on host '{host_name}'.")
             except vmodl.MethodFault as e:
                 self.logger.error(f"Failed to enable promiscuous mode for port group '{network_name}' on host '{host_name}': {e.msg}")
 

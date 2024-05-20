@@ -27,10 +27,10 @@ class VmManager(VCenter):
 
         # Check if the VM is powered off. If so, power it on.
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOff:
-            self.logger.info(f"VM '{vm_name}' is powered off. Attempting to power on")
+            self.logger.debug(f"VM '{vm_name}' is powered off. Attempting to power on")
             power_on_task = vm.PowerOnVM_Task()
             self.wait_for_task(power_on_task)
-            self.logger.info(f"VM '{vm_name}' powered on successfully.")
+            self.logger.debug(f"VM '{vm_name}' powered on successfully.")
             return True
     
     def poweroff_vm(self, vm_name):
@@ -43,10 +43,10 @@ class VmManager(VCenter):
             return
         
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
-            self.logger.info(f"VM '{vm_name}' is powered on. Attempting to power off")
+            self.logger.debug(f"VM '{vm_name}' is powered on. Attempting to power off")
             power_off_task = vm.PowerOffVM_Task()
             self.wait_for_task(power_off_task)
-            self.logger.info(f"VM '{vm_name}' powered off successfully.")
+            self.logger.debug(f"VM '{vm_name}' powered off successfully.")
             return True
 
     def clone_vm(self, base_name, clone_name, resource_pool_name, directory_name=None, datastore_name=None, power_on=False):
@@ -102,9 +102,9 @@ class VmManager(VCenter):
             clone_spec.powerOn = power_on
 
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-            self.logger.info(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
+            self.logger.debug(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
-                self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
+                self.logger.debug(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
             else:
                 self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
         except Exception as e:
@@ -120,7 +120,7 @@ class VmManager(VCenter):
         """
         if starting_folder is None:
             starting_folder = self.connection.content.rootFolder
-            self.logger.info(f"Starting folder: {starting_folder}")
+            self.logger.debug(f"Starting folder: {starting_folder}")
         
         return self.search_for_folder(starting_folder, folder_name)
 
@@ -132,7 +132,7 @@ class VmManager(VCenter):
         :param folder_name: The name of the folder to search for.
         :return: The folder if found, None otherwise.
         """
-        self.logger.info(f"Current folder name: {folder.name}")
+        self.logger.debug(f"Current folder name: {folder.name}")
         if folder.name == folder_name and isinstance(folder, vim.Folder):
             return folder
         for child in folder.childEntity:
@@ -147,7 +147,7 @@ class VmManager(VCenter):
         try:
             vms = self.get_all_objects_by_type(vim.VirtualMachine)
             for vm in vms:
-                self.logger.info(f"VM Name: {vm.name}, Power State: {vm.runtime.powerState}")
+                self.logger.debug(f"VM Name: {vm.name}, Power State: {vm.runtime.powerState}")
         except Exception as e:
             self.logger.error(f"Failed to list VMs: {e}")
 
@@ -173,7 +173,7 @@ class VmManager(VCenter):
     def refresh_vm(self, vm):
         try:
             vm.Reload()
-            self.logger.info(f"VM configuration for '{vm.name}' has been reloaded.")
+            self.logger.debug(f"VM configuration for '{vm.name}' has been reloaded.")
             return True
         except Exception as e:
             self.logger.error(f"Failed to reload VM configuration for '{vm.name}': {str(e)}")
@@ -237,7 +237,7 @@ class VmManager(VCenter):
                 actual_mac = device.macAddress
                 network_name = device.backing.network.name if hasattr(device.backing.network, 'name') else None
                 if actual_mac == expected_mac and network_name == expected_network:
-                    self.logger.info(f"MAC address and network verified for '{adapter_label}' on VM '{vm.name}'.")
+                    self.logger.debug(f"MAC address and network verified for '{adapter_label}' on VM '{vm.name}'.")
                     return True
                 else:
                     self.logger.error(f"Verification failed for MAC or network on '{adapter_label}' for VM '{vm.name}'.")
@@ -261,13 +261,13 @@ class VmManager(VCenter):
             self.logger.warning(f"VM '{vm_name}' is powered on. Attempting to power off before deletion.")
             power_off_task = vm.PowerOffVM_Task()
             self.wait_for_task(power_off_task)
-            self.logger.info(f"VM '{vm_name}' powered off successfully.")
+            self.logger.debug(f"VM '{vm_name}' powered off successfully.")
 
         # Proceed to delete the VM
         try:
             delete_task = vm.Destroy_Task()
             self.wait_for_task(delete_task)
-            self.logger.info(f"VM '{vm_name}' deleted successfully.")
+            self.logger.debug(f"VM '{vm_name}' deleted successfully.")
         except Exception as e:
             self.logger.error(f"Failed to delete VM '{vm_name}': {e}")
 
@@ -366,7 +366,7 @@ class VmManager(VCenter):
         try:
             delete_task = folder.Destroy_Task()
             self.wait_for_task(delete_task)
-            self.logger.info(f"Folder '{folder_name}' and its contents were deleted successfully.")
+            self.logger.debug(f"Folder '{folder_name}' and its contents were deleted successfully.")
             return None
         except Exception as e:
             self.logger.error(f"Failed to delete folder '{folder_name}': {str(e)}")
@@ -389,24 +389,24 @@ class VmManager(VCenter):
             return None
 
         # Filter port groups for those associated with the specified vSwitch
-        self.logger.info("Fetching associated port groups")
+        self.logger.debug("Fetching associated port groups")
         associated_portgroups = [pg for pg in host.config.network.portgroup if pg.spec.vswitchName == vswitch_name]
-        self.logger.info("Done")
+        self.logger.debug("Done")
 
         if not associated_portgroups:
             self.logger.error(f"No port groups found for vSwitch '{vswitch_name}' on host '{host_name}'.")
             return None
 
         # Create a dictionary mapping network names to network objects for the host
-        self.logger.info("Creating Network Dict")
+        self.logger.debug("Creating Network Dict")
         network_dict = {network.name: network for network in host.network if vswitch_name in network.name}
         # network_dict = {network.name: network for network in host.network}
-        self.logger.info("Done")
+        self.logger.debug("Done")
 
         # Retrieve the network objects corresponding to the filtered port groups
-        self.logger.info("Retrieve Network objects")
+        self.logger.debug("Retrieve Network objects")
         network_objects = [network_dict.get(pg.spec.name) for pg in associated_portgroups if pg.spec.name in network_dict]
-        self.logger.info("Done")
+        self.logger.debug("Done")
 
         if not network_objects:
             self.logger.error(f"No network objects found for port groups on vSwitch '{vswitch_name}'.")
@@ -429,7 +429,7 @@ class VmManager(VCenter):
 
         # Ensure VM is powered off for changes
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
-            self.logger.info(f"Powering off VM '{vm_name}' for network update.")
+            self.logger.debug(f"Powering off VM '{vm_name}' for network update.")
             self.wait_for_task(vm.PowerOffVM_Task())
 
         device_changes = []
@@ -466,7 +466,7 @@ class VmManager(VCenter):
                 spec = vim.vm.ConfigSpec(deviceChange=device_changes)
                 task = vm.ReconfigVM_Task(spec=spec)
                 if self.wait_for_task(task):
-                    self.logger.info(f"Network interfaces on VM '{vm_name}' updated successfully.")
+                    self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
                     return True
                 else:
                     self.logger.error("Failed to update network interfaces due to task failure.")
@@ -524,7 +524,7 @@ class VmManager(VCenter):
             task = vm.CreateSnapshot_Task(name=snapshot_name, description=description,
                                         memory=memory, quiesce=quiesce)
             if self.wait_for_task(task):
-                self.logger.info(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
+                self.logger.debug(f"Snapshot '{snapshot_name}' created successfully for VM '{vm_name}'.")
                 return True
             else:
                 self.logger.error(f"Task failed to create snapshot '{snapshot_name}' for VM '{vm_name}'.")
@@ -590,14 +590,14 @@ class VmManager(VCenter):
             self.logger.warning(f"VM '{vm_name}' is powered on. Attempting to power off before reverting to snapshot '{snapshot_name}'.")
             power_off_task = vm.PowerOffVM_Task()
             self.wait_for_task(power_off_task)
-            self.logger.info(f"VM '{vm_name}' powered off successfully.")
+            self.logger.debug(f"VM '{vm_name}' powered off successfully.")
 
         snapshot = self.find_snapshot_in_tree(vm.snapshot.rootSnapshotList, snapshot_name)
         if snapshot:
             try:
                 revert_task = snapshot.snapshot.RevertToSnapshot_Task()
                 self.wait_for_task(revert_task)
-                self.logger.info(f"VM '{vm_name}' successfully reverted to snapshot '{snapshot_name}'")
+                self.logger.debug(f"VM '{vm_name}' successfully reverted to snapshot '{snapshot_name}'")
             except vmodl.MethodFault as error:
                 self.logger.error(f"Error reverting to snapshot: {error.msg}")
         else:
@@ -626,7 +626,7 @@ class VmManager(VCenter):
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if vm:
-            self.logger.info(f"VM: {vm_name} UUID is {vm.config.uuid}")
+            self.logger.debug(f"VM: {vm_name} UUID is {vm.config.uuid}")
             return vm.config.uuid
         else:
             self.logger.error("Virtual machine not found.")
@@ -653,7 +653,7 @@ class VmManager(VCenter):
             url, session_cookie = self.get_vmx_file_url(datacenter, datastore, vmx_path)
 
             self.download_file(url, local_path, session_cookie)
-            self.logger.info(f"VMX file downloaded successfully to {local_path}")
+            self.logger.debug(f"VMX file downloaded successfully to {local_path}")
             return True
         except Exception as e:
             self.logger.error(f"Error downloading VMX file: {e}")
@@ -709,7 +709,7 @@ class VmManager(VCenter):
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:  # filter out keep-alive new chunks
                             file.write(chunk)
-            self.logger.info(f"VMX file downloaded successfully to {local_path}")
+            self.logger.debug(f"VMX file downloaded successfully to {local_path}")
             return True
         except requests.exceptions.HTTPError as e:
             self.logger.error(f"HTTP Error downloading VMX file: {e}")
@@ -744,7 +744,7 @@ class VmManager(VCenter):
             with open(local_vmx_path, 'rb') as file:
                 response = requests.put(url, data=file, headers=headers, verify=False)
                 if response.status_code == 200:
-                    self.logger.info(f"Successfully uploaded VMX file to '{url}'.")
+                    self.logger.debug(f"Successfully uploaded VMX file to '{url}'.")
                     return True
                 else:
                     self.logger.error(f"Failed to upload VMX file. Server responded with status code: {response.status_code}")
@@ -779,7 +779,7 @@ class VmManager(VCenter):
             with open(vmx_file_path, 'w') as file:
                 file.writelines(lines)
             
-            self.logger.info(f"UUID updated successfully in the VMX file: {vmx_file_path}")
+            self.logger.debug(f"UUID updated successfully in the VMX file: {vmx_file_path}")
             return True
         except Exception as e:
             self.logger.error(f"Failed to update the VMX file '{vmx_file_path}': {str(e)}")
@@ -827,7 +827,7 @@ class VmManager(VCenter):
 
             task = base_vm.CloneVM_Task(folder=base_vm.parent, name=clone_name, spec=clone_spec)
             if self.wait_for_task(task):
-                self.logger.info(f"Linked clone '{clone_name}' created successfully.")
+                self.logger.debug(f"Linked clone '{clone_name}' created successfully.")
                 return True
         except Exception as e:
             self.logger.error(f"Failed to create linked clone: {e}")
