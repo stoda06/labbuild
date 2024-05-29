@@ -26,9 +26,13 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
     resource_pool_manager = ResourcePoolManager(service_instance)
 
     if rebuild:
+        vm_manager.logger.info(f'P{pod} - Rebuild flag is enabled.')
+        vm_manager.logger.info(f'P{pod} - Deleting folder {pod_config["folder_name"]}')
         vm_manager.delete_folder(pod_config["folder_name"], force=True)
         for network in pod_config['network']:
+            network_manager.logger.info(f'P{pod} - Deleting vswitch {pod_config["switch_name"]}')
             network_manager.delete_vswitch(host.fqdn, network['switch_name'])
+        resource_pool_manager.logger.info(f'P{pod} - Deleting resource pool {pod_config["group_name"]}')
         resource_pool_manager.delete_resource_pool(pod_config["group_name"])
     
     # Create resource pool for the pod.
@@ -45,6 +49,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
         'shares': 163840
     }
     try:
+        resource_pool_manager.logger.info(f'P{pod} - Creating resource pool {pod_config["group_name"]}')
         resource_pool_manager.create_resource_pool(host.resource_pool, 
                                                 pod_config["group_name"],
                                                 cpu_allocation, 
@@ -58,6 +63,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
                                                        pod_config["role"])
     
     # Create pod folder
+    folder_manager.logger.info(f'P{pod} - Creating folder {pod_config['folder_name']}')
     folder_manager.create_folder(host.folder, pod_config['folder_name'])
     # Assign user and role to the created folder.
     folder_manager.assign_user_to_folder(pod_config["folder_name"],
@@ -65,6 +71,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
                                          pod_config["role"])
     
     # Create vSwitches
+    network_manager.logger.info(f'P{pod} - Creating network')
     for network in pod_config['network']:
         network_manager.create_vswitch(host.fqdn, network['switch_name'])
         # Create necessary port groups/networks.
@@ -78,6 +85,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
             network_manager.enable_promiscuous_mode(host.fqdn, network['promiscuous_mode'])
     
     # Start cloning the required VMs simultaneously.
+    vm_manager.logger.info(f'P{pod} - Cloning components')
     with ThreadPoolExecutor(max_workers=thread) as executor:
         futures = []
         for component in pod_config["components"]:
@@ -92,6 +100,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
         wait_for_futures(futures)
         futures.clear()
 
+        vm_manager.logger.info(f'P{pod} - Updating VM networks and VR MAC address.')
         for component in pod_config["components"]:
             # Update cloned VMs with the created network(s).
             vm_manager.update_vm_networks(component["clone_name"], "checkpoint", pod)
@@ -102,6 +111,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
                                               "00:50:56:04:00:" + "{:02x}".format(pod))
 
         snapshot_name = "base"
+        vm_manager.logger.info(f'P{pod} - Creating "base" snapshot on all components.')
         for component in pod_config["components"]:
             # Create a snapshot of all the cloned VMs to save base config.
             if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
@@ -115,6 +125,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
         wait_for_futures(futures)
         futures.clear()
 
+        vm_manager.logger.info(f'P{pod} - Power on all components.')
         for component in pod_config["components"]:
             # Schedule the VM cloning task
             if "state" in component:
