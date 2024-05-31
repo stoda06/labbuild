@@ -60,7 +60,7 @@
             },
             {
                 "component_name": "B-Host-CCAS-R81.20",
-                "base_vm": "B-Host-CCAS-R81.20",
+                "base_vm": "B-Host-R81.20-CCSA",
                 "clone_name": "B-Host-{X}",
                 "prtg_monitor": "",
                 "prtg_container": ""
