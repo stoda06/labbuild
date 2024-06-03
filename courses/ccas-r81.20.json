@@ -11,7 +11,7 @@
         "components": [
             {
                 "component_name": "R81.20-vr",
-                "base_vm": "cp-R81.20-vr",
+                "base_vm": "cp-R81-vr-CCAS-R81.20",
                 "clone_name": "cp-R81-vr-{X}",
                 "prtg_monitor": "",
                 "prtg_container": ""
