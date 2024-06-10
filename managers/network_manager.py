@@ -116,7 +116,7 @@ class NetworkManager(VCenter):
 
         if not host_system:
             self.logger.error(f"Host '{host_name}' not found.")
-            raise ValueError(f"Host '{host_name}' not found.")
+            return False
 
         # Get the host's network system
         host_network_system = host_system.configManager.networkSystem
@@ -125,7 +125,7 @@ class NetworkManager(VCenter):
         vswitch_exists = any(vswitch for vswitch in host_network_system.networkInfo.vswitch if vswitch.name == vswitch_name)
         if not vswitch_exists:
             self.logger.error(f"vSwitch '{vswitch_name}' not found on host '{host_name}'.")
-            raise ValueError(f"vSwitch '{vswitch_name}' not found on host '{host_name}'.")
+            return False
 
         # Remove the vSwitch
         try:
@@ -133,13 +133,15 @@ class NetworkManager(VCenter):
             self.logger.debug(f"vSwitch '{vswitch_name}' has been successfully deleted from host '{host_name}'.")
         except vim.fault.NotFound:
             self.logger.error(f"vSwitch '{vswitch_name}' could not be found.")
-            raise ValueError(f"vSwitch '{vswitch_name}' could not be found.")
+            return False
         except vim.fault.ResourceInUse:
             self.logger.error(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
-            raise ValueError(f"vSwitch '{vswitch_name}' is in use and cannot be deleted.")
+            return False
         except Exception as e:
             self.logger.error(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
-            raise Exception(f"An error occurred while deleting vSwitch '{vswitch_name}': {str(e)}")
+            return False
+
+        return True
     
     def set_user_role_on_network(self, user_domain_name, role_name, network, propagate=True):
         """
