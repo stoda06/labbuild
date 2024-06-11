@@ -17,7 +17,7 @@ def wait_for_futures(futures):
             # Handle cloning failure
             print(f"Task failed: {e}")
 
-def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, datastore=None):
+def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, linked=False):
 
     host = get_host_by_name(hostname)
     vm_manager = VmManager(service_instance)
@@ -63,7 +63,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
                                                        pod_config["role"])
     
     # Create pod folder
-    folder_manager.logger.info(f'P{pod} - Creating folder {pod_config['folder_name']}')
+    folder_manager.logger.info(f'P{pod} - Creating folder {pod_config["folder_name"]}')
     folder_manager.create_folder(host.folder, pod_config['folder_name'])
     # Assign user and role to the created folder.
     folder_manager.assign_user_to_folder(pod_config["folder_name"],
@@ -80,52 +80,42 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
         network_names = [pg["port_group_name"] for pg in network["port_groups"]]
         network_manager.apply_user_role_to_networks(pod_config["domain"]+"\\"+pod_config["user"],
                                                     pod_config["role"], network_names)
-        # Check if any of the created networks need to be set to promisci
+        # Check if any of the created networks need to be set to promiscuous mode.
         if network['promiscuous_mode']:
             network_manager.enable_promiscuous_mode(host.fqdn, network['promiscuous_mode'])
     
     # Start cloning the required VMs simultaneously.
-    vm_manager.logger.info(f'P{pod} - Cloning components')
+    for component in pod_config["components"]:
+        vm_manager.logger.name = f'P{pod}'
+        if linked:
+            vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
+            if not vm_manager.snapshot_exists(component["base_vm"], "base"):
+                vm_manager.create_snapshot(component["base_vm"], "base", 
+                                           description="Snapshot used for creating linked clones.")
+            vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", 
+                                            pod_config["group_name"], 
+                                            directory_name=pod_config["folder_name"])
+        else:
+            vm_manager.logger.info(f'Cloning component {component["clone_name"]}.')
+            vm_manager.clone_vm(component["base_vm"], component["clone_name"], 
+                                pod_config["group_name"], directory_name=pod_config["folder_name"])
+        
+        vm_manager.logger.info(f'Updating VM networks.')
+        vm_manager.update_vm_networks(component["clone_name"], "checkpoint", pod)
+            # Update MAC address on the VR with the pod number with HEX base.
+        if "vr" in component["clone_name"]:
+            vm_manager.logger.info(f'Updating VR MAC address.')
+            vm_manager.update_mac_address(component["clone_name"], 
+                                            "Network adapter 1", 
+                                            "00:50:56:04:00:" + "{:02x}".format(pod))
+        snapshot_name = "base"
+        vm_manager.logger.info(f'Creating "base" snapshot on {component["clone_name"]}.')
+        vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
+                                   description=f"Snapshot of {component['clone_name']}")
+        
     with ThreadPoolExecutor(max_workers=thread) as executor:
         futures = []
-        for component in pod_config["components"]:
-            clone_future = executor.submit(
-                vm_manager.clone_vm,
-                component["base_vm"], 
-                component["clone_name"], 
-                pod_config["group_name"], 
-                pod_config["folder_name"]
-            )
-            futures.append(clone_future)
-        wait_for_futures(futures)
-        futures.clear()
-
-        vm_manager.logger.info(f'P{pod} - Updating VM networks and VR MAC address.')
-        for component in pod_config["components"]:
-            # Update cloned VMs with the created network(s).
-            vm_manager.update_vm_networks(component["clone_name"], "checkpoint", pod)
-            # Update MAC address on the VR with the pod number with HEX base.
-            if "vr" in component["clone_name"]:
-                vm_manager.update_mac_address(component["clone_name"], 
-                                              "Network adapter 1", 
-                                              "00:50:56:04:00:" + "{:02x}".format(pod))
-
-        snapshot_name = "base"
-        vm_manager.logger.info(f'P{pod} - Creating "base" snapshot on all components.')
-        for component in pod_config["components"]:
-            # Create a snapshot of all the cloned VMs to save base config.
-            if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
-                snapshot_futures = executor.submit(
-                    vm_manager.create_snapshot,
-                    component["clone_name"],
-                    snapshot_name,
-                    description=f"Snapshot of {component['clone_name']}"
-                )
-                futures.append(snapshot_futures)
-        wait_for_futures(futures)
-        futures.clear()
-
-        vm_manager.logger.info(f'P{pod} - Power on all components.')
+        vm_manager.logger.info(f'Power on all components.')
         for component in pod_config["components"]:
             # Schedule the VM cloning task
             if "state" in component:

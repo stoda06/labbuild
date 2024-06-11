@@ -85,7 +85,7 @@ def setup_environment(args):
                         pod,
                         rebuild=args.re_build,
                         thread=args.thread,
-                        datastore=args.datastore
+                        linked=args.link
                     )
                     futures.append(deploy_futures)
                 wait_for_futures(futures)
@@ -249,5 +249,5 @@ if __name__ == "__main__":
 
     # Convert seconds to minutes
     duration_minutes = duration_seconds / 60
-
+    logger.name = 'labbuild'
     logger.info(f"The program took {duration_minutes:.2f} minutes to run.")

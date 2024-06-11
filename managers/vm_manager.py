@@ -785,7 +785,7 @@ class VmManager(VCenter):
             self.logger.error(f"Failed to update the VMX file '{vmx_file_path}': {str(e)}")
             return False
         
-    def create_linked_clone(self, base_vm_name, clone_name, snapshot_name, resource_pool_name, datastore_name=None):
+    def create_linked_clone(self, base_vm_name, clone_name, snapshot_name, resource_pool_name, directory_name=None, datastore_name=None):
         """
         Creates a linked clone from an existing snapshot.
 
@@ -815,6 +815,16 @@ class VmManager(VCenter):
             if not resource_pool:
                 self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return False
+            
+            vm_folder = None
+            if directory_name:
+                vm_folder = self.get_obj([vim.Folder], directory_name)
+                if not vm_folder:
+                    self.logger.error(f"VM Folder '{directory_name}' not found.")
+                    return
+            else:
+                datacenter = self.get_obj([vim.Datacenter], "Red Education")
+                vm_folder = datacenter.vmFolder
 
             datastore = self.get_obj([vim.Datastore], datastore_name) if datastore_name else base_vm.datastore[0]
 
@@ -825,7 +835,7 @@ class VmManager(VCenter):
             clone_spec.location.diskMoveType = 'createNewChildDiskBacking'
             clone_spec.snapshot = snapshot.snapshot
 
-            task = base_vm.CloneVM_Task(folder=base_vm.parent, name=clone_name, spec=clone_spec)
+            task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
             if self.wait_for_task(task):
                 self.logger.debug(f"Linked clone '{clone_name}' created successfully.")
                 return True
