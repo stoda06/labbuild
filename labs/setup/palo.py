@@ -30,7 +30,15 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
                 continue
         else:
             if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
-                vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
+                if linked:
+                    vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
+                    if not vm_manager.snapshot_exists(component["base_vm"], "base"):
+                        vm_manager.create_snapshot(component["base_vm"], "base", 
+                                                description="Snapshot used for creating linked clones.")
+                    vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], 
+                                                "base", resource_pool)
+                else:
+                    vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
             elif "firewall" in component["component_name"]:
                 vm_manager.revert_to_snapshot(component["vm_name"], component["snapshot"])
             elif "panorama" in component["component_name"]:
@@ -80,7 +88,15 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             resource_pool = component["group_name"]
         if "firewall" not in component["component_name"]:
-            vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
+            if linked:
+                vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
+                if not vm_manager.snapshot_exists(component["base_vm"], "base"):
+                    vm_manager.create_snapshot(component["base_vm"], "base", 
+                                            description="Snapshot used for creating linked clones.")
+                vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], 
+                                               "base", resource_pool)
+            else:
+                vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
         else:
             vm_manager.revert_to_snapshot(component["vm_name"], component["snapshot"])
         
