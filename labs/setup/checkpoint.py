@@ -30,7 +30,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
         vm_manager.logger.info(f'P{pod} - Deleting folder {pod_config["folder_name"]}')
         vm_manager.delete_folder(pod_config["folder_name"], force=True)
         for network in pod_config['network']:
-            network_manager.logger.info(f'P{pod} - Deleting vswitch {pod_config["switch_name"]}')
+            network_manager.logger.info(f'P{pod} - Deleting vswitch {network["switch_name"]}')
             network_manager.delete_vswitch(host.fqdn, network['switch_name'])
         resource_pool_manager.logger.info(f'P{pod} - Deleting resource pool {pod_config["group_name"]}')
         resource_pool_manager.delete_resource_pool(pod_config["group_name"])
