@@ -35,8 +35,8 @@ def build_aura_pod(service_instance, pod_config):
     # Step-3: Power on the VMs.
     for component in pod_config["components"]:
         vm_manager.poweron_vm(component["component_name"])
-        if "smgr-pod" in component["component_name"] or "aads-pod" in component["component_name"]:
-            sleep(90)
+        if "smgr" in component["component_name"] or "aads" in component["component_name"]:
+            sleep(600)
 
 def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
     
