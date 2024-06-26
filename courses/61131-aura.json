@@ -5,6 +5,11 @@
         "group": "av-pod{X}",
         "components": [
             {
+                "component_name": "smgr-pod{X}",
+                "clone_name": "smgr-pod{X}",
+                "snapshot": "61131 Day 1"
+            },
+            {
                 "component_name": "av-vr-{X}",
                 "clone_name": "av-vr-{X}",
                 "snapshot": "base"
@@ -68,11 +73,6 @@
                 "component_name": "smd-pod{X}",
                 "clone_name": "smd-pod{X}",
                 "snapshot": "71201 Day 1"
-            },
-            {
-                "component_name": "smgr-pod{X}",
-                "clone_name": "smgr-pod{X}",
-                "snapshot": "61131 Day 1"
             }
         ]
     }
