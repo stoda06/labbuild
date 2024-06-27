@@ -1,0 +1,42 @@
+{
+    "78201-ipo": {
+        "vendor": "av",
+        "version": "ipo",
+        "group": "av-ipo-pod{X}",
+        "components": [
+            {
+                "component_name": "ipo-vr",
+                "base_vm": "av-base-ipo-vr",
+                "clone_name": "av-ipo-vr-{X}"
+            },
+            {
+                "component_name": "ipo-w10-a",
+                "base_vm": "av-ipo-base-w10-a",
+                "clone_name": "av-ipo-pod{X}-w10-a"
+            },
+            {
+                "component_name": "ipo-w10-b",
+                "base_vm": "av-ipo-base-w10-b",
+                "clone_name": "av-ipo-pod{X}-w10-b"
+            },
+            {
+                "component_name": "ipo1-78201",
+                "base_vm": "ipo1-78201-base",
+                "uuid": "42 3f 7d 0c a0 48 11 62-c9 a9 12 92 62 5a d4 f8",
+                "clone_name": "ipo1-78201-pod{X}"
+            },
+            {
+                "component_name": "ipo2-78201",
+                "base_vm": "ipo2-78201-base",
+                "uuid": "42 3f 6a 5f e2 0d 3d 78-15 d5 84 43 f9 08 71 29",
+                "clone_name": "ipo2-78201-pod{X}"
+            },
+            {
+                "component_name": "ipo3-78201",
+                "base_vm": "ipo3-78201-base",
+                "uuid": "42 08 45 37 8b 74 ac 4c-b4 90 06 c3 8b 69 f9 ea",
+                "clone_name": "ipo3-78201-pod{X}"
+            }
+        ]
+    }
+}
