@@ -9,10 +9,12 @@ import labs.manage.vm_operations as manage
 import labs.setup.checkpoint as checkpoint
 import labs.setup.avaya as avaya
 import labs.setup.palo as palo
+import labs.setup.f5 as f5
 import argparse
 import logging
 import json
 import time
+import sys
 import os
 
 load_dotenv()
@@ -119,13 +121,34 @@ def setup_environment(args):
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = replace_placeholder(course_config, pod)
                     if pod_config["version"] == "aura":
-                        build_futures = executor.submit(avaya.build_aura_pod,
+                        build_future = executor.submit(avaya.build_aura_pod,
                                             service_instance, pod_config)
                     if pod_config["version"] == "ipo":
-                        build_futures = executor.submit(avaya.build_ipo_pod,
+                        build_future = executor.submit(avaya.build_ipo_pod,
                                             service_instance, pod_config, pod, rebuild=args.re_build)
-                    futures.append(build_futures)
+                    futures.append(build_future)
                 wait_for_futures(futures)
+        
+        if course_config["vendor"] == "f5":
+            class_number = args.class_number
+            class_name = course_config["class"] + class_number
+            f5.build_class(service_instance, args.host, 
+                           class_number, course_config)
+            for group in course_config["group"]:
+                parent_resource_pool = class_name + "-" + group["name"]
+                if 'srv' in group["name"]:
+                    f5.build_srv(service_instance, class_number, 
+                                 parent_resource_pool, group["component"],
+                                 rebuild=args.re_build, linked=args.link)
+                else:
+                    with ThreadPoolExecutor() as executor:
+                        for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                            build_future = executor.submit(f5.build_pod, service_instance, 
+                                                            class_number, parent_resource_pool, 
+                                                            group["component"], str(pod),
+                                                            rebuild=args.re_build, linked=args.link)
+                            futures.append(build_future)
+                        wait_for_futures(futures)
 
 def teardown_environment(args):
 
@@ -187,6 +210,7 @@ def main():
     # Subparser for the 'setup' command
     setup_parser = subparsers.add_parser('setup', help='Set-up the lab environment')
     setup_parser.add_argument('--course', required=True, help='Path to the configuration file.')
+    setup_parser.add_argument('-cn', '--class_number', help='Class argument only valid if --course contains a f5')
     setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
     setup_parser.add_argument('--host', required=True, help='Name of the host to create the pods.')
@@ -219,6 +243,12 @@ def main():
 
     # Parse arguments
     args = parser.parse_args()
+    # Check the course condition after parsing
+    if 'certain_string' in args.course:
+        if not args.class_number:
+            print("Error: --class_number is required when --course contains 'f5'.")
+            parser.print_help()
+            sys.exit(1)
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)  # Set to DEBUG to enable verbose output

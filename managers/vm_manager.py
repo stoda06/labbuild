@@ -121,7 +121,7 @@ class VmManager(VCenter):
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
             self.logger.debug(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
-                self.logger.debug(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' into folder '{directory_name}'.")
+                self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on {datastore.name}'.")
             else:
                 self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
         except Exception as e:
@@ -854,8 +854,166 @@ class VmManager(VCenter):
 
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
             if self.wait_for_task(task):
-                self.logger.debug(f"Linked clone '{clone_name}' created successfully.")
+                self.logger.info(f"Linked clone '{clone_name}' created successfully on {datastore.name}.")
                 return True
         except Exception as e:
             self.logger.error(f"Failed to create linked clone: {e}")
             return False
+    
+    def get_vm_network(self, vm_name):
+        """
+        Retrieves the network details of an existing VM, including network names,
+        MAC addresses, and physical adapters.
+
+        :param vm_name: The name of the VM to retrieve network details from.
+        :return: A dictionary containing network names, MAC addresses, and physical adapters.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return None
+
+        network_details = {}
+        for device in vm.config.hardware.device:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard):
+                network_name = device.backing.network.name if device.backing.network else "N/A"
+                mac_address = device.macAddress
+                connected_adapter = device.backing.deviceName
+
+                network_details[device.deviceInfo.label] = {
+                    "network_name": network_name,
+                    "mac_address": mac_address
+                }
+
+        return network_details
+    
+    def update_vm_network(self, vm_name, network_dict):
+        """
+        Updates the networks of an existing VM based on the provided network_dict.
+
+        :param vm_name: The name of the VM to update.
+        :param network_dict: A dictionary containing the network details to update.
+        :return: True if the network update is successful, False otherwise.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return False
+
+        # Ensure VM is powered off for changes
+        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
+            self.logger.debug(f"Powering off VM '{vm_name}' for network update.")
+            self.wait_for_task(vm.PowerOffVM_Task())
+
+        device_changes = []
+        for device in vm.config.hardware.device:
+            if isinstance(device, vim.vm.device.VirtualEthernetCard):
+                device_label = device.deviceInfo.label
+                if device_label in network_dict:
+                    network_backing = device.backing
+                    network_name = network_dict[device_label].get("network_name")
+                    mac_address = network_dict[device_label].get("mac_address")
+
+                    if network_name:
+                        network_backing.deviceName = network_name
+
+                    nic_spec = vim.vm.device.VirtualDeviceSpec()
+                    nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                    nic_spec.device = device
+                    nic_spec.device.backing = network_backing
+
+                    if mac_address and device.macAddress != mac_address:
+                        nic_spec.device.macAddress = mac_address
+
+                    device_changes.append(nic_spec)
+
+        if not device_changes:
+            self.logger.warning("No network interface changes detected or applicable.")
+            return True
+
+        def _verify_network_update():
+            """
+            Verifies if the network update was successful by comparing the current network configuration with the expected one.
+
+            :return: True if the network update is verified, False otherwise.
+            """
+            retries = 3
+            for attempt in range(retries):
+                updated_networks = self.get_vm_network(vm_name)
+                if all(
+                    updated_networks[label]["network_name"] == network_dict[label]["network_name"]
+                    and (updated_networks[label].get("mac_address") == network_dict[label].get("mac_address")
+                         or network_dict[label].get("mac_address") is None)
+                    for label in network_dict
+                ):
+                    self.logger.debug(f"Network update verification successful on attempt {attempt + 1}.")
+                    return True
+                else:
+                    self.logger.debug(f"Network update verification failed on attempt {attempt + 1}. Retrying...")
+                    self.wait_for_task(vm.ReconfigVM_Task(spec=vim.vm.ConfigSpec(deviceChange=device_changes)))
+            self.logger.error(f"Network update verification failed after {retries} attempts.")
+            return False
+
+        try:
+            spec = vim.vm.ConfigSpec(deviceChange=device_changes)
+            task = vm.ReconfigVM_Task(spec=spec)
+            if self.wait_for_task(task):
+                self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
+                return _verify_network_update()
+            else:
+                self.logger.error("Failed to update network interfaces due to task failure.")
+                return False
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
+            raise
+    
+    def update_serial_port_pipe_name(self, vm_name, serial_port_label, new_pipe_name):
+        """
+        Update the pipe name of the specified serial port for a given VM.
+
+        :param vm_name: Name of the virtual machine.
+        :param serial_port_label: Label of the serial port (e.g., "Serial port 1").
+        :param new_pipe_name: New pipe name to be set (e.g., "\\.\pipe\com_21").
+        """
+        try:
+            # Get the VM object
+            vm = self.get_obj([vim.VirtualMachine], vm_name)
+            if not vm:
+                self.logger.error(f"VM {vm_name} not found.")
+                return
+
+            # Find the serial port by its label
+            serial_port = None
+            for dev in vm.config.hardware.device:
+                if isinstance(dev, vim.vm.device.VirtualSerialPort) and dev.deviceInfo.label == serial_port_label:
+                    serial_port = dev
+                    break
+
+            if not serial_port:
+                self.logger.error(f"Serial port with label '{serial_port_label}' not found.")
+                return
+
+            # Update the pipe name
+            serial_port.backing.pipeName = new_pipe_name
+
+            # Create the config spec
+            dev_changes = []
+            dev_changes.append(vim.vm.device.VirtualDeviceSpec(
+                operation=vim.vm.device.VirtualDeviceSpec.Operation.edit,
+                device=serial_port
+            ))
+
+            config_spec = vim.vm.ConfigSpec(deviceChange=dev_changes)
+
+            # Reconfigure the VM
+            task = vm.ReconfigVM_Task(config_spec)
+            self.logger.debug(f"Reconfiguring VM {vm_name}...")
+            self.wait_for_task(task)
+
+            if task.info.state == 'success':
+                self.logger.debug("Reconfiguration completed successfully.")
+            else:
+                self.logger.error(f"Reconfiguration task finished with state: {task.info.state}")
+
+        except Exception as e:
+            self.logger.error(f"Error updating serial port pipe name: {e}")
