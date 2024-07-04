@@ -1,0 +1,71 @@
+{
+    "f5-asm16.1.0": {
+        "vendor": "f5",
+        "version": "asm16.1.0",
+        "class": "f5-class",
+        "group": [
+            {
+                "name": "srv",
+                "component": [
+                    {
+                        "base_vm": "f5-srv-bigip-v16.1.0-base",
+                        "clone_vm": "f5-srv-bigip-v16.1.0-"
+                    },
+                    {
+                        "base_vm": "f5-srv-traffic-client-3.0-base",
+                        "clone_vm": "f5-srv-traffic-client-3.0-"
+                    },
+                    {
+                        "base_vm": "f5-srv-web-370-base",
+                        "clone_vm": "f5-srv-web-370-"
+                    },
+                    {
+                        "base_vm": "f5-srv-hackit-v2.0-base",
+                        "clone_vm": "f5-srv-hackit-v2.0-"
+                    },
+                    {
+                        "base_vm": "f5-base-vr",
+                        "clone_vm": "f5vr-"
+                    }
+                ]
+            },
+            {
+                "name": "bigip",
+                "component": [
+                    {
+                        "base_vm": "bigip-v16.1.0-base",
+                        "clone_vm": "f5-bigip"
+                    }
+                ]
+            },
+            {
+                "name": "w10",
+                "component": [
+                    {
+                        "base_vm": "f5-base-w10",
+                        "clone_vm": "f5-w10-pod"
+                    }
+                ]
+            }
+        ],
+        "network": [
+            {
+                "switch": "vs",
+                "port_groups": [
+                    {
+                        "port_group_name": "f5-mgt",
+                        "vlan_id": 112
+                    },
+                    {
+                        "port_group_name": "f5-int",
+                        "vlan_id": 113
+                    },
+                    {
+                        "port_group_name": "f5-ext",
+                        "vlan_id": 114
+                    }
+                ]
+            }
+        ]
+    }
+}
