@@ -99,19 +99,22 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
             vm_manager.logger.info(f'Cloning component {component["clone_name"]}.')
             vm_manager.clone_vm(component["base_vm"], component["clone_name"], 
                                 pod_config["group_name"], directory_name=pod_config["folder_name"])
-        
-        vm_manager.logger.info(f'Updating VM networks.')
-        vm_manager.update_vm_networks(component["clone_name"], "checkpoint", pod)
-            # Update MAC address on the VR with the pod number with HEX base.
-        if "vr" in component["clone_name"]:
-            vm_manager.logger.info(f'Updating VR MAC address.')
-            vm_manager.update_mac_address(component["clone_name"], 
-                                            "Network adapter 1", 
-                                            "00:50:56:04:00:" + "{:02x}".format(pod))
-        snapshot_name = "base"
-        vm_manager.logger.info(f'Creating "base" snapshot on {component["clone_name"]}.')
-        vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
-                                   description=f"Snapshot of {component['clone_name']}")
+            
+        vm_manager.logger.info(f'Updating VM networks for {component["clone_name"]}.')
+        vm_network = vm_manager.get_vm_network(component["clone_name"])
+        specified_mac_address = "00:50:56:04:00:" + "{:02x}".format(pod) # Replace with the desired MAC address
+        updated_vm_network = {
+            k: {
+                sub_k: (
+                    sub_v.replace('0', str(pod)) if sub_k == 'network_name' else specified_mac_address
+                ) if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else (
+                    sub_v.replace('0', str(pod)) if sub_k == 'network_name' else sub_v
+                )
+                for sub_k, sub_v in v.items()
+            }
+            for k, v in vm_network.items()
+        }
+        vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         
     with ThreadPoolExecutor(max_workers=thread) as executor:
         futures = []
