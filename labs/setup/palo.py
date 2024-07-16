@@ -1,6 +1,18 @@
 from managers.vm_manager import VmManager
 from managers.network_manager import NetworkManager
-from pyVmomi import vim
+
+def update_network_dict(vm_networks, base_vs, new_vs, new_mac):
+    return {
+        k: {
+            sub_k: (
+                sub_v.replace(base_vs, new_vs) if sub_k == 'network_name' else new_mac
+            ) if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else (
+                sub_v.replace(base_vs, new_vs) if sub_k == 'network_name' else sub_v
+            )
+            for sub_k, sub_v in v.items()
+        }
+        for k, v in vm_networks.items()
+    }
 
 def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
     vm_manager = VmManager(service_instance)
@@ -46,13 +58,10 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
             
             # Step-4: Update VM Network
             if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
-                vm_manager.update_vm_networks(component["clone_name"], "1100-210", pod)
-                # Update MAC address on the VR with the pod number with HEX base.
-                if "vr" in component["clone_name"]:
-                    new_mac = "00:50:56:07:00:" + "{:02x}".format(pod)
-                    vm_manager.update_mac_address(component["clone_name"], 
-                                                    "Network adapter 1", 
-                                                    new_mac)
+                vm_network = vm_manager.get_vm_network(component["clone_name"])
+                new_mac = "00:50:56:07:00:" + "{:02x}".format(pod)
+                updated_vm_network = update_network_dict(vm_network, '1', str(pod), new_mac)
+                vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
                 # Create a snapshot of all the cloned VMs to save base config.
                 if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
                     vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
@@ -102,27 +111,10 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         
         # Step-4: Update VM Network
         if "firewall" not in component["component_name"]:
-            vm_network = vm_manager.get_vm_network(component["clone_name"]);print(vm_network)
+            # Update VM networks and MAC address.
+            vm_network = vm_manager.get_vm_network(component["clone_name"])
             new_mac = "00:50:56:07:00:" + "{:02x}".format(100+pod)
-            updated_vm_network = {
-                k: {
-                    sub_k: (
-                        # If the network name contains 'rdp' and we are updating the mac_address
-                        sub_v.replace('0', str(pod)) if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else (
-                            # Specific case for network names containing '100'
-                            sub_v[:-1] + str(pod) if '100' in sub_v and sub_k == 'network_name' else (
-                                # General case of replacing all zeros in network_name with the pod number
-                                sub_v.replace('0', str(pod)) if sub_k == 'network_name' else sub_v
-                            )
-                        )
-                    ) if sub_k == 'network_name' or (sub_k == 'mac_address' and 'rdp' in v.get('network_name', '')) else (
-                        # Ensuring mac_address is set to new_mac when the network name contains 'rdp'
-                        new_mac if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else sub_v
-                    )
-                    for sub_k, sub_v in v.items()
-                }
-                for k, v in vm_network.items()
-            }
+            updated_vm_network = update_network_dict(vm_network, '1', str(pod), new_mac)
             vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
             # Create a snapshot of all the cloned VMs to save base config.
             if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
@@ -169,17 +161,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         # Step-4: Update VM Network
         vm_network = vm_manager.get_vm_network(component["clone_name"])
         new_mac = "00:50:56:07:00:" + "{:02x}".format(100+pod)
-        updated_vm_network = {
-            k: {
-                sub_k: (
-                    sub_v.replace('0', str(pod)) if sub_k == 'network_name' else new_mac
-                ) if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else (
-                    sub_v.replace('0', str(pod)) if sub_k == 'network_name' else sub_v
-                )
-                for sub_k, sub_v in v.items()
-            }
-            for k, v in vm_network.items()
-        }
+        updated_vm_network = update_network_dict(vm_network, '0', str(pod), new_mac)
         vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
 
         # Create a snapshot of all the cloned VMs to save base config.
