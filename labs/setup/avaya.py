@@ -19,12 +19,14 @@ def build_aura_pod(service_instance, pod_config):
     
     vm_manager = VmManager(service_instance)
     resource_pool_manager = ResourcePoolManager(service_instance)
+    resource_pool_manager.logger.info(f'Power off all the VMs in {pod_config["group"]}')
     resource_pool_manager.poweroff_all_vms(pod_config["group"])
 
     futures = []
     # Step-2: Revert snapshot to base.
     with ThreadPoolExecutor() as executor:
         for component in pod_config["components"]:
+            vm_manager.logger.info(f'Revert {component["component_name"]} snapshot to {component["snapshot"]}.')
             revert_futures = executor.submit(vm_manager.revert_to_snapshot,
                                       component["component_name"], 
                                       component["snapshot"])
@@ -34,8 +36,10 @@ def build_aura_pod(service_instance, pod_config):
 
     # Step-3: Power on the VMs.
     for component in pod_config["components"]:
+        vm_manager.logger.info(f'Power on {component["component_name"]}.')
         vm_manager.poweron_vm(component["component_name"])
         if "smgr" in component["component_name"] or "aads" in component["component_name"]:
+            vm_manager.logger.info(f'Waiting for {component["component_name"]} to initialize.')
             sleep(600)
 
 def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
