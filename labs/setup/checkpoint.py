@@ -17,6 +17,19 @@ def wait_for_futures(futures):
             # Handle cloning failure
             print(f"Task failed: {e}")
 
+def update_network_dict(vm_networks, base_vs, new_vs, new_mac):
+    return {
+        k: {
+            sub_k: (
+                sub_v.replace(base_vs, new_vs) if sub_k == 'network_name' else new_mac
+            ) if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else (
+                sub_v.replace(base_vs, new_vs) if sub_k == 'network_name' else sub_v
+            )
+            for sub_k, sub_v in v.items()
+        }
+        for k, v in vm_networks.items()
+    }
+
 def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, linked=False):
 
     host = get_host_by_name(hostname)
@@ -101,19 +114,10 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
                                 pod_config["group_name"], directory_name=pod_config["folder_name"])
             
         vm_manager.logger.info(f'Updating VM networks for {component["clone_name"]}.')
+        # Update VM networks and MAC address.
         vm_network = vm_manager.get_vm_network(component["clone_name"])
         specified_mac_address = "00:50:56:04:00:" + "{:02x}".format(pod) # Replace with the desired MAC address
-        updated_vm_network = {
-            k: {
-                sub_k: (
-                    sub_v.replace('0', str(pod)) if sub_k == 'network_name' else specified_mac_address
-                ) if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else (
-                    sub_v.replace('0', str(pod)) if sub_k == 'network_name' else sub_v
-                )
-                for sub_k, sub_v in v.items()
-            }
-            for k, v in vm_network.items()
-        }
+        updated_vm_network = update_network_dict(vm_network, 'vs0', 'vs'+str(pod), specified_mac_address)
         vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         # Create base snapshot on cloned VM.
         snapshot_name = "base"
