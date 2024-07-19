@@ -1,7 +1,7 @@
 {
-    "f5-apm16.1.4": {
+    "f5-config16.1.4": {
         "vendor": "f5",
-        "version": "apm16.1.4",
+        "version": "config16.1.4",
         "class": "f5-class",
         "group": [
             {
@@ -16,16 +16,12 @@
                         "clone_vm": "f5-srv-web-370-"
                     },
                     {
-                        "base_vm": "f5-srv-bigip-v16.1.4-base",
-                        "clone_vm": "f5-srv-bigip-v16.1.4-"
-                    },
-                    {
                         "base_vm": "f5-srv-traffic-client-3.0-base",
                         "clone_vm": "f5-srv-traffic-client-3.0-"
                     },
                     {
-                        "base_vm": "f5-srv-apm-base",
-                        "clone_vm": "f5-srv-apm-"
+                        "base_vm": "f5-srv-bigip-v16.1.4-base",
+                        "clone_vm": "f5-srv-bigip-v16.1.4-"
                     }
                 ]
             },
