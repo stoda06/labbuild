@@ -1,15 +1,15 @@
 {
-    "f5-apm16.1.0": {
+    "f5-asm16.1.0": {
         "vendor": "f5",
-        "version": "apm16.1.0",
+        "version": "asm16.1.4",
         "class": "f5-class",
         "group": [
             {
                 "name": "srv",
                 "component": [
                     {
-                        "base_vm": "f5-srv-bigip-v16.1.0-base",
-                        "clone_vm": "f5-srv-bigip-v16.1.0-"
+                        "base_vm": "f5-srv-bigip-v16.1.4-base",
+                        "clone_vm": "f5-srv-bigip-v16.1.4-"
                     },
                     {
                         "base_vm": "f5-srv-traffic-client-3.0-base",
@@ -18,6 +18,10 @@
                     {
                         "base_vm": "f5-srv-web-370-base",
                         "clone_vm": "f5-srv-web-370-"
+                    },
+                    {
+                        "base_vm": "f5-srv-hackit-v2.0-base",
+                        "clone_vm": "f5-srv-hackit-v2.0-"
                     },
                     {
                         "base_vm": "f5-base-vr",
@@ -29,7 +33,7 @@
                 "name": "bigip",
                 "component": [
                     {
-                        "base_vm": "bigip-v16.1.0-base",
+                        "base_vm": "bigip-v16.1.4-base",
                         "clone_vm": "f5-bigip"
                     }
                 ]
