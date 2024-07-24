@@ -121,9 +121,10 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
         vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         # Create base snapshot on cloned VM.
         snapshot_name = "base"
-        vm_manager.logger.info(f'Creating "base" snapshot on {component["clone_name"]}.')
-        vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
-                                   description=f"Snapshot of {component['clone_name']}")
+        if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
+            vm_manager.logger.info(f'Creating "base" snapshot on {component["clone_name"]}.')
+            vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
+                                    description=f"Snapshot of {component['clone_name']}")
         
     with ThreadPoolExecutor(max_workers=thread) as executor:
         futures = []
