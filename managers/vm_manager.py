@@ -3,6 +3,8 @@ import requests
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from storage.check_utilization import is_overutilized
+import time
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -69,7 +71,6 @@ class VmManager(VCenter):
             
             base_vm = self.get_obj([vim.VirtualMachine], base_name)
             # If the base VM is not found, check all hosts in the datacenter
-            # If the base VM is not found, check all hosts in the datacenter
             if not base_vm:
                 self.logger.warning(f"Base VM '{base_name}' not found on the current host. Searching all hosts in the datacenter...")
                 datacenter = self.get_obj([vim.Datacenter], "Red Education")
@@ -118,12 +119,29 @@ class VmManager(VCenter):
             clone_spec.location.datastore = datastore
             clone_spec.powerOn = power_on
 
+            retry_count = 99
+            while retry_count > 0:
+                if not is_overutilized(datastore.name):
+                    task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+                    self.logger.debug(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
+                    if self.wait_for_task(task):
+                        self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on datastore '{datastore.name}'.")
+                        return
+                    else:
+                        self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
+                        return
+                else:
+                    retry_count -= 1
+                    self.logger.warning(f"Datastore '{datastore.name}' is overutilized. Retrying in 30 minutes... {retry_count} retries left.")
+                    time.sleep(1800)
+
+            # If still overutilized after retries, proceed with cloning
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-            self.logger.debug(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
+            self.logger.debug(f"Datastore overutilized, proceeding with cloning VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}' after retries.")
             if self.wait_for_task(task):
-                self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on {datastore.name}'.")
+                self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on datastore '{datastore.name}' after retries.")
             else:
-                self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
+                self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}' after retries.")
         except Exception as e:
             self.logger.error(f"Failed to clone VM '{clone_name}': {e}")
 
@@ -814,6 +832,12 @@ class VmManager(VCenter):
         :return: True if the clone was created successfully, False otherwise.
         """
         try:
+            # Check if the cloning VM already exists in the target directory (VM folder)
+            existing_vm = self.get_obj([vim.VirtualMachine], clone_name)
+            if existing_vm:
+                self.logger.warning(f"VM '{clone_name}' already exists.")
+                return
+            
             base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
             if not base_vm:
                 self.logger.error(f"Base VM '{base_vm_name}' not found.")
@@ -878,7 +902,6 @@ class VmManager(VCenter):
             if isinstance(device, vim.vm.device.VirtualEthernetCard):
                 network_name = device.backing.network.name if device.backing.network else "N/A"
                 mac_address = device.macAddress
-                connected_adapter = device.backing.deviceName
 
                 network_details[device.deviceInfo.label] = {
                     "network_name": network_name,
@@ -886,7 +909,7 @@ class VmManager(VCenter):
                 }
 
         return network_details
-    
+
     def update_vm_network(self, vm_name, network_dict):
         """
         Updates the networks of an existing VM based on the provided network_dict.
@@ -1017,3 +1040,57 @@ class VmManager(VCenter):
 
         except Exception as e:
             self.logger.error(f"Error updating serial port pipe name: {e}")
+    
+    def modify_cd_drive(self, vm_name, drive_name, iso_type, datastore_name, iso_path, connected=False):
+        try:
+            content = self.connection.content
+            vm = self.get_obj([vim.VirtualMachine], vm_name)
+            if not vm:
+                self.logger.error(f"VM {vm_name} not found.")
+                return False
+            
+            device_changes = []
+            for device in vm.config.hardware.device:
+                if isinstance(device, vim.vm.device.VirtualCdrom) and device.deviceInfo.label == drive_name:
+                    cd_spec = vim.vm.device.VirtualDeviceSpec()
+                    cd_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                    cd_spec.device = device
+
+                    if iso_type == "Client Device":
+                        cd_spec.device.backing = vim.vm.device.VirtualCdrom.RemoteAtapiBackingInfo(
+                            deviceName=""
+                        )
+                    elif iso_type == "Datastore ISO file":
+                        datastore = self.get_obj([vim.Datastore], datastore_name)
+                        if not datastore:
+                            self.logger.error(f"Datastore {datastore_name} not found.")
+                            return False
+                        cd_spec.device.backing = vim.vm.device.VirtualCdrom.IsoBackingInfo(
+                            fileName=f"[{datastore_name}] {iso_path}"
+                        )
+                    else:
+                        self.logger.error(f"Invalid ISO type: {iso_type}")
+                        return False
+
+                    cd_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo(
+                        startConnected=connected,
+                        allowGuestControl=True
+                    )
+
+                    device_changes.append(cd_spec)
+                    break
+
+            if not device_changes:
+                self.logger.error(f"CD/DVD drive {drive_name} not found in VM {vm_name}.")
+                return False
+
+            spec = vim.vm.ConfigSpec()
+            spec.deviceChange = device_changes
+            task = vm.ReconfigVM_Task(spec=spec)
+            self.wait_for_task(task)
+            self.logger.debug(f"Successfully modified the CD/DVD drive {drive_name} in VM {vm_name}.")
+            return True
+
+        except vmodl.MethodFault as error:
+            self.logger.error(f"Failed to modify CD/DVD drive: {error}")
+            return False
