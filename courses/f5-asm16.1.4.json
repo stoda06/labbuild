@@ -43,7 +43,7 @@
                 "component": [
                     {
                         "base_vm": "f5-base-w10",
-                        "clone_vm": "f5-w10-pod"
+                        "clone_vm": "f5-pod{X}-w10"
                     }
                 ]
             }
