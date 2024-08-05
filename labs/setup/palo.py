@@ -14,6 +14,20 @@ def update_network_dict(vm_networks, base_vs, new_vs, new_mac):
         for k, v in vm_networks.items()
     }
 
+def cortex_update_network_dict(network_dict, pod_number):
+    pod_hex = format(pod_number, '02x')  # Convert pod number to hex with at least two digits
+
+    for adapter, details in network_dict.items():
+        if 'pa-rdp' in details['network_name']:
+            mac_parts = details['mac_address'].split(':')
+            mac_parts[-1] = pod_hex
+            details['mac_address'] = ':'.join(mac_parts)
+        if 'internal' in details['network_name']:
+            details['network_name'] = f"pa-internal-cortex-{pod_number}"
+
+    return network_dict
+
+
 def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
     vm_manager = VmManager(service_instance)
     pod = int(pod_config["pod_number"])
@@ -162,8 +176,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
 
         # Step-4: Update VM Network
         vm_network = vm_manager.get_vm_network(component["clone_name"])
-        new_mac = "00:50:56:07:00:" + "{:02x}".format(100+pod)
-        updated_vm_network = update_network_dict(vm_network, '0', str(pod), new_mac)
+        updated_vm_network = cortex_update_network_dict(vm_network, pod)
         vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
 
         # Create a snapshot of all the cloned VMs to save base config.
