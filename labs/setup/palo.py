@@ -15,7 +15,7 @@ def update_network_dict(network_dict, pod_number):
     return network_dict
 
 def cortex_update_network_dict(network_dict, pod_number):
-    pod_hex = format(pod_number, '02x')  # Convert pod number to hex with at least two digits
+    pod_hex = format(100+pod_number, '02x')  # Convert pod number to hex with at least two digits
 
     for adapter, details in network_dict.items():
         if 'pa-rdp' in details['network_name']:
