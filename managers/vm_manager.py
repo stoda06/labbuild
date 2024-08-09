@@ -1094,3 +1094,60 @@ class VmManager(VCenter):
         except vmodl.MethodFault as error:
             self.logger.error(f"Failed to modify CD/DVD drive: {error}")
             return False
+        
+    def connect_networks_to_vm(self, vm_name, network_dict):
+        """
+        Connects the networks in the provided network_dict to the specified VM.
+
+        :param vm_name: The name of the VM.
+        :param network_dict: A dictionary containing the network names and corresponding MAC addresses.
+        :return: True if all networks were connected successfully, False otherwise.
+        """
+        try:
+            vm = self.get_obj([vim.VirtualMachine], vm_name)
+            if not vm:
+                self.logger.error(f"VM '{vm_name}' not found.")
+                return False
+
+            device_change = []
+            for adapter_label, network_info in network_dict.items():
+                network_name = network_info['network_name']
+                mac_address = network_info['mac_address']
+
+                network = self.get_obj([vim.Network], network_name)
+                if not network:
+                    self.logger.error(f"Network '{network_name}' not found.")
+                    continue
+
+                for device in vm.config.hardware.device:
+                    if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.macAddress == mac_address:
+                        if not device.connectable.connected:
+                            device_spec = vim.vm.device.VirtualDeviceSpec()
+                            device_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                            device_spec.device = device
+                            device_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+                            device_spec.device.connectable.connected = True
+                            device_spec.device.connectable.startConnected = True
+                            device_spec.device.backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
+                            device_spec.device.backing.network = network
+                            device_spec.device.backing.deviceName = network_name
+                            device_change.append(device_spec)
+                        break
+
+            if device_change:
+                spec = vim.vm.ConfigSpec()
+                spec.deviceChange = device_change
+                task = vm.ReconfigVM_Task(spec=spec)
+                if self.wait_for_task(task):
+                    self.logger.debug(f"All specified networks connected successfully to VM '{vm_name}'.")
+                    return True
+                else:
+                    self.logger.error(f"Failed to connect networks to VM '{vm_name}'.")
+                    return False
+            else:
+                self.logger.debug(f"No networks required connection for VM '{vm_name}'.")
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to connect networks to VM '{vm_name}': {e}")
+            return False
