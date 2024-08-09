@@ -175,7 +175,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         # Step-4: Update VM Network
         vm_network = vm_manager.get_vm_network(component["clone_name"])
         updated_vm_network = cortex_update_network_dict(vm_network, pod)
-        # vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
+        vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         vm_manager.connect_networks_to_vm(component["clone_name"], updated_vm_network)
 
         # Create a snapshot of all the cloned VMs to save base config.
