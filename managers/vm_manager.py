@@ -119,21 +119,21 @@ class VmManager(VCenter):
             clone_spec.location.datastore = datastore
             clone_spec.powerOn = power_on
 
-            retry_count = 99
-            while retry_count > 0:
-                if not is_overutilized(datastore.name):
-                    task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-                    self.logger.debug(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
-                    if self.wait_for_task(task):
-                        self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on datastore '{datastore.name}'.")
-                        return
-                    else:
-                        self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
-                        return
-                else:
-                    retry_count -= 1
-                    self.logger.warning(f"Datastore '{datastore.name}' is overutilized. Retrying in 30 minutes... {retry_count} retries left.")
-                    time.sleep(1800)
+            # retry_count = 99
+            # while retry_count > 0:
+            #     if not is_overutilized(datastore.name):
+            #         task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+            #         self.logger.debug(f"VM '{clone_name}' cloning started from base VM '{base_name}' into folder '{directory_name}'.")
+            #         if self.wait_for_task(task):
+            #             self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on datastore '{datastore.name}'.")
+            #             return
+            #         else:
+            #             self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
+            #             return
+            #     else:
+            #         retry_count -= 1
+            #         self.logger.warning(f"Datastore '{datastore.name}' is overutilized. Retrying in 30 minutes... {retry_count} retries left.")
+            #         time.sleep(1800)
 
             # If still overutilized after retries, proceed with cloning
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
