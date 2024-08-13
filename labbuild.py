@@ -164,20 +164,26 @@ def teardown_environment(args):
     service_instance.connect()
 
     course_config = get_setup_config(args.course)
-    with ThreadPoolExecutor() as executor:
-        futures = []
-        for pod in range(int(args.start_pod), int(args.end_pod) + 1):
-            pod_config = replace_placeholder(course_config, pod)
-            logger.info(f"Deleting {pod_config['group_name']}")
-            if course_config["vendor"] == "cp":
+
+    if course_config["vendor"] == "cp":
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                pod_config = replace_placeholder(course_config, pod)
+                logger.info(f"Deleting {pod_config['group_name']}")
                 teardown_future = executor.submit(
                     checkpoint.teardown_pod,
                     service_instance,
                     pod_config,
                     args.host
                 )
-            futures.append(teardown_future)
-        wait_for_futures(futures)
+                futures.append(teardown_future)
+            wait_for_futures(futures)
+
+    if course_config["vendor"] == "f5":
+        class_number = args.class_number
+        class_name = course_config["class"] + class_number
+        f5.teardown_class(service_instance, course_config, class_name, class_number)
     
     logger.info(f"Teardown process complete.")
 
@@ -236,6 +242,7 @@ def main():
     # Subparser for the 'teardown' command
     teardown_parser = subparsers.add_parser('teardown', help='Teardown the lab environment')
     teardown_parser.add_argument('--course', required=True, help='Path to the configuration file.')
+    teardown_parser.add_argument('-cn', '--class_number', help='Class argument only valid if --course contains a f5')
     teardown_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     teardown_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
     teardown_parser.add_argument('--host', required=True, help='Name of the host where the pod can be found.')
@@ -244,10 +251,9 @@ def main():
     # Parse arguments
     args = parser.parse_args()
     # Check the course condition after parsing
-    if 'certain_string' in args.course:
+    if 'f5' in args.course:
         if not args.class_number:
             print("Error: --class_number is required when --course contains 'f5'.")
-            parser.print_help()
             sys.exit(1)
 
     if args.verbose:

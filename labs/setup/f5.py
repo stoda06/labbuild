@@ -185,3 +185,17 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
                     vmm.logger.debug(f'VM powered on successfully.')
                 except Exception as e:
                     vmm.logger.error(f'Error powering on VM: {e}')
+
+def teardown_class(service_instance, course_config, class_name, class_number):
+    rpm = ResourcePoolManager(service_instance)
+    nm = NetworkManager(service_instance)
+    if rpm.delete_resource_pool(class_name):
+        rpm.logger.info(f'Deleted {class_name} successfully.')
+    else: 
+        rpm.logger.error(f'Failed to delete {class_name}.')
+    for network in course_config["network"]:
+        switch_name = network['switch'] + class_number + "-" + "f5"
+        if nm.delete_vswitch(switch_name):
+            nm.logger.info(f'Deleted switch {switch_name} successfully.')
+        else:
+            nm.logger.error(f'Failed to delete switch {switch_name}.')

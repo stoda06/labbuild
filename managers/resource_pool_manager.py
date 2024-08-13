@@ -66,13 +66,29 @@ class ResourcePoolManager(VCenter):
             return None
 
     def delete_resource_pool(self, rp_name):
-        """Deletes the specified resource pool."""
+        """Deletes the specified resource pool and all its child components."""
         try:
             rp = self.get_obj([vim.ResourcePool], rp_name)
             if rp is None:
                 self.logger.error(f"Resource pool '{rp_name}' not found.")
                 return False
 
+            # Delete child resource pools and VMs within the resource pool
+            for child_rp in rp.resourcePool:
+                child_rp_name = child_rp.name
+                self.logger.debug(f"Deleting child resource pool '{child_rp_name}' within '{rp_name}'.")
+                if not self.delete_resource_pool(child_rp_name):
+                    self.logger.error(f"Failed to delete child resource pool '{child_rp_name}' within '{rp_name}'.")
+                    return False
+
+            for vm in rp.vm:
+                vm_name = vm.name
+                self.logger.debug(f"Deleting VM '{vm_name}' within resource pool '{rp_name}'.")
+                task = vm.Destroy_Task()
+                self.wait_for_task(task)
+                self.logger.debug(f"VM '{vm_name}' deleted successfully.")
+
+            # Delete the resource pool itself
             task = rp.Destroy_Task()
             self.wait_for_task(task)
             self.logger.debug(f"Resource pool '{rp_name}' deleted successfully.")
@@ -80,7 +96,7 @@ class ResourcePoolManager(VCenter):
         except Exception as e:
             self.logger.error(f"Failed to delete resource pool '{rp_name}': {self.extract_error_message(e)}")
             return False
-
+        
     def assign_role_to_resource_pool(self, resource_pool_name, user_name, role_name, propagate=True):
         """Assigns a specified role to a user on a given resource pool.
 
