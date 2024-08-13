@@ -6,7 +6,8 @@ def update_network_dict(network_dict, pod_number):
 
     for adapter, details in network_dict.items():
         if 'pa-rdp' in details['network_name']:
-            mac_parts = details['mac_address'].split(':')
+            mac_address_preset = '00:50:56:07:00:00'
+            mac_parts = mac_address_preset.split(':')
             mac_parts[-1] = pod_hex
             details['mac_address'] = ':'.join(mac_parts)
         else:
@@ -19,7 +20,8 @@ def cortex_update_network_dict(network_dict, pod_number):
 
     for adapter, details in network_dict.items():
         if 'pa-rdp' in details['network_name']:
-            mac_parts = details['mac_address'].split(':')
+            mac_address_preset = '00:50:56:07:00:00'
+            mac_parts = mac_address_preset.split(':')
             mac_parts[-1] = pod_hex
             details['mac_address'] = ':'.join(mac_parts)
         else:
