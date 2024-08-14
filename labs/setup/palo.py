@@ -100,7 +100,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
                 vm_manager.logger.info(f'Deleting VM {component["clone_name"]}')
                 vm_manager.delete_vm(component["clone_name"])
             else:
-                vm_manager.logger.info(f'Power-off VM {component["clone_name"]}')
+                vm_manager.logger.info(f'Power-off VM {component["vm_name"]}')
                 vm_manager.poweroff_vm(component["vm_name"])
 
         if host_details.name == "cliffjumper":
