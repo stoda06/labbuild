@@ -76,8 +76,7 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
             if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
                 vm_network = vm_manager.get_vm_network(component["clone_name"])
                 updated_vm_network = update_network_dict(vm_network, int(pod))
-                if not vm_network == updated_vm_network:
-                    vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
+                vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
                 # Create a snapshot of all the cloned VMs to save base config.
                 if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
                     vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
@@ -132,8 +131,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
             # Update VM networks and MAC address.
             vm_network = vm_manager.get_vm_network(component["clone_name"])
             updated_vm_network = update_network_dict(vm_network, int(pod))
-            if not vm_network == updated_vm_network:
-                vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
+            vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
             # Create a snapshot of all the cloned VMs to save base config.
             if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
                 vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
@@ -179,8 +177,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         # Step-4: Update VM Network
         vm_network = vm_manager.get_vm_network(component["clone_name"])
         updated_vm_network = cortex_update_network_dict(vm_network, pod)
-        if not vm_network == updated_vm_network:
-            vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
+        vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         vm_manager.connect_networks_to_vm(component["clone_name"], updated_vm_network)
 
         # Create a snapshot of all the cloned VMs to save base config.
