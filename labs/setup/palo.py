@@ -137,11 +137,11 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
                 vm_manager.create_snapshot(component["clone_name"], snapshot_name, 
                                             description=f"Snapshot of {component['clone_name']}")
     # Step-5: Poweron VMs
-    # for component in pod_config["components"]:
-    #     if "firewall" not in component["component_name"]:
-    #         vm_manager.poweron_vm(component["clone_name"])
-    #     else:
-    #         vm_manager.poweron_vm(component["vm_name"])
+    for component in pod_config["components"]:
+        if "firewall" not in component["component_name"]:
+            vm_manager.poweron_vm(component["clone_name"])
+        else:
+            vm_manager.poweron_vm(component["vm_name"])
 
 def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
     vm_manager = VmManager(service_instance)
