@@ -74,7 +74,7 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
             
             # Step-4: Update VM Network
             if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
-                vm_network = vm_manager.get_vm_network(component["clone_name"])
+                vm_network = vm_manager.get_vm_network(component["base_vm"])
                 updated_vm_network = update_network_dict(vm_network, int(pod))
                 vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
                 # Create a snapshot of all the cloned VMs to save base config.
@@ -129,7 +129,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         # Step-4: Update VM Network
         if "firewall" not in component["component_name"]:
             # Update VM networks and MAC address.
-            vm_network = vm_manager.get_vm_network(component["clone_name"])
+            vm_network = vm_manager.get_vm_network(component["base_vm"])
             updated_vm_network = update_network_dict(vm_network, int(pod))
             vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
             # Create a snapshot of all the cloned VMs to save base config.
@@ -175,7 +175,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
             vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
 
         # Step-4: Update VM Network
-        vm_network = vm_manager.get_vm_network(component["clone_name"])
+        vm_network = vm_manager.get_vm_network(component["base_vm"])
         updated_vm_network = cortex_update_network_dict(vm_network, pod)
         vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         vm_manager.connect_networks_to_vm(component["clone_name"], updated_vm_network)
