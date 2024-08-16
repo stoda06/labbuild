@@ -106,7 +106,7 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
             vmm.clone_vm(component["base_vm"], clone_name, parent_resource_pool)
             vmm.logger.info(f'Created direct clone {clone_name}.')
         # Step-3.2: Update VR Mac adderess and VM networks.
-        vm_network = vmm.get_vm_network(clone_name)
+        vm_network = vmm.get_vm_network(component["base_vm"])
         updated_vm_network = update_network_dict(clone_name, vm_network, int(class_number), int(class_number))
         vmm.update_vm_network(clone_name, updated_vm_network)
         vmm.logger.info(f'Updated VM {clone_name} networks.')
@@ -152,7 +152,7 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
             vmm.logger.info(f'Created direct clone {clone_name}.')
 
         # Step-3.2: Update VR Mac adderess and VM networks.
-        vm_network = vmm.get_vm_network(clone_name)
+        vm_network = vmm.get_vm_network(component["base_vm"])
         update_vm_network = update_network_dict(clone_name, vm_network, class_number, int(pod_number))
         vmm.update_vm_network(clone_name,update_vm_network)
         vmm.logger.info(f'Updated VM {clone_name} networks.')
