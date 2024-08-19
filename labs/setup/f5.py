@@ -90,6 +90,7 @@ def build_class(service_instance, hostname, class_number, course_config):
 
 def build_srv(service_instance, class_number, parent_resource_pool, components, rebuild=False, thread=4, linked=False):
     vmm = VmManager(service_instance)
+    snapshot_name = 'base'
     for component in components:
         clone_name = component["clone_vm"]+class_number
         if rebuild:
@@ -113,6 +114,10 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
         if "bigip" in component["clone_vm"]:
             vmm.update_serial_port_pipe_name(clone_name, "Serial port 1",r"\\.\pipe\com_"+class_number)
             vmm.logger.info(f'Updated serial port pipe name on {clone_name}.')
+        # Create a snapshot of all the cloned VMs to save base config.
+        if not vmm.snapshot_exists(clone_name, snapshot_name):
+            vmm.create_snapshot(clone_name, snapshot_name, 
+                                description=f"Snapshot of {clone_name}")
     # Step-3.3: Power-on all VMs.
     vmm.logger.info(f'Power on all components in {parent_resource_pool}.')
     for component in components:
@@ -131,6 +136,7 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
 
 def build_pod(service_instance, class_number, parent_resource_pool, components, pod_number, rebuild=False, thread=4, linked=False):
     vmm = VmManager(service_instance)
+    snapshot_name = 'base'
     # Step-3.1: Clone components.
     for component in components:
         if 'w10' in component["clone_vm"]:
@@ -165,6 +171,10 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
                 datastore_name = "vms"
                 iso_path = "podiso/pod-"+pod_number+"-a.iso"
                 vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
+        # Create a snapshot of all the cloned VMs to save base config.
+        if not vmm.snapshot_exists(clone_name, snapshot_name):
+            vmm.create_snapshot(clone_name, snapshot_name, 
+                                description=f"Snapshot of {clone_name}")
 
     # Step-3.3: Power-on all VMs.
     vmm.logger.info(f'Power on all components in {parent_resource_pool}.')
