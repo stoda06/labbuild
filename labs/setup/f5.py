@@ -28,7 +28,7 @@ def update_network_dict(vm_name, network_dict, class_number, pod_number):
         if 'vs0' in network_name:
             network_name = network_name.replace('vs0', class_vs)
         
-        if 'bigip' in vm_name and not 'srv-bigip' and ('ext' in network_name or 'int' in network_name):
+        if 'bigip' in vm_name and not 'srv-bigip' in vm_name and ('ext' in network_name or 'int' in network_name):
             mac_address = replace_mac_octet(mac_address, pod_number)
 
         if 'w10' in vm_name and 'ext' in network_name:
