@@ -836,16 +836,42 @@ class VmManager(VCenter):
             existing_vm = self.get_obj([vim.VirtualMachine], clone_name)
             if existing_vm:
                 self.logger.warning(f"VM '{clone_name}' already exists.")
-                return
-            
-            base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
-            if not base_vm:
-                self.logger.error(f"Base VM '{base_vm_name}' not found.")
                 return False
 
+            base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
+            # If the base VM is not found, check all hosts in the datacenter
+            if not base_vm:
+                self.logger.warning(f"Base VM '{base_vm_name}' not found on the current host. Searching all hosts in the datacenter...")
+                datacenter = self.get_obj([vim.Datacenter], "Red Education")
+                if datacenter:
+                    for cluster in datacenter.hostFolder.childEntity:
+                        for host in cluster.host:
+                            for vm in host.vm:
+                                if vm.name == base_vm_name:
+                                    base_vm = vm
+                                    self.logger.info(f"Base VM '{base_vm_name}' found on host '{host.name}'.")
+                                    break
+                            if base_vm:
+                                break
+                        if base_vm:
+                            break
+                if not base_vm:
+                    self.logger.error(f"Base VM '{base_vm_name}' not found on any host in the datacenter.")
+                    return False
+
             if not base_vm.snapshot:
-                self.logger.error(f"No snapshots found for VM '{base_vm_name}'.")
-                return False
+                try:
+                    task = base_vm.CreateSnapshot_Task(name=snapshot_name, description="",
+                                                memory=False, quiesce=False)
+                    if self.wait_for_task(task):
+                        self.logger.debug(f"Snapshot '{snapshot_name}' created successfully for VM '{base_vm_name}'.")
+                        return True
+                    else:
+                        self.logger.error(f"Task failed to create snapshot '{snapshot_name}' for VM '{base_vm_name}'.")
+                        return False
+                except Exception as e:
+                    self.logger.error(f"Failed to create snapshot for VM '{base_vm_name}': {e}")
+                    return False
 
             snapshot = self.find_snapshot_in_tree(base_vm.snapshot.rootSnapshotList, snapshot_name)
             if not snapshot:
@@ -856,13 +882,13 @@ class VmManager(VCenter):
             if not resource_pool:
                 self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return False
-            
+
             vm_folder = None
             if directory_name:
                 vm_folder = self.get_obj([vim.Folder], directory_name)
                 if not vm_folder:
                     self.logger.error(f"VM Folder '{directory_name}' not found.")
-                    return
+                    return False
             else:
                 datacenter = self.get_obj([vim.Datacenter], "Red Education")
                 vm_folder = datacenter.vmFolder
@@ -878,8 +904,11 @@ class VmManager(VCenter):
 
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
             if self.wait_for_task(task):
-                self.logger.info(f"Linked clone '{clone_name}' created successfully on {datastore.name}.")
+                self.logger.info(f"Linked clone '{clone_name}' created successfully on datastore '{datastore.name}'.")
                 return True
+            else:
+                self.logger.error(f"Failed to create linked clone '{clone_name}'.")
+                return False
         except Exception as e:
             self.logger.error(f"Failed to create linked clone: {e}")
             return False
@@ -953,36 +982,12 @@ class VmManager(VCenter):
         if not device_changes:
             self.logger.warning("No network interface changes detected or applicable.")
             return True
-
-        def _verify_network_update():
-            """
-            Verifies if the network update was successful by comparing the current network configuration with the expected one.
-
-            :return: True if the network update is verified, False otherwise.
-            """
-            retries = 3
-            for attempt in range(retries):
-                updated_networks = self.get_vm_network(vm_name)
-                if all(
-                    updated_networks[label]["network_name"] == network_dict[label]["network_name"]
-                    and (updated_networks[label].get("mac_address") == network_dict[label].get("mac_address")
-                         or network_dict[label].get("mac_address") is None)
-                    for label in network_dict
-                ):
-                    self.logger.debug(f"Network update verification successful on attempt {attempt + 1}.")
-                    return True
-                else:
-                    self.logger.debug(f"Network update verification failed on attempt {attempt + 1}. Retrying...")
-                    self.wait_for_task(vm.ReconfigVM_Task(spec=vim.vm.ConfigSpec(deviceChange=device_changes)))
-            self.logger.error(f"Network update verification failed after {retries} attempts.")
-            return False
-
         try:
             spec = vim.vm.ConfigSpec(deviceChange=device_changes)
             task = vm.ReconfigVM_Task(spec=spec)
             if self.wait_for_task(task):
                 self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
-                return _verify_network_update()
+                return True
             else:
                 self.logger.error("Failed to update network interfaces due to task failure.")
                 return False
