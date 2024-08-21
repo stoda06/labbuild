@@ -27,17 +27,38 @@ class ResourcePoolManager(VCenter):
             self.logger.error(f"Failed to create resource pool under host '{host_name}': {self.extract_error_message(e)}")
             return None
 
-    def create_resource_pool(self, parent_resource_pool, rp_name, cpu_allocation, memory_allocation):
-        """Creates a new resource pool under the specified parent resource pool."""
+    def create_resource_pool(self, parent_resource_pool, rp_name, cpu_allocation, memory_allocation, host_fqdn=None):
+        """Creates a new resource pool under the specified parent resource pool and host."""
         try:
-            parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool)
-            if parent_rp is None:
-                self.logger.error(f"Parent Resource pool '{parent_resource_pool}' not found.")
-            
-            child_rp = self.get_obj([vim.ResourcePool], rp_name)
-            if child_rp:
-                self.logger.error(f"Resource pool '{rp_name}' already exists. Skipping.")
-                return child_rp
+            if host_fqdn:
+                # Find the specific ESXi host by its FQDN
+                host = self.get_obj([vim.HostSystem], host_fqdn)
+                if not host:
+                    self.logger.error(f"Host '{host_fqdn}' not found.")
+                    return None
+
+                # Find the resource pool under the specified host
+                parent_rp = None
+                for rp in host.parent.resourcePool.resourcePool:
+                    if rp.name == parent_resource_pool:
+                        parent_rp = rp
+                        break
+
+                if not parent_rp:
+                    self.logger.error(f"Resource pool '{parent_resource_pool}' not found on host '{host_fqdn}'.")
+                    return None
+            else:
+                # If no host FQDN is specified, search across all resource pools
+                parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool)
+                if not parent_rp:
+                    self.logger.error(f"Parent Resource pool '{parent_resource_pool}' not found.")
+                    return None
+
+            # Check if the resource pool already exists
+            for rp in parent_rp.resourcePool:
+                if rp.name == rp_name:
+                    self.logger.error(f"Resource pool '{rp_name}' already exists. Skipping.")
+                    return rp
 
             resource_config_spec = vim.ResourceConfigSpec()
 
@@ -56,11 +77,13 @@ class ResourcePoolManager(VCenter):
             memory_alloc.expandableReservation = memory_allocation['expandable_reservation']
             memory_alloc.shares = vim.SharesInfo(level=vim.SharesInfo.Level.normal, shares=memory_allocation['shares'])
             resource_config_spec.memoryAllocation = memory_alloc
+
+            # Create the resource pool under the parent resource pool
             resource_pool = parent_rp.CreateResourcePool(name=rp_name, spec=resource_config_spec)
-            
 
             self.logger.debug(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
             return resource_pool
+
         except Exception as e:
             self.logger.error(f"Failed to create resource pool: {self.extract_error_message(e)}")
             return None
