@@ -54,7 +54,7 @@ class NetworkManager(VCenter):
             for pg in port_groups:
                 port_group_spec = vim.host.PortGroup.Specification()
                 port_group_spec.name = pg["port_group_name"]
-                if "pa" in switch_name:
+                if "pa" in switch_name and not "pa-vswitch" in switch_name:
                     port_group_spec.vlanId = pg.get('vlan_id', 0)+pod_number  # Default VLAN ID is 0 if not specified
                 else:
                     port_group_spec.vlanId = pg.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
@@ -252,3 +252,47 @@ class NetworkManager(VCenter):
         # Using ThreadPoolExecutor to enable promiscuous mode concurrently on multiple port groups
         with ThreadPoolExecutor() as executor:
             executor.map(task, network_names)
+    
+    def delete_port_groups(self, host_name, switch_name, port_groups):
+        """
+        Deletes multiple virtual machine port groups from a specified standard switch on a given host.
+
+        :param host_name: Name of the host where the standard switch resides.
+        :param switch_name: Name of the standard switch to delete the port groups from.
+        :param port_groups: A list of dictionaries, each containing port group properties (e.g., name).
+        :return: True if all specified port groups are deleted successfully, False otherwise.
+        """
+        host = self.get_obj([vim.HostSystem], host_name)
+        if not host:
+            self.logger.error(f"Failed to retrieve host '{host_name}'.")
+            return False
+
+        host_network_system = host.configManager.networkSystem
+
+        with ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(self._delete_port_group, host_network_system, switch_name, pg["port_group_name"])
+                for pg in port_groups
+            ]
+
+        return all(future.result() for future in futures)
+
+    def _delete_port_group(self, host_network_system, switch_name, port_group_name):
+        """
+        Deletes a single port group from a vSwitch.
+
+        :param host_network_system: The HostNetworkSystem object from the host.
+        :param switch_name: The name of the vSwitch to delete the port group from.
+        :param port_group_name: The name of the port group to delete.
+        :return: True if the port group is deleted successfully, False otherwise.
+        """
+        try:
+            host_network_system.RemovePortGroup(pgName=port_group_name)
+            self.logger.debug(f"Port group '{port_group_name}' deleted successfully from switch '{switch_name}'.")
+            return True
+        except vim.fault.NotFound:
+            self.logger.warning(f"Port group '{port_group_name}' not found on switch '{switch_name}'. Skipping.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to delete port group '{port_group_name}' from switch '{switch_name}': {e}")
+            return False
