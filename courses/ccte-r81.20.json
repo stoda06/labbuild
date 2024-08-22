@@ -6,6 +6,10 @@
         "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
+        "prtg_container": "8082",
+        "prtg_object": "135790",
+        "prtg_container-ho": "10983",
+        "prtg_object-ho": "10984",
         "components": [
             {
                 "component_name": "R81.20-CCSE-vr",

@@ -6,99 +6,73 @@
         "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
-        "prtg_monitor": "",
-        "prtg_container": "",
+        "prtg_container": "8082",
+        "prtg_object": "113086",
         "components": [
             {
                 "component_name": "R81-vr-CCMS-R81.10",
                 "base_vm": "cp-R81-vr-CCMS-R81.10",
-                "clone_name": "cp-R81-vr-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-R81-vr-{X}"
             },
             {
                 "component_name": "A-MLM-CCMS-R81.10",
                 "base_vm": "A-MLM-CCMS-R81.10",
-                "clone_name": "A-MLM-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-MLM-{X}"
             },
             {
                 "component_name": "A-MDS-CCMS-R81.10",
                 "base_vm": "A-MDS-CCMS-R81.10",
-                "clone_name": "A-MDS-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-MDS-{X}"
             },
             {
                 "component_name": "A-MDS-02-CCMS-R81.10",
                 "base_vm": "A-MDS-02-CCMS-R81.10",
-                "clone_name": "A-MDS-02-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-MDS-02-{X}"
             },
             {
                 "component_name": "A-SME-CCMS-R81.10",
                 "base_vm": "A-SME-CCMS-R81.10",
-                "clone_name": "A-SME-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-SME-{X}"
             },
             {
                 "component_name": "A-DMZ-CCMS-R81.10",
                 "base_vm": "A-DMZ-CCMS-R81.10",
-                "clone_name": "A-DMZ-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-DMZ-{X}"
             },
             {
                 "component_name": "A-GUI-CCMS-R81.10",
                 "base_vm": "A-GUI-CCMS-R81.10",
-                "clone_name": "A-GUI-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GUI-{X}"
             },
             {
                 "component_name": "A-GW-CCMS-R81.10",
                 "base_vm": "A-GW-CCMS-R81.10",
-                "clone_name": "A-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GW-{X}"
             },
             {
                 "component_name": "A-Host-CCMS-R81.10",
                 "base_vm": "A-Host-CCMS-R81.10",
-                "clone_name": "A-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-Host-{X}"
             },
             {
                 "component_name": "B-SMS-CCMS-R81.10",
                 "base_vm": "B-SMS-CCMS-R81.10",
-                "clone_name": "B-SMS-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-SMS-{X}"
             },
             {
                 "component_name": "B-GW-CCMS-R81.10",
                 "base_vm": "B-GW-CCMS-R81.10",
-                "clone_name": "B-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-GW-{X}"
             },
             {
                 "component_name": "B-Host-CCMS-R81.10",
                 "base_vm": "B-Host-CCMS-R81.10",
-                "clone_name": "B-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-Host-{X}"
             },
             {
                 "component_name": "R80-w10",
                 "base_vm": "cp-base-R80-w10",
-                "clone_name": "cp-w10-pod{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-w10-pod{X}"
             }
         ],
         "network": [

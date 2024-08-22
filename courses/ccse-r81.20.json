@@ -6,132 +6,98 @@
         "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
-        "prtg_monitor": "",
-        "prtg_container": "",
- 
- 
+        "prtg_container": "8082",
+        "prtg_object": "135790",
+        "prtg_container-ho": "10983",
+        "prtg_object-ho": "10984",
         "components": [
             {
                 "component_name": "R81.20-CCSE-vr",
                 "base_vm": "cp-R81.20-CCSE-vr",
-                "clone_name": "cp-R81-vr-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-R81-vr-{X}"
             },
             {
                 "component_name": "A-DMZ-CCSE-R81.20",
                 "base_vm": "A-DMZ-CCSE-R81.20",
-                "clone_name": "A-DMZ-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-DMZ-{X}"
             },
             {
                 "component_name": "A-GUI-CCSE-R81.20",
                 "base_vm": "A-GUI-CCSE-R81.20",
-                "clone_name": "A-GUI-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GUI-{X}"
             },
             {
                 "component_name": "A-GW-CCSE-R81.20",
                 "base_vm": "A-GW-R81.20-CCSE",
-                "clone_name": "A-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GW-{X}"
             },
             {
                 "component_name": "A-GW-01-CCSE-R81.20",
                 "base_vm": "A-GW-01-R81.20-CCSE",
-                "clone_name": "A-GW-01-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GW-01-{X}"
             },
             {
                 "component_name": "A-GW-02-CCSE-R81.20",
                 "base_vm": "A-GW-02-R81.20-CCSE",
-                "clone_name": "A-GW-02-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GW-02-{X}"
             },
             {
                 "component_name": "A-Host-R81.20-CCSE",
                 "base_vm": "A-Host-R81.20-CCSE",
-                "clone_name": "A-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-Host-{X}"
             },
             {
                 "component_name": "A-LDAP-R81.20-CCSE",
                 "base_vm": "A-LDAP-R81.20-CCSE",
-                "clone_name": "A-LDAP-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-LDAP-{X}"
             },
             {
                 "component_name": "A-Remote-R81.20-CCSE",
                 "base_vm": "A-Remote-R81.20-CCSE",
                 "clone_name": "A-Remote-{X}",
-                "state": "poweroff",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "state": "poweroff"
             },
             {
                 "component_name": "A-SME-CCSE-R81.20",
                 "base_vm": "A-SME-CCSE-R81.20",
-                "clone_name": "A-SME-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-SME-{X}"
             },
             {
                 "component_name": "A-SMS-02-R81.20-CCSE",
                 "base_vm": "A-SMS-02-R81.20-CCSE",
-                "clone_name": "A-SMS-02-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-SMS-02-{X}"
             },
             {
                 "component_name": "A-SMS-R81.20-CCSE",
                 "base_vm": "A-SMS-R81.20-CCSE",
-                "clone_name": "A-SMS-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-SMS-{X}"
             },
             {
                 "component_name": "B-GW-CCSE-R81.20",
                 "base_vm": "B-GW-CCSE-R81.20",
-                "clone_name": "B-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-GW-{X}"
             },
             {
                 "component_name": "B-Host-CCSE-R81.20",
                 "base_vm": "B-Host-CCSE-R81.20",
-                "clone_name": "B-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-Host-{X}"
             },
             {
                 "component_name": "C-GW-CCSE-R81.20",
                 "base_vm": "C-GW-CCSE-R81.20",
                 "clone_name": "C-GW-{X}",
-                "state": "poweroff",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "state": "poweroff"
             },
             {
                 "component_name": "C-Host-CCSE-R81.20",
                 "base_vm": "C-Host-CCSE-R81.20",
                 "clone_name": "C-Host-{X}",
-                "state": "poweroff",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "state": "poweroff"
             },
             {
                 "component_name": "R80-w10",
                 "base_vm": "cp-base-R80-w10",
-                "clone_name": "cp-w10-pod{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-w10-pod{X}"
             }
         ],
         "network": [

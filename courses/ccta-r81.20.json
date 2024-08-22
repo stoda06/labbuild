@@ -6,73 +6,55 @@
         "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
-        "prtg_monitor": "",
-        "prtg_container": "",
- 
- 
+        "prtg_container": "8082",
+        "prtg_object": "135790",
+        "prtg_container-ho": "10983",
+        "prtg_object-ho": "10984",
         "components": [
             {
                 "component_name": "R81.20-CCSE-vr",
                 "base_vm": "cp-R81.20-CCSE-vr",
-                "clone_name": "cp-R81-vr-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-R81-vr-{X}"
             },
             {
                 "component_name": "A-DMZ-CCTA-R81.20",
                 "base_vm": "A-DMZ-CCTA-R81.20",
-                "clone_name": "A-DMZ-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-DMZ-{X}"
             },
             {
                 "component_name": "A-GUI-CCTA-R81.20",
                 "base_vm": "A-GUI-CCTA-R81.20",
-                "clone_name": "A-GUI-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GUI-{X}"
             },
             {
                 "component_name": "A-GW-CCTA-R81.20",
                 "base_vm": "A-GW-CCTA-R81.20",
-                "clone_name": "A-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GW-{X}"
             },
             {
                 "component_name": "A-Host-CCTA-R81.20",
                 "base_vm": "A-Host-CCTA-R81.20",
-                "clone_name": "A-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-Host-{X}"
             },
             {
                 "component_name": "A-SMS-CCTA-R81.20",
                 "base_vm": "A-SMS-CCTA-R81.20",
-                "clone_name": "A-SMS-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-SMS-{X}"
             },
             {
                 "component_name": "B-GW-CCTA-R81.20",
                 "base_vm": "B-GW-CCTA-R81.20",
-                "clone_name": "B-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-GW-{X}"
             },
             {
                 "component_name": "B-Host-CCTA-R81.20",
                 "base_vm": "B-Host-CCTA-R81.20",
-                "clone_name": "B-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-Host-{X}"
             },
             {
                 "component_name": "R80-w10",
                 "base_vm": "cp-base-R80-w10",
-                "clone_name": "cp-w10-pod{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-w10-pod{X}"
             }
 
         ],

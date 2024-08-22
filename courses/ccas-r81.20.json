@@ -6,85 +6,63 @@
         "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
-        "prtg_monitor": "",
-        "prtg_container": "",
+        "prtg_container": "8082",
+        "prtg_object": "38692",
         "components": [
             {
                 "component_name": "R81.20-vr",
                 "base_vm": "cp-R81-vr-CCAS-R81.20",
-                "clone_name": "cp-R81-vr-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-R81-vr-{X}"
             },
             {
                 "component_name": "A-GUI-CCAS-R81.20",
                 "base_vm": "A-GUI-CCAS-R81.20",
-                "clone_name": "A-GUI-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GUI-{X}"
             },
             {
                 "component_name": "A-GW-CCAS-R81.20",
                 "base_vm": "A-GW-CCAS-R81.20",
-                "clone_name": "A-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GW-{X}"
             },
             {
                 "component_name": "A-Host-CCAS-R81.20",
                 "base_vm": "A-Host-CCAS-R81.20",
-                "clone_name": "A-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-Host-{X}"
             },
             {
                 "component_name": "A-LDAP-CCAS-R81.20",
                 "base_vm": "A-LDAP-CCAS-R81.20",
-                "clone_name": "A-LDAP-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-LDAP-{X}"
             },
             {
                 "component_name": "A-SMS-CCAS-R81.20",
                 "base_vm": "A-SMS-CCAS-R81.20",
-                "clone_name": "A-SMS-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-SMS-{X}"
             },
             {
                 "component_name": "B-GW-CCAS-R81.20",
                 "base_vm": "B-GW-CCAS-R81.20",
-                "clone_name": "B-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-GW-{X}"
             },
             {
                 "component_name": "B-Host-CCAS-R81.20",
                 "base_vm": "B-Host-R81.20-CCSA",
-                "clone_name": "B-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-Host-{X}"
             },
             {
                 "component_name": "C-GW-CCAS-R81.20",
                 "base_vm": "C-GW-CCAS-R81.20",
-                "clone_name": "C-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "C-GW-{X}"
             },
             {
                 "component_name": "C-Host-CCAS-R81.20",
                 "base_vm": "C-Host-CCAS-R81.20",
-                "clone_name": "C-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "C-Host-{X}"
             },
             {
                 "component_name": "R80-w10",
                 "base_vm": "cp-base-R80-w10",
-                "clone_name": "cp-w10-pod{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-w10-pod{X}"
             }
         ],
         "network": [

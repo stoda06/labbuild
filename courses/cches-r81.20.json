@@ -6,8 +6,8 @@
         "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
-        "prtg_monitor": "",
-        "prtg_container": "",
+        "prtg_container": "8082",
+        "prtg_object": "172452",
         "components": [
             {
                 "component_name": "R81.20-vr",
@@ -24,9 +24,7 @@
                     "Network adapter 8": "cp-none2-vs{X}-cp",
                     "Network adapter 9": "cp-ext-b-vs{X}-cp",
                     "Network adapter 10": "cp-mgmtb-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-Remote-CCHES-R81.20",
@@ -34,9 +32,7 @@
                 "clone_name": "A-Remote-{X}",
                 "network_map": {
                     "Network adapter 1": "cp-mgmtb-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-SMS-CCHES-R81.20",
@@ -45,9 +41,7 @@
                 "network_map": {
                     "Network adapter 1": "cp-mgt-vs{X}-cp",
                     "Network adapter 2": "cp-mgt-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-GUI-CCHES-R81.20",
@@ -55,9 +49,7 @@
                 "clone_name": "A-GUI-{X}",
                 "network_map": {
                     "Network adapter 1": "cp-mgt-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-EPM-02-CCHES-R81.20",
@@ -65,9 +57,7 @@
                 "clone_name": "A-EPM-02-{X}",
                 "network_map": {
                     "Network adapter 1": "cp-mgt-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-LDAP-CCHES-R81.20",
@@ -75,9 +65,7 @@
                 "clone_name": "A-LDAP-{X}",
                 "network_map": {
                     "Network adapter 1": " cp-inta-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-GW-CCHES-R81.20",
@@ -85,9 +73,7 @@
                 "clone_name": "A-GW-{X}",
                 "network_map": {
                     "Network adapter 1": "cp-mgt-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-EPM-CCHES-R81.20",
@@ -95,9 +81,7 @@
                 "clone_name": "A-EPM-{X}",
                 "network_map": {
                     "Network adapter 1": "cp-mgt-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "A-Host-CCHES-R81.20",
@@ -106,9 +90,7 @@
                 "network_map": {
                     "Network adapter 1": "cp-inta-vs{X}-cp",
                     "Network adapter 2": "cp-none1-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             },
             {
                 "component_name": "R80-w10",
@@ -116,9 +98,7 @@
                 "clone_name": "cp-w10-pod{X}",
                 "network_map": {
                     "Network adapter 1": "cp-none2-vs{X}-cp"
-                },
-                "prtg_monitor": "",
-                "prtg_container": ""
+                }
             }
         ],
         "network": [

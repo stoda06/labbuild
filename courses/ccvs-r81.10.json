@@ -6,105 +6,77 @@
         "vendor": "cp",
         "group_name": "cp-pod{X}",
         "folder_name": "cp-pod{X}-folder",
-        "prtg_monitor": "",
-        "prtg_container": "",
- 
- 
+        "prtg_container": "8082",
+        "prtg_object": "63612",
         "components": [
             {
                 "component_name": "R81.20-CCSE-vr",
                 "base_vm": "CP-VR-CCVS-R81.10",
-                "clone_name": "cpvr-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cpvr-{X}"
             },
             {
                 "component_name": "A-DMZ-CCVS-R81.10",
                 "base_vm": "A-DMZ-CCVS-R81.10",
-                "clone_name": "A-DMZ-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-DMZ-{X}"
             },
             {
                 "component_name": "A-Guest-CCVS-R81.10",
                 "base_vm": "A-Guest-CCVS-R81.10",
                 "clone_name": "A-Guest-{X}",
-                "state": "poweroff",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "state": "poweroff"
             },
             {
                 "component_name": "A-GUI-CCVS-R81.10",
                 "base_vm": "A-GUI-CCVS-R81.10",
-                "clone_name": "A-GUI-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GUI-{X}"
             },
             {
                 "component_name": "A-GW-CCVS-R81.10",
                 "base_vm": "A-GW-CCVS-R81.10",
-                "clone_name": "A-GW-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-GW-{X}"
             },
             {
                 "component_name": "A-Host-CCVS-R81.10",
                 "base_vm": "A-Host-CCVS-R81.10",
-                "clone_name": "A-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-Host-{X}"
             },
             {
                 "component_name": "A-SMS-CCVS-R81.10",
                 "base_vm": "A-SMS-CCVS-R81.10",
-                "clone_name": "A-SMS-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-SMS-{X}"
             },
             {
                 "component_name": "A-VSX-CCVS-R81.10",
                 "base_vm": "A-VSX-CCVS-R81.10",
-                "clone_name": "A-VSX-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "A-VSX-{X}"
             },
             {
                 "component_name": "A-VSX-01-CCVS-R81.10",
                 "base_vm": "A-VSX-01-CCVS-R81.10",
                 "clone_name": "A-VSX-01-{X}",
-                "state": "poweroff",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "state": "poweroff"
             },
             {
                 "component_name": "A-VSX-02-CCVS-R81.10",
                 "base_vm": "A-VSX-02-CCVS-R81.10",
                 "clone_name": "A-VSX-02-{X}",
-                "state": "poweroff",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "state": "poweroff"
             },
             {
                 "component_name": "A-VSX-03-CCVS-R81.10",
                 "base_vm": "A-VSX-03-CCVS-R81.10",
                 "clone_name": "A-VSX-03-{X}",
-                "state": "poweroff",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "state": "poweroff"
             },
             {
                 "component_name": "B-Host-CCVS-R81.10",
                 "base_vm": "B-Host-CCVS-R81.10",
-                "clone_name": "B-Host-{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "B-Host-{X}"
             },
             {
                 "component_name": "CP-W10-CCVS-R81.10",
                 "base_vm": "CP-W10-CCVS-R81.10",
-                "clone_name": "cp-w10-pod{X}",
-                "prtg_monitor": "",
-                "prtg_container": ""
+                "clone_name": "cp-w10-pod{X}"
             }
         ],
         "network": [
