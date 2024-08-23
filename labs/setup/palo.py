@@ -150,7 +150,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             vm_manager.poweron_vm(component["vm_name"])
 
-def build_1110_210_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
+def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     rpm = ResourcePoolManager(service_instance)

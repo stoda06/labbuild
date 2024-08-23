@@ -107,7 +107,7 @@ def setup_environment(args):
                                                         pod_config, 
                                                         rebuild=args.re_build,
                                                         linked=args.link)
-                    elif course_config["version"] == "1110-210":
+                    elif "1110" in course_config["version"]:
                         build_future = executor.submit(palo.build_1110_210_pod,
                                                         service_instance, host_details, 
                                                         pod_config, 
