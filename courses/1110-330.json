@@ -1,7 +1,7 @@
 {
     "1110-330": {
         "vendor": "pa",
-        "version": "1110-210",
+        "version": "1110-330",
         "pod_number": "{X}",
         "group_name": "pa-pod{X}",
         "network": [
