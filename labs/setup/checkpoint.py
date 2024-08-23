@@ -17,18 +17,36 @@ def wait_for_futures(futures):
             # Handle cloning failure
             print(f"Task failed: {e}")
 
-def update_network_dict(vm_networks, base_vs, new_vs, new_mac):
-    return {
-        k: {
-            sub_k: (
-                sub_v.replace(base_vs, new_vs) if sub_k == 'network_name' else new_mac
-            ) if 'rdp' in v.get('network_name', '') and sub_k == 'mac_address' else (
-                sub_v.replace(base_vs, new_vs) if sub_k == 'network_name' else sub_v
-            )
-            for sub_k, sub_v in v.items()
+def update_network_dict(network_dict, pod_number):
+    pod_hex = format(pod_number, '02x')  # Convert pod number to hex format
+
+    def update_mac_address(mac_address):
+        # Split the MAC address into octets
+        mac_octets = mac_address.split(':')
+        # Update the last octet with the hex value of the pod number
+        mac_octets[-1] = pod_hex
+        # Join the octets back into a MAC address
+        return ':'.join(mac_octets)
+
+    updated_network_dict = {}
+    for adapter, details in network_dict.items():
+        network_name = details['network_name']
+        mac_address = details['mac_address']
+
+        # Update the network name if it contains "vs0"
+        if 'vs0' in network_name:
+            network_name = network_name.replace('vs0', f'vs{pod_number}')
+
+        # Update the MAC address if the network name contains "rdp"
+        if 'rdp' in network_name:
+            mac_address = update_mac_address(mac_address)
+
+        updated_network_dict[adapter] = {
+            'network_name': network_name,
+            'mac_address': mac_address
         }
-        for k, v in vm_networks.items()
-    }
+
+    return updated_network_dict
 
 def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, linked=False):
 
@@ -115,9 +133,8 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
             
         vm_manager.logger.info(f'Updating VM networks for {component["clone_name"]}.')
         # Update VM networks and MAC address.
-        vm_network = vm_manager.get_vm_network(component["clone_name"])
-        specified_mac_address = "00:50:56:04:00:" + "{:02x}".format(pod) # Replace with the desired MAC address
-        updated_vm_network = update_network_dict(vm_network, 'vs0', 'vs'+str(pod), specified_mac_address)
+        vm_network = vm_manager.get_vm_network(component["base_vm"])
+        updated_vm_network = update_network_dict(vm_network, int(pod))
         vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         # Create base snapshot on cloned VM.
         snapshot_name = "base"
