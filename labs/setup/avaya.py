@@ -78,12 +78,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
                 vm_manager.update_mac_address(component["clone_name"],
                                               "Network adapter 1",
                                               "00:50:56:0f:" + "{:02x}".format(pod) + ":00")
-            # Update IPO components' UUIDs
-            if "77201" in component["component_name"]:
-                vm_manager.download_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
-                vm_manager.update_vm_uuid(f"/tmp/{component['clone_name']}.vmx", component["uuid"])
-                vm_manager.upload_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
-                # vm_manager.register_vm(component["clone_name"])
+
         wait_for_task(futures)
         futures.clear()
 
@@ -99,6 +94,12 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
                     description=f"Snapshot of {component['clone_name']}"
                 )
                 futures.append(snapshot_futures)
+                        # Update IPO components' UUIDs
+            if "77201" in component["component_name"]:
+                vm_manager.download_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
+                vm_manager.update_vm_uuid(f"/tmp/{component['clone_name']}.vmx", component["uuid"])
+                vm_manager.upload_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
+                # vm_manager.register_vm(component["clone_name"])
         wait_for_task(futures)
         futures.clear()
 
