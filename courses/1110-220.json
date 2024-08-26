@@ -40,20 +40,20 @@
             {
                 "component_name": "firewall-a",
                 "base_vm": "pa-vm-pod220a-v11",
-                "clone_name": "pa-vm-pod{X}a-v11",
+                "clone_name": "pa-vm-pod{X}-a-v11",
                 "uuid": "42 27 06 7c 1b 74 5a de-00 00 00 00 00 00 00 13"
             },
             {
                 "component_name": "firewall-b",
                 "base_vm": "pa-vm-pod220b-v11",
-                "clone_name": "pa-vm-pod{X}b-v11",
+                "clone_name": "pa-vm-pod{X}-b-v11",
                 "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 07 01 16"
             },
             {
                 "component_name": "panorama",
-                "base_vm": "pa-pano-pod00-v11",
+                "base_vm": "pa-pano-pod00-v10",
                 "clone_name": "pa-pano-pod{X}-v11",
-                "uuid": ""
+                "uuid": "42 36 ae bd 1d 93 f8 94-28 e7 dc e1 6f 59 57 c1"
             },
             {
                 "component_name": "11.1-client-a",
