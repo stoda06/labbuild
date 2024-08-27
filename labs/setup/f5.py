@@ -134,7 +134,7 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
                 except Exception as e:
                     vmm.logger.error(f'Error powering on VM: {e}')
 
-def build_pod(service_instance, class_number, parent_resource_pool, components, pod_number, rebuild=False, thread=4, linked=False):
+def build_pod(service_instance, class_number, parent_resource_pool, components, pod_number, rebuild=False, thread=4, linked=False, mem=None):
     vmm = VmManager(service_instance)
     snapshot_name = 'base'
     # Step-3.1: Clone components.
@@ -171,11 +171,15 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
                 datastore_name = "vms"
                 iso_path = "podiso/pod-"+pod_number+"-a.iso"
                 vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
+        if 'bigip' in clone_name:
+            if mem:
+                vmm.reconfigure_vm_resources(clone_name, new_memory_size_mb=mem)
+                vmm.logger.info(f'Updated {clone_name} with memory {mem} MB.')
         # Create a snapshot of all the cloned VMs to save base config.
         if not vmm.snapshot_exists(clone_name, snapshot_name):
             vmm.create_snapshot(clone_name, snapshot_name, 
                                 description=f"Snapshot of {clone_name}")
-
+    
     # Step-3.3: Power-on all VMs.
     vmm.logger.info(f'Power on all components in {parent_resource_pool}.')
     for component in components:

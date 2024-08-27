@@ -152,7 +152,8 @@ def setup_environment(args):
                             build_future = executor.submit(f5.build_pod, service_instance, 
                                                             class_number, parent_resource_pool, 
                                                             group["component"], str(pod),
-                                                            rebuild=args.re_build, linked=args.link)
+                                                            rebuild=args.re_build, linked=args.link, 
+                                                            mem=args.memory)
                             futures.append(build_future)
                         wait_for_futures(futures)
 
@@ -232,6 +233,7 @@ def main():
     setup_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
     setup_parser.add_argument('-q','--quiet', action='store_true', help='Suppress output to display only warnings or errors')
     setup_parser.add_argument('-c','--component', help='Build a specific component for a course.')
+    setup_parser.add_argument('-mem','--memory', type=int, default=None, required=False, help='Specify memory for f5 bigip component.')
     setup_parser.add_argument('--link', action='store_true', help='Create linked clones to conserve storage space')
 
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
