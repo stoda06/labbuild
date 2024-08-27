@@ -1156,3 +1156,40 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"Failed to connect networks to VM '{vm_name}': {e}")
             return False
+        
+    def reconfigure_vm_resources(self, vm_name, new_cpu_count=None, new_memory_size_mb=None):
+        try:
+            # Find the VM by name
+            vm = self.connection.content.searchIndex.FindByDnsName(dnsName=vm_name, vmSearch=True)
+            if not vm:
+                self.logger.error(f"VM '{vm_name}' not found.")
+                return False
+            
+            # Prepare the configuration specification
+            config_spec = vim.vm.ConfigSpec()
+            
+            # Update CPU count if provided
+            if new_cpu_count:
+                config_spec.numCPUs = new_cpu_count
+            
+            # Update memory size if provided
+            if new_memory_size_mb:
+                config_spec.memoryMB = new_memory_size_mb
+            
+            # Reconfigure the VM
+            task = vm.ReconfigVM_Task(config_spec)
+            
+            # Wait for the task to complete
+            while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
+                time.sleep(1)
+            
+            if task.info.state == vim.TaskInfo.State.success:
+                self.logger.debug(f"VM '{vm_name}' reconfigured successfully.")
+                return True
+            else:
+                self.logger.error(f"VM '{vm_name}' reconfiguration failed: {task.info.error}")
+                return False
+        
+        except Exception as e:
+            self.logger.error(f"Error reconfiguring VM '{vm_name}': {e}")
+            return False
