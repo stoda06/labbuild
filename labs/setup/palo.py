@@ -214,15 +214,18 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
     # Step-2: Create Network
+    if rebuild:
+        for component in pod_config["components"]:
+            vm_manager.delete_vm(component["clone_name"])
+        for network in pod_config["network"]:
+            network_manager.delete_port_groups(host_details.fqdn, network["switch_name"], network["port_groups"])
+        
     for network in pod_config["network"]:
-        network_manager.create_vm_port_groups(host_details.fqdn,
+        network_manager.create_vswitch_portgroups(host_details.fqdn,
                                                 network["switch_name"],
-                                                network["port_groups"],
-                                                pod_number=pod)
+                                                network["port_groups"])
     # Step-3: Clone VMs
     for component in pod_config["components"]:
-        if rebuild:
-            vm_manager.delete_vm(component["clone_name"])
         if host_details.name == "cliffjumper":
             resource_pool = component["component_name"] + "-cl"
         elif host_details.name == "apollo":
