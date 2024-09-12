@@ -8,6 +8,7 @@
         "folder_name": "cp-pod{X}-folder",
         "prtg_container": "8082",
         "prtg_object": "63612",
+        "prtg_object_name": "cp-R81-vr-{X}",
         "components": [
             {
                 "component_name": "R81.20-CCSE-vr",

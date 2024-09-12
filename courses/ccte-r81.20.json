@@ -10,6 +10,7 @@
         "prtg_object": "135790",
         "prtg_container-ho": "10983",
         "prtg_object-ho": "10984",
+        "prtg_object_name": "cp-R81-vr-{X}",
         "components": [
             {
                 "component_name": "R81.20-CCSE-vr",
