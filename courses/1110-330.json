@@ -9,23 +9,23 @@
                 "switch_name": "pa-vswitch",
                 "port_groups": [
                     {
-                        "port_group_name": "pa-internal-{X}",
+                        "port_group_name": "pan-internal-{X}",
                         "vlan_id": "5*{X}+2"
                     },
                     {
-                        "port_group_name": "pa-vr-{X}",
+                        "port_group_name": "pan-vr-{X}",
                         "vlan_id": "5*{X}+3"
                     },
                     {
-                        "port_group_name": "pa-dmz-{X}",
+                        "port_group_name": "pan-dmz-{X}",
                         "vlan_id": "5*{X}+4"
                     },
                     {
-                        "port_group_name": "pa-danger-{X}",
+                        "port_group_name": "pan-danger-{X}",
                         "vlan_id": "5*{X}+5"
                     },
                     {
-                        "port_group_name": "pa-danger-{X}-a",
+                        "port_group_name": "pan-danger-{X}-a",
                         "vlan_id": "5*{X}+6"
                     }
                 ]
