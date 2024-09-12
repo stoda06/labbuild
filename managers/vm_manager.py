@@ -137,11 +137,11 @@ class VmManager(VCenter):
 
             # If still overutilized after retries, proceed with cloning
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-            self.logger.debug(f"Datastore overutilized, proceeding with cloning VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}' after retries.")
+            self.logger.debug(f"Datastore overutilized, proceeding with cloning VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
-                self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on datastore '{datastore.name}' after retries.")
+                self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on datastore '{datastore.name}'.")
             else:
-                self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}' after retries.")
+                self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
         except Exception as e:
             self.logger.error(f"Failed to clone VM '{clone_name}': {e}")
 
