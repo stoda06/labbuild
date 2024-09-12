@@ -199,6 +199,7 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, li
                 vmm.download_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
                 vmm.update_vm_uuid(f"/tmp/{component['clone_name']}.vmx", component["uuid"])
                 vmm.upload_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
+                vmm.verify_uuid(component["clone_name"], component["uuid"])
         # Create a snapshot of all the cloned VMs to save base config.
         if not vmm.snapshot_exists(component["clone_name"], snapshot_name):
             vmm.create_snapshot(component["clone_name"], snapshot_name, 
