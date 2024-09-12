@@ -912,7 +912,42 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"Failed to create linked clone: {e}")
             return False
-    
+        
+    def verify_uuid(self, vm_name, expected_uuid):
+        """
+        Verifies if the VM's current UUID matches the provided UUID.
+
+        :param vm_name: The name of the VM to verify the UUID for.
+        :param expected_uuid: The UUID to verify against.
+        :return: True if the UUID matches, False otherwise.
+        """
+        local_vmx_path = f"/tmp/{vm_name}.vmx"  # Temporary path to download the VMX file
+
+        # Step 1: Download the VMX file
+        if not self.download_vmx_file(vm_name, local_vmx_path):
+            self.logger.error(f"Failed to download VMX file for VM '{vm_name}'.")
+            return False
+
+        try:
+            # Step 2: Read the VMX file and find the line with 'uuid.bios'
+            with open(local_vmx_path, 'r') as file:
+                for line in file:
+                    if line.strip().startswith('uuid.bios'):
+                        actual_uuid = line.split('=')[1].strip().strip('"')
+                        if actual_uuid == expected_uuid:
+                            self.logger.info(f"UUID matches for VM '{vm_name}': {actual_uuid}")
+                            return True
+                        else:
+                            self.logger.warning(f"UUID does not match for VM '{vm_name}'. Expected: {expected_uuid}, Actual: {actual_uuid}")
+                            return False
+
+            # If 'uuid.bios' is not found in the VMX file
+            self.logger.error(f"'uuid.bios' entry not found in the VMX file for VM '{vm_name}'.")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error reading the VMX file '{local_vmx_path}': {str(e)}")
+            return False
+
     def get_vm_network(self, vm_name):
         """
         Retrieves the network details of an existing VM, including network names,
