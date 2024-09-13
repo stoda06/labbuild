@@ -1195,7 +1195,7 @@ class VmManager(VCenter):
     def reconfigure_vm_resources(self, vm_name, new_cpu_count=None, new_memory_size_mb=None):
         try:
             # Find the VM by name
-            vm = self.connection.content.searchIndex.FindByDnsName(dnsName=vm_name, vmSearch=True)
+            vm = self.get_obj([vim.VirtualMachine], vm_name)
             if not vm:
                 self.logger.error(f"VM '{vm_name}' not found.")
                 return False
