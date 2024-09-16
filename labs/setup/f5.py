@@ -175,6 +175,12 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
             if mem:
                 vmm.reconfigure_vm_resources(clone_name, new_memory_size_mb=mem)
                 vmm.logger.info(f'Updated {clone_name} with memory {mem} MB.')
+            hex_pod_number = format(int(pod_number), '02x')
+            uuid = component["uuid"].replace('XX', str(hex_pod_number))
+            vmm.download_vmx_file(clone_name,f"/tmp/{clone_name}.vmx")
+            vmm.update_vm_uuid(f"/tmp/{clone_name}.vmx", uuid)
+            vmm.upload_vmx_file(clone_name, f"/tmp/{clone_name}.vmx")
+            vmm.verify_uuid(clone_name, uuid)
         # Create a snapshot of all the cloned VMs to save base config.
         if not vmm.snapshot_exists(clone_name, snapshot_name):
             vmm.create_snapshot(clone_name, snapshot_name, 
