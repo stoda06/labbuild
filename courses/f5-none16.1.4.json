@@ -9,7 +9,8 @@
                 "component": [
                     {
                         "base_vm": "bigip-v16.1.4-base",
-                        "clone_vm": "f5-bigip"
+                        "clone_vm": "f5-bigip",
+                        "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 XX"
                     }
                 ]
             },
