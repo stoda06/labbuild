@@ -219,12 +219,15 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         for component in pod_config["components"]:
             vm_manager.delete_vm(component["clone_name"])
         for network in pod_config["network"]:
-            network_manager.delete_port_groups(host_details.fqdn, network["switch_name"], network["port_groups"])
+            solved_port_groups = solve_vlan_id(network["port_groups"])
+            network_manager.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
         
     for network in pod_config["network"]:
+        solved_port_groups = solve_vlan_id(network["port_groups"])
         network_manager.create_vswitch_portgroups(host_details.fqdn,
                                                 network["switch_name"],
-                                                network["port_groups"])
+                                                solved_port_groups)
+        
     # Step-3: Clone VMs
     for component in pod_config["components"]:
         if host_details.name == "cliffjumper":
