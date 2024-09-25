@@ -87,7 +87,7 @@ def setup_environment(args):
                         pod,
                         rebuild=args.re_build,
                         thread=args.thread,
-                        linked=args.link
+                        full=args.full
                     )
                     futures.append(deploy_futures)
                 wait_for_futures(futures)
@@ -100,25 +100,25 @@ def setup_environment(args):
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        linked=args.link)
+                                                        full=args.full)
                     elif course_config["version"] == "1100-210":
                         build_future = executor.submit(palo.build_1100_210_pod,
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        linked=args.link)
+                                                        full=args.full)
                     elif "1110" in course_config["version"]:
                         build_future = executor.submit(palo.build_1110_pod,
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        linked=args.link)
+                                                        full=args.full)
                     elif course_config["version"] == "1100-220":
                         build_future = executor.submit(palo.build_1100_220_pod,
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        linked=args.link)
+                                                        full=args.full)
                     futures.append(build_future)
                 wait_for_futures(futures)
         
@@ -145,14 +145,14 @@ def setup_environment(args):
                 if 'srv' in group["name"]:
                     f5.build_srv(service_instance, class_number, 
                                  parent_resource_pool, group["component"],
-                                 rebuild=args.re_build, linked=args.link)
+                                 rebuild=args.re_build, full=args.full)
                 else:
                     with ThreadPoolExecutor() as executor:
                         for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                             build_future = executor.submit(f5.build_pod, service_instance, 
                                                             class_number, parent_resource_pool, 
                                                             group["component"], str(pod),
-                                                            rebuild=args.re_build, linked=args.link, 
+                                                            rebuild=args.re_build, full=args.full, 
                                                             mem=args.memory)
                             futures.append(build_future)
                         wait_for_futures(futures)
@@ -234,7 +234,7 @@ def main():
     setup_parser.add_argument('-q','--quiet', action='store_true', help='Suppress output to display only warnings or errors')
     setup_parser.add_argument('-c','--component', help='Build a specific component for a course.')
     setup_parser.add_argument('-mem','--memory', type=int, default=None, required=False, help='Specify memory for f5 bigip component.')
-    setup_parser.add_argument('--link', action='store_true', help='Create linked clones to conserve storage space')
+    setup_parser.add_argument('--full', action='store_true', help='Create full clones to conserve storage space')
 
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
     # manage_parser.add_argument('-cs','--create-snapshot', required=True, help='Name of the snapshot.')

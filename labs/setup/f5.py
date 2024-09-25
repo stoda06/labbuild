@@ -88,7 +88,7 @@ def build_class(service_instance, hostname, class_number, course_config):
         rpm.create_resource_pool(class_pool, group_pool, cpu_allocation, memory_allocation)
         rpm.logger.info(f"Created reosurce pool {group_pool}.")
 
-def build_srv(service_instance, class_number, parent_resource_pool, components, rebuild=False, thread=4, linked=False):
+def build_srv(service_instance, class_number, parent_resource_pool, components, rebuild=False, thread=4, full=False):
     vmm = VmManager(service_instance)
     snapshot_name = 'base'
     for component in components:
@@ -96,7 +96,7 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
         if rebuild:
             vmm.delete_vm(clone_name)
             vmm.logger.info(f"Deleted VM {clone_name}.")
-        if linked:
+        if not full:
             if not vmm.snapshot_exists(component["base_vm"], "base"):
                 vmm.create_snapshot(component["base_vm"], "base", 
                                     description="Snapshot used for creating linked clones.")
@@ -134,7 +134,7 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
                 except Exception as e:
                     vmm.logger.error(f'Error powering on VM: {e}')
 
-def build_pod(service_instance, class_number, parent_resource_pool, components, pod_number, rebuild=False, thread=4, linked=False, mem=None):
+def build_pod(service_instance, class_number, parent_resource_pool, components, pod_number, rebuild=False, thread=4, full=False, mem=None):
     vmm = VmManager(service_instance)
     snapshot_name = 'base'
     # Step-3.1: Clone components.
@@ -146,7 +146,7 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
         if rebuild:
             vmm.delete_vm(clone_name)
             vmm.logger.info(f'Deleted VM {clone_name}.')
-        if linked:
+        if not full:
             if not vmm.snapshot_exists(component["base_vm"], "base"):
                 vmm.create_snapshot(component["base_vm"], "base", 
                                     description="Snapshot used for creating linked clones.")

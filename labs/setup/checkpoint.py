@@ -53,7 +53,7 @@ def update_network_dict(network_dict, pod_number):
     return updated_network_dict
 
 
-def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, linked=False):
+def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, full=False):
     host = get_host_by_name(hostname)
     vm_manager = VmManager(service_instance)
     folder_manager = FolderManager(service_instance)
@@ -70,7 +70,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
     assign_role_to_folder(folder_manager, pod_config)
 
     create_networks(network_manager, host, pod, pod_config)
-    clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, linked)
+    clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full)
 
     power_on_components(vm_manager, pod_config, thread)
 
@@ -151,18 +151,18 @@ def create_networks(network_manager, host, pod, pod_config):
             network_manager.enable_promiscuous_mode(host.fqdn, network['promiscuous_mode'])
 
 
-def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, linked):
+def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full):
     """Clones the required VMs, updates their networks, and creates snapshots."""
     for component in pod_config["components"]:
         vm_manager.logger.name = f'P{pod}'
-        clone_vm(vm_manager, pod_config, component, linked)
+        clone_vm(vm_manager, pod_config, component, full)
         configure_vm_network(vm_manager, component, pod)
         create_vm_snapshot(vm_manager, component)
 
 
-def clone_vm(vm_manager, pod_config, component, linked):
+def clone_vm(vm_manager, pod_config, component, full):
     """Clones a VM based on the component configuration."""
-    if linked:
+    if not full:
         vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
         if not vm_manager.snapshot_exists(component["base_vm"], "base"):
             vm_manager.create_snapshot(component["base_vm"], "base",

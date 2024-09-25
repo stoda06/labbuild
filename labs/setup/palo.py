@@ -37,7 +37,7 @@ def solve_vlan_id(port_groups):
     return port_groups
 
 
-def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
+def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False, full=False):
     vm_manager = VmManager(service_instance)
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
@@ -65,7 +65,7 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
                 continue
         else:
             if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
-                if linked:
+                if not full:
                     vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
                     if not vm_manager.snapshot_exists(component["base_vm"], "base"):
                         vm_manager.create_snapshot(component["base_vm"], "base", 
@@ -95,7 +95,7 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             vm_manager.poweron_vm(component["vm_name"])
 
-def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
+def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False, full=False):
     vm_manager = VmManager(service_instance)
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
@@ -121,7 +121,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             resource_pool = component["group_name"]
         if "firewall" not in component["component_name"]:
-            if linked:
+            if not full:
                 vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
                 if not vm_manager.snapshot_exists(component["base_vm"], "base"):
                     vm_manager.create_snapshot(component["base_vm"], "base", 
@@ -150,7 +150,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             vm_manager.poweron_vm(component["vm_name"])
 
-def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
+def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, full=False):
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
@@ -184,7 +184,7 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, li
     rpm.create_resource_pool("pa", pod_config["group_name"], cpu_allocation, memory_allocation, host_fqdn=host_details.fqdn)
     rpm.logger.info(f'Created resource pool {pod_config["group_name"]}')
     for component in pod_config["components"]:
-        if linked:
+        if not full:
             vmm.logger.info(f'Cloning linked component {component["clone_name"]}.')
             vmm.create_linked_clone(component["base_vm"], component["clone_name"], 
                                     "base", pod_config["group_name"])
@@ -209,7 +209,7 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, li
         vmm.poweron_vm(component["clone_name"])
     vmm.logger.info('Power-on all VMs.')
 
-def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, linked=False):
+def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
     pod = int(pod_config["pod_number"])
@@ -240,7 +240,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
             resource_pool = component["component_name"] + "-ul"
         else:
             resource_pool = component["component_name"]
-        if linked:
+        if not full:
             vm_manager.create_linked_clone(component["base_vm"], component["clone_name"],
                                             "base", resource_pool)
         else:
