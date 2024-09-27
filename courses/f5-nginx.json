@@ -1,0 +1,72 @@
+{
+    "f5-nginx": {
+        "vendor": "f5",
+        "version": "nginx",
+        "class": "f5-class",
+        "group": [
+            {
+                "name": "srv",
+                "component": [
+                    {
+                        "base_vm": "f5-base-vr",
+                        "clone_vm": "f5vr-"
+                    },
+                    {
+                        "base_vm": "f5-nginx-jump-box",
+                        "clone_vm": "f5-nginx-jump-box-"
+                    },
+                    {
+                        "base_vm": "nginx-open-source",
+                        "clone_vm": "nginx-open-source-"
+                    },
+                    {
+                        "base_vm": "f5-nginx-plus-app-protect",
+                        "clone_vm": "f5-nginx-plus-app-protect-"
+                    },
+                    {
+                        "base_vm": "f5-nginx-ingress-ctrl",
+                        "clone_vm": "f5-nginx-ingress-ctrl-"
+                    },
+                    {
+                        "base_vm": "f5-nginx-juice-shop",
+                        "clone_vm": "f5-nginx-juice-shop-"
+                    },
+                    {
+                        "base_vm": "f5-nginx-mgmt-suite",
+                        "clone_vm": "f5-nginx-mgmt-suite-"
+                    }
+                ]
+            },
+            {
+                "name": "bigip",
+                "component": [
+                    {
+                        "base_vm": "bigip-v16.1.4-base",
+                        "clone_vm": "f5-bigip",
+                        "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 XX"
+                    }
+                ]
+            },
+            {
+                "name": "w10",
+                "component": [
+                    {
+                        "base_vm": "f5-base-w10",
+                        "clone_vm": "f5-pod{X}-w10"
+                    }
+                ]
+            }
+        ],
+        "network": [
+            {
+                "switch": "vs",
+                "port_groups": [
+                    {
+                        "port_group_name": "f5-nginx-int",
+                        "vlan_id": 111
+                    }
+                ]
+            }
+        ]
+    }
+}
