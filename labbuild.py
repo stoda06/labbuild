@@ -191,6 +191,22 @@ def teardown_environment(args):
         class_number = args.class_number
         class_name = course_config["class"] + class_number
         f5.teardown_class(service_instance, course_config, class_name, class_number)
+
+    if course_config["vendor"] == "pa":
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                pod_config = replace_placeholder(course_config, pod)
+                if "1100" in course_config["version"]:
+                    teardown_future = executor.submit(
+                        palo.teardown_1100(service_instance, pod_config)
+                    )
+                if course_config["version"] == "cortex":
+                    teardown_future = executor.submit(
+                        palo.teardown_cortex(service_instance, host_details, pod_config)
+                    )
+                futures.append(teardown_future)
+            wait_for_futures(futures)
     
     logger.info(f"Teardown process complete.")
 
