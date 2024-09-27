@@ -260,3 +260,27 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
     # Step-5: Poweron VMs
     for component in pod_config["components"]:
         vm_manager.poweron_vm(component["clone_name"])
+
+def teardown_cortex(service_instance, host_details, pod_config):
+    vm_manager = VmManager(service_instance)
+    network_manager = NetworkManager(service_instance)
+
+    for component in pod_config["components"]:
+        vm_manager.logger.info(f'Deleting VM {component["clone_name"]}')
+        vm_manager.delete_vm(component["clone_name"])
+
+    for network in pod_config["network"]:
+        network_manager.logger.info(f'Deleting port-groups from {network["switch_name"]} vswitch.')
+        solved_port_groups = solve_vlan_id(network["port_groups"])
+        network_manager.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
+
+def teardown_1100(service_instance, pod_config):
+    vm_manager = VmManager(service_instance)
+
+    for component in pod_config["components"]:
+        if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
+            vm_manager.logger.info(f'Deleting VM {component["clone_name"]}')
+            vm_manager.delete_vm(component["clone_name"])
+        else:
+            vm_manager.logger.info(f'Power-off VM {component["vm_name"]}')
+            vm_manager.poweroff_vm(component["vm_name"])
