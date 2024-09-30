@@ -111,3 +111,15 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
             futures.append(poweron_future)
         wait_for_task(futures)
         futures.clear()
+    
+def teardown_ipo(service_instance, pod_config):
+    vm_manager = VmManager(service_instance)
+    vm_manager.logger.info(f"Teardown {pod_config['group']} components.")
+    futures = []
+    with ThreadPoolExecutor() as executor:
+        for component in pod_config["components"]:
+            delete_future = executor.submit(vm_manager.delete_vm, 
+                                            component["clone_name"])
+            futures.append(delete_future)
+        wait_for_task(futures)
+    futures.clear()
