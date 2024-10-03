@@ -202,6 +202,10 @@ def teardown_environment(args):
             futures = []
             for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                 pod_config = replace_placeholder(course_config, pod)
+                if "11100" in course_config["version"]:
+                    teardown_future = executor.submit(
+                        palo.teardown_1110(service_instance, host_details, pod_config)
+                    )
                 if "1100" in course_config["version"]:
                     teardown_future = executor.submit(
                         palo.teardown_1100(service_instance, pod_config)
