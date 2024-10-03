@@ -136,26 +136,31 @@ def setup_environment(args):
                 wait_for_futures(futures)
         
         if course_config["vendor"] == "f5":
-            class_number = args.class_number
-            class_name = course_config["class"] + class_number
-            f5.build_class(service_instance, args.host, 
-                           class_number, course_config)
-            for group in course_config["group"]:
-                parent_resource_pool = class_name + "-" + group["name"]
-                if 'srv' in group["name"]:
-                    f5.build_srv(service_instance, class_number, 
-                                 parent_resource_pool, group["component"],
-                                 rebuild=args.re_build, full=args.full)
-                else:
-                    with ThreadPoolExecutor() as executor:
-                        for pod in range(int(args.start_pod), int(args.end_pod) + 1):
-                            build_future = executor.submit(f5.build_pod, service_instance, 
-                                                            class_number, parent_resource_pool, 
-                                                            group["component"], str(pod),
-                                                            rebuild=args.re_build, full=args.full, 
-                                                            mem=args.memory)
-                            futures.append(build_future)
-                        wait_for_futures(futures)
+            if "nginx" in course_config["version"]:
+                with ThreadPoolExecutor() as executor:
+                    for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                        pod_config = replace_placeholder(course_config, pod)
+            else:
+                class_number = args.class_number
+                class_name = course_config["class"] + class_number
+                f5.build_class(service_instance, args.host, 
+                            class_number, course_config)
+                for group in course_config["group"]:
+                    parent_resource_pool = class_name + "-" + group["name"]
+                    if 'srv' in group["name"]:
+                        f5.build_srv(service_instance, class_number, 
+                                    parent_resource_pool, group["component"],
+                                    rebuild=args.re_build, full=args.full)
+                    else:
+                        with ThreadPoolExecutor() as executor:
+                            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                                build_future = executor.submit(f5.build_pod, service_instance, 
+                                                                class_number, parent_resource_pool, 
+                                                                group["component"], str(pod),
+                                                                rebuild=args.re_build, full=args.full, 
+                                                                mem=args.memory)
+                                futures.append(build_future)
+                            wait_for_futures(futures)
 
 def teardown_environment(args):
 
