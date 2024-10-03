@@ -261,7 +261,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
     for component in pod_config["components"]:
         vm_manager.poweron_vm(component["clone_name"])
 
-def teardown_cortex(service_instance, host_details, pod_config):
+def  cortex(service_instance, host_details, pod_config):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
 
@@ -284,3 +284,16 @@ def teardown_1100(service_instance, pod_config):
         else:
             vm_manager.logger.info(f'Power-off VM {component["vm_name"]}')
             vm_manager.poweroff_vm(component["vm_name"])
+
+def teardown_1110(service_instance, host_details, pod_config):
+    rpm = ResourcePoolManager(service_instance)
+    nm = NetworkManager(service_instance)
+
+    for network in pod_config['network']:
+        solved_port_groups = solve_vlan_id(network["port_groups"])
+        rpm.poweroff_all_vms(pod_config["group_name"])
+        rpm.logger.info(f'Power-off all VMs in {pod_config["group_name"]}')
+        rpm.delete_resource_pool(pod_config["group_name"])
+        rpm.logger.info(f'Removed resource pool {pod_config["group_name"]} and all its VMs.')
+        nm.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
+        nm.logger.info(f'Deleted associated port groups from vswitch {network["switch_name"]}')
