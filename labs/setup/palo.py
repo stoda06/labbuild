@@ -2,7 +2,22 @@ from managers.vm_manager import VmManager
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.network_manager import NetworkManager
 
-def update_network_dict(network_dict, pod_number):
+def update_network_dict_1110(network_dict, pod_number):
+    pod_hex = format(pod_number, '02x')  # Convert pod number to a two-digit hexadecimal string
+
+    for adapter, details in network_dict.items():
+        if 'pa-rdp' in details['network_name']:
+            mac_address_preset = '00:50:56:07:00:00'
+            mac_parts = mac_address_preset.split(':')
+            mac_parts[-1] = pod_hex
+            details['mac_address'] = ':'.join(mac_parts)
+        else:
+            details['network_name'] = details['network_name'].replace('pa-', 'pan-')
+            details['network_name'] = details['network_name'].replace('1', str(pod_number))
+
+    return network_dict
+
+def update_network_dict_1100(network_dict, pod_number):
     pod_hex = format(pod_number, '02x')  # Convert pod number to a two-digit hexadecimal string
 
     for adapter, details in network_dict.items():
@@ -16,7 +31,7 @@ def update_network_dict(network_dict, pod_number):
 
     return network_dict
 
-def cortex_update_network_dict(network_dict, pod_number):
+def update_network_dict_cortex(network_dict, pod_number):
     pod_hex = format(100+pod_number, '02x')  # Convert pod number to hex with at least two digits
 
     for adapter, details in network_dict.items():
@@ -82,7 +97,7 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
             # Step-4: Update VM Network
             if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
                 vm_network = vm_manager.get_vm_network(component["base_vm"])
-                updated_vm_network = update_network_dict(vm_network, int(pod))
+                updated_vm_network = update_network_dict_1100(vm_network, int(pod))
                 vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
                 # Create a snapshot of all the cloned VMs to save base config.
                 if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
@@ -137,7 +152,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         if "firewall" not in component["component_name"]:
             # Update VM networks and MAC address.
             vm_network = vm_manager.get_vm_network(component["base_vm"])
-            updated_vm_network = update_network_dict(vm_network, int(pod))
+            updated_vm_network = update_network_dict_1100(vm_network, int(pod))
             vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
             # Create a snapshot of all the cloned VMs to save base config.
             if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
@@ -193,7 +208,7 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
         
         # Update VM networks and MAC address.
         vm_network = vmm.get_vm_network(component["base_vm"])
-        updated_vm_network = update_network_dict(vm_network, int(pod))
+        updated_vm_network = update_network_dict_1110(vm_network, int(pod))
         vmm.update_vm_network(component["clone_name"], updated_vm_network)
         if "firewall" in component["component_name"]:
                 vmm.download_vmx_file(component["clone_name"],f"/tmp/{component['clone_name']}.vmx")
@@ -221,9 +236,10 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         for network in pod_config["network"]:
             solved_port_groups = solve_vlan_id(network["port_groups"])
             network_manager.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
-        
+
     for network in pod_config["network"]:
-        solved_port_groups = solve_vlan_id(network["port_groups"])
+        if not rebuild:
+            solved_port_groups = solve_vlan_id(network["port_groups"])
         network_manager.create_vswitch_portgroups(host_details.fqdn,
                                                 network["switch_name"],
                                                 solved_port_groups)
@@ -248,7 +264,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
 
         # Step-4: Update VM Network
         vm_network = vm_manager.get_vm_network(component["base_vm"])
-        updated_vm_network = cortex_update_network_dict(vm_network, pod)
+        updated_vm_network = update_network_dict_cortex(vm_network, pod)
         vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
         vm_manager.connect_networks_to_vm(component["clone_name"], updated_vm_network)
 
@@ -261,7 +277,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
     for component in pod_config["components"]:
         vm_manager.poweron_vm(component["clone_name"])
 
-def  cortex(service_instance, host_details, pod_config):
+def teardown_cortex(service_instance, host_details, pod_config):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
 
