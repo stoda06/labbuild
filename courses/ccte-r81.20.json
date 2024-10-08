@@ -80,12 +80,14 @@
             {
                 "component_name": "C-GW-CCTE-R81.20",
                 "base_vm": "C-GW-CCTE-R81.20",
-                "clone_name": "C-GW-{X}"
+                "clone_name": "C-GW-{X}",
+                "state": "poweroff"
             },
             {
                 "component_name": "C-Host-CCTE-R81.20",
                 "base_vm": "C-Host-CCSE-R81.20",
-                "clone_name": "C-Host-{X}"
+                "clone_name": "C-Host-{X}",
+                "state": "poweroff"
             },
             {
                 "component_name": "R80-w10",
