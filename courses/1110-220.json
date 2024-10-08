@@ -41,13 +41,13 @@
                 "component_name": "firewall-a",
                 "base_vm": "pa-vm-pod220a-v11",
                 "clone_name": "pa-vm-pod{X}-a-v11",
-                "uuid": "42 27 06 7c 1b 74 5a de-00 00 00 00 00 00 00 13"
+                "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 07 01 33"
             },
             {
                 "component_name": "firewall-b",
                 "base_vm": "pa-vm-pod220b-v11",
                 "clone_name": "pa-vm-pod{X}-b-v11",
-                "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 07 01 16"
+                "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 07 01 3A"
             },
             {
                 "component_name": "panorama",
