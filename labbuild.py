@@ -202,7 +202,7 @@ def teardown_environment(args):
             futures = []
             for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                 pod_config = replace_placeholder(course_config, pod)
-                if "11100" in course_config["version"]:
+                if "1110" in course_config["version"]:
                     teardown_future = executor.submit(
                         palo.teardown_1110(service_instance, host_details, pod_config)
                     )
@@ -260,6 +260,7 @@ def main():
     setup_parser.add_argument('-c','--component', help='Build a specific component for a course.')
     setup_parser.add_argument('-mem','--memory', type=int, default=None, required=False, help='Specify memory for f5 bigip component.')
     setup_parser.add_argument('--full', action='store_true', help='Create full clones to conserve storage space')
+    setup_parser.add_argument('--clonefrom', action='store_true', help='Create clones from an existing pod.')
 
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
     # manage_parser.add_argument('-cs','--create-snapshot', required=True, help='Name of the snapshot.')
