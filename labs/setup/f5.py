@@ -4,7 +4,32 @@ from managers.vm_manager import VmManager
 from concurrent.futures import ThreadPoolExecutor
 from managers.network_manager import NetworkManager
 from managers.resource_pool_manager import ResourcePoolManager
+import json
 
+cpu_allocation = {
+    'limit': -1,
+    'reservation': 0,
+    'expandable_reservation': True,
+    'shares': 4000
+}
+memory_allocation = {
+    'limit': -1,
+    'reservation': 0,
+    'expandable_reservation': True,
+    'shares': 163840
+}
+
+def replace_placeholder(setup_config, value):
+    # Convert the network map dictionary to a JSON string
+    setup_config_str = json.dumps(setup_config)
+
+    # Replace the placeholder in the string
+    updated_setup_config_str = setup_config_str.replace("{Y}", str(value))
+
+    # Convert the updated string back to a dictionary
+    updated_setup_config = json.loads(updated_setup_config_str)
+
+    return updated_setup_config
 
 def update_network_dict(vm_name, network_dict, class_number, pod_number):
     def replace_mac_octet(mac_address, pod_num):
@@ -209,6 +234,8 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
 def teardown_class(service_instance, course_config, class_name, class_number):
     rpm = ResourcePoolManager(service_instance)
     nm = NetworkManager(service_instance)
+    rpm.poweroff_all_vms(class_name)
+    rpm.logger.info(f'Power-off all VMs in {class_name}')
     if rpm.delete_resource_pool(class_name):
         rpm.logger.info(f'Deleted {class_name} successfully.')
     else: 
