@@ -1,5 +1,6 @@
 from managers.vcenter import VCenter
 from pyVmomi import vim
+import threading
 
 
 class ResourcePoolManager(VCenter):
@@ -104,12 +105,29 @@ class ResourcePoolManager(VCenter):
                     self.logger.error(f"Failed to delete child resource pool '{child_rp_name}' within '{rp_name}'.")
                     return False
 
-            for vm in rp.vm:
+            # Function to delete a single VM
+            def delete_vm(vm):
                 vm_name = vm.name
                 self.logger.debug(f"Deleting VM '{vm_name}' within resource pool '{rp_name}'.")
-                task = vm.Destroy_Task()
-                self.wait_for_task(task)
-                self.logger.debug(f"VM '{vm_name}' deleted successfully.")
+                try:
+                    task = vm.Destroy_Task()
+                    self.wait_for_task(task)
+                    self.logger.debug(f"VM '{vm_name}' deleted successfully.")
+                except Exception as e:
+                    self.logger.error(f"Failed to delete VM '{vm_name}': {self.extract_error_message(e)}")
+
+            # List to keep track of threads
+            threads = []
+
+            # Start a thread for each VM deletion task
+            for vm in rp.vm:
+                thread = threading.Thread(target=delete_vm, args=(vm,))
+                threads.append(thread)
+                thread.start()
+
+            # Wait for all threads to complete
+            for thread in threads:
+                thread.join()
 
             # Delete the resource pool itself
             task = rp.Destroy_Task()
