@@ -123,3 +123,8 @@ def teardown_ipo(service_instance, pod_config):
             futures.append(delete_future)
         wait_for_task(futures)
     futures.clear()
+
+def teardown_aura(service_instance, pod_config):
+    rpm = ResourcePoolManager(service_instance)
+    rpm.logger.info(f"Teardown {pod_config['group']} components.")
+    rpm.poweroff_all_vms(pod_config["group"])
