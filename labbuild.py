@@ -236,7 +236,7 @@ def manage_environment(args):
     with ThreadPoolExecutor() as executor:
         for pod in range(int(args.start_pod), int(args.end_pod) + 1):
             pod_config = replace_placeholder(course_config, pod)
-            operation_future = executor.submit(manage.vm_operations.perform_vm_operations,
+            operation_future = executor.submit(manage.perform_vm_operations,
                                 service_instance, pod_config, args.operation)
             futures.append(operation_future)
         wait_for_futures(futures)
