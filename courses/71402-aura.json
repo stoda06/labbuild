@@ -125,18 +125,18 @@
                 "snapshot": "71402 Day 1"
             },
             {
-                "component_name": "mgmt-pod{X}",
-                "clone_name": "mgmt-pod{X}",
+                "component_name": "mgmt-meetings-pod{X}",
+                "clone_name": "mgmt-meetings-pod{X}",
                 "snapshot": "71402 Day 1"
             },
             {
-                "component_name": "ms1-pod{X}",
-                "clone_name": "ms1-pod{X}",
+                "component_name": "ms1-meetings-pod{X}",
+                "clone_name": "ms1-meetings-pod{X}",
                 "snapshot": "71402 Day 1"
             },
             {
-                "component_name": "ms2-pod{X}",
-                "clone_name": "ms2-pod{X}",
+                "component_name": "ms2-meetings-pod{X}",
+                "clone_name": "ms2-meetings-pod{X}",
                 "snapshot": "71402 Day 1"
             }
         ]
