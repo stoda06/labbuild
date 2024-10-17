@@ -6,8 +6,9 @@ from managers.folder_manager import FolderManager
 from managers.resource_pool_manager import ResourcePoolManager
 from monitor.prtg import PRTGManager
 from monitor.prtg import checkpoint_server_info
-import sys
 from logger.log_config import setup_logger
+import sys
+import re
 
 
 def wait_for_futures(futures):
@@ -32,14 +33,17 @@ def update_network_dict(network_dict, pod_number):
         # Join the octets back into a MAC address
         return ':'.join(mac_octets)
 
+    def update_network_name(network_name, pod_number):
+        # Use regex to find and replace any "vs" followed by a number in the network name
+        return re.sub(r'vs\d+', f'vs{pod_number}', network_name)
+
     updated_network_dict = {}
     for adapter, details in network_dict.items():
         network_name = details['network_name']
         mac_address = details['mac_address']
 
-        # Update the network name if it contains "vs0"
-        if 'vs0' in network_name:
-            network_name = network_name.replace('vs0', f'vs{pod_number}')
+        # Update the network name if it contains "vsX" (where X is any number)
+        network_name = update_network_name(network_name, pod_number)
 
         # Update the MAC address if the network name contains "rdp"
         if 'rdp' in network_name:
