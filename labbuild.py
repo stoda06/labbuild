@@ -195,7 +195,7 @@ def teardown_environment(args):
     if course_config["vendor"] == "f5":
         class_number = args.class_number
         class_name = course_config["class"] + class_number
-        f5.teardown_class(service_instance, course_config, class_name, class_number)
+        f5.teardown_class(service_instance, host_details, course_config, class_name, class_number)
 
     if course_config["vendor"] == "pa":
         with ThreadPoolExecutor() as executor:
