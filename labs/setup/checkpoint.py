@@ -162,7 +162,12 @@ def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full):
         clone_vm(vm_manager, pod_config, component, full)
         configure_vm_network(vm_manager, component, pod)
         create_vm_snapshot(vm_manager, component)
-
+        if "maestro" in component["component_name"]:
+            drive_name = "CD/DVD drive 1"
+            iso_type = "Datastore ISO file"
+            datastore_name = "vms"
+            iso_path = "podiso/pod-"+str(pod)+"-a.iso"
+            vm_manager.modify_cd_drive(component["clone_name"], drive_name, iso_type, datastore_name, iso_path, connected=True)
 
 def clone_vm(vm_manager, pod_config, component, full):
     """Clones a VM based on the component configuration."""
