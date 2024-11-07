@@ -95,3 +95,18 @@ class PermissionManager(VCenter):
             return
 
         self.set_entity_permissions(entity=folder, user=user, role_name=role_name)
+    
+    def add_permissions_to_datastore(self, datastore_name, user, role_name):
+        """
+        Adds permissions for a specified user or group to a datastore.
+
+        :param datastore_name: The name of the datastore, e.g., "checkpoint".
+        :param user: The user or group to whom the permissions will be assigned.
+        :param role_name: The name of the role defining the permissions.
+        """
+        datastore = self.get_obj([vim.Datastore], datastore_name)
+        if datastore is None:
+            self.logger.error(f"Datastore '{datastore_name}' not found.")
+            return
+
+        self.set_entity_permissions(entity=datastore, user=user, role_name=role_name)
