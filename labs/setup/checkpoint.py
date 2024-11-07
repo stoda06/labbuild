@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from managers.network_manager import NetworkManager
 from managers.folder_manager import FolderManager
 from managers.resource_pool_manager import ResourcePoolManager
+from managers.permission_manager import PermissionManager
 from monitor.prtg import PRTGManager
 from monitor.prtg import checkpoint_server_info
 from logger.log_config import setup_logger
@@ -63,6 +64,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
     folder_manager = FolderManager(service_instance)
     network_manager = NetworkManager(service_instance)
     resource_pool_manager = ResourcePoolManager(service_instance)
+    permission_manager = PermissionManager(service_instance)
 
     if rebuild:
         handle_rebuild(vm_manager, network_manager, resource_pool_manager, pod, pod_config, host)
@@ -72,6 +74,7 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
 
     create_folder(folder_manager, host, pod, pod_config)
     assign_role_to_folder(folder_manager, pod_config)
+    add_permissions_to_datastore(permission_manager, pod_config)
 
     create_networks(network_manager, host, pod, pod_config)
     clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full)
@@ -139,6 +142,11 @@ def assign_role_to_folder(folder_manager, pod_config):
                                          f'{pod_config["domain"]}\\{pod_config["user"]}',
                                          pod_config["role"])
 
+def add_permissions_to_datastore(permission_manager, pod_config):
+    """Adds permissions for a specified user or group to a datastore."""
+    permission_manager.add_permissions_to_datastore("checkpoint", 
+                                                    f'{pod_config["domain"]}\\{pod_config["user"]}', 
+                                                    pod_config["role"])
 
 def create_networks(network_manager, host, pod, pod_config):
     """Creates vSwitches and their associated port groups for the pod."""
