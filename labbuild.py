@@ -216,6 +216,18 @@ def teardown_environment(args):
                     )
                 futures.append(teardown_future)
             wait_for_futures(futures)
+
+    if course_config["vendor"] == "av":
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                pod_config = replace_placeholder(course_config, pod)
+                if "ipo" in course_config["version"]:
+                    teardown_future = executor.submit(avaya.teardown_ipo, service_instance, pod_config)
+                if "aura" in course_config["version"]:
+                    teardown_future = executor.submit(avaya.teardown_aura, service_instance, pod_config)
+                futures.append(teardown_future)
+            wait_for_futures(futures)
     
     logger.info(f"Teardown process complete.")
 
