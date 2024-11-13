@@ -59,6 +59,9 @@ def update_network_dict(vm_name, network_dict, class_number, pod_number):
         if 'w10' in vm_name and 'ext' in network_name:
             mac_address = replace_mac_octet(mac_address, pod_number)
 
+        if 'li' in vm_name and 'int' in network_name:
+            mac_address = replace_mac_octet(mac_address, pod_number)
+
         updated_network_dict[adapter] = {
             'network_name': network_name,
             'mac_address': mac_address
@@ -164,7 +167,7 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
     snapshot_name = 'base'
     # Step-3.1: Clone components.
     for component in components:
-        if 'w10' in component["clone_vm"]:
+        if 'w10' in component["clone_vm"] or 'li' in component["clone_vm"]:
             clone_name = component["clone_vm"].format(X=pod_number)
         else:
             clone_name = component["clone_vm"] + pod_number
@@ -214,7 +217,7 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
     # Step-3.3: Power-on all VMs.
     vmm.logger.info(f'Power on all components in {parent_resource_pool}.')
     for component in components:
-        if 'w10' in component["clone_vm"]:
+        if 'w10' in component["clone_vm"] or 'li' in component["clone_vm"]:
             clone_name = component["clone_vm"].format(X=pod_number)
         else:
             clone_name = component["clone_vm"] + pod_number
