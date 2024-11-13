@@ -1,0 +1,47 @@
+{
+    "f5-linux16.1.4": {
+        "vendor": "f5",
+        "version": "linux16.1.4",
+        "class": "f5-class",
+        "group": [
+            {
+                "name": "bigip",
+                "component": [
+                    {
+                        "base_vm": "bigip-v16.1.4-base",
+                        "clone_vm": "f5-bigip",
+                        "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 XX"
+                    }
+                ]
+            },
+            {
+                "name": "li",
+                "component": [
+                    {
+                        "base_vm": "f5-base-li",
+                        "clone_vm": "f5-pod{X}-li"
+                    }
+                ]
+            }
+        ],
+        "network": [
+            {
+                "switch": "vs",
+                "port_groups": [
+                    {
+                        "port_group_name": "f5-mgt",
+                        "vlan_id": 112
+                    },
+                    {
+                        "port_group_name": "f5-int",
+                        "vlan_id": 113
+                    },
+                    {
+                        "port_group_name": "f5-ext",
+                        "vlan_id": 114
+                    }
+                ]
+            }
+        ]
+    }
+}
