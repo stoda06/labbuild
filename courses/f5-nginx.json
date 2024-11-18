@@ -2,57 +2,54 @@
     "f5-nginx": {
         "vendor": "f5",
         "version": "nginx",
-        "class": "f5-class",
+        "class": "f5-class{Y}",
         "group": [
+            {
+                "name": "app-protect",
+                "component": [
+                    {
+                        "base_vm": "f5-nginx-plus-app-protect",
+                        "clone_vm": "f5-nginx-plus-app-protect-{X}"
+                    }
+                ]
+            },
+            {
+                "name": "jump-box",
+                "component": [
+                    {
+                        "base_vm": "f5-nginx-jump-box",
+                        "clone_vm": "f5-nginx-jump-box-{X}"
+                    }
+                ]
+            },
             {
                 "name": "srv",
                 "component": [
                     {
-                        "base_vm": "f5-base-vr",
-                        "clone_vm": "f5vr-"
-                    },
-                    {
-                        "base_vm": "f5-nginx-jump-box",
-                        "clone_vm": "f5-nginx-jump-box-"
-                    },
-                    {
-                        "base_vm": "nginx-open-source",
-                        "clone_vm": "nginx-open-source-"
-                    },
-                    {
-                        "base_vm": "f5-nginx-plus-app-protect",
-                        "clone_vm": "f5-nginx-plus-app-protect-"
-                    },
-                    {
-                        "base_vm": "f5-nginx-ingress-ctrl",
-                        "clone_vm": "f5-nginx-ingress-ctrl-"
-                    },
-                    {
                         "base_vm": "f5-nginx-juice-shop",
-                        "clone_vm": "f5-nginx-juice-shop-"
+                        "clone_vm": "f5-nginx-juice-shop-{Y}"
                     },
                     {
                         "base_vm": "f5-nginx-mgmt-suite",
-                        "clone_vm": "f5-nginx-mgmt-suite-"
+                        "clone_vm": "nginx-mgmt-suite-{Y}"
                     }
                 ]
             },
             {
-                "name": "bigip",
+                "name": "nginx-ingress-ctrl",
                 "component": [
                     {
-                        "base_vm": "bigip-v16.1.4-base",
-                        "clone_vm": "f5-bigip",
-                        "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 XX"
+                        "base_vm": "f5-nginx-ingress-ctrl",
+                        "clone_vm": "f5-nginx-ingress-ctrl-{X}"
                     }
                 ]
             },
             {
-                "name": "w10",
+                "name": "nginx-open-source",
                 "component": [
                     {
-                        "base_vm": "f5-base-w10",
-                        "clone_vm": "f5-pod{X}-w10"
+                        "base_vm": "nginx-open-source",
+                        "clone_vm": "nginx-open-source-{X}"
                     }
                 ]
             }
