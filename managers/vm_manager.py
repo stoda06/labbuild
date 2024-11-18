@@ -832,11 +832,17 @@ class VmManager(VCenter):
         :return: True if the clone was created successfully, False otherwise.
         """
         try:
-            # Check if the cloning VM already exists in the target directory (VM folder)
-            existing_vm = self.get_obj([vim.VirtualMachine], clone_name)
-            if existing_vm:
-                self.logger.warning(f"VM '{clone_name}' already exists.")
+            # Retrieve the resource pool
+            resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
+            if not resource_pool:
+                self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return False
+
+            # Check if the VM already exists in the specified resource pool
+            for vm in resource_pool.vm:
+                if vm.name == clone_name:
+                    self.logger.warning(f"VM '{clone_name}' already exists in the resource pool '{resource_pool_name}'.")
+                    return False
 
             base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
             # If the base VM is not found, check all hosts in the datacenter
@@ -878,11 +884,6 @@ class VmManager(VCenter):
                 self.logger.error(f"Snapshot '{snapshot_name}' not found in VM '{base_vm_name}'.")
                 return False
 
-            resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
-            if not resource_pool:
-                self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
-                return False
-
             vm_folder = None
             if directory_name:
                 vm_folder = self.get_obj([vim.Folder], directory_name)
@@ -895,11 +896,14 @@ class VmManager(VCenter):
 
             datastore = self.get_obj([vim.Datastore], datastore_name) if datastore_name else base_vm.datastore[0]
 
+            # Set up the clone specification to use the provided resource pool and datastore
             clone_spec = vim.vm.CloneSpec()
-            clone_spec.location = vim.vm.RelocateSpec()
-            clone_spec.location.pool = resource_pool
-            clone_spec.location.datastore = datastore
-            clone_spec.location.diskMoveType = 'createNewChildDiskBacking'
+            relocate_spec = vim.vm.RelocateSpec()
+            relocate_spec.pool = resource_pool
+            relocate_spec.datastore = datastore
+            relocate_spec.diskMoveType = 'createNewChildDiskBacking'
+
+            clone_spec.location = relocate_spec
             clone_spec.snapshot = snapshot.snapshot
 
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
