@@ -58,7 +58,7 @@ def update_network_dict(network_dict, pod_number):
     return updated_network_dict
 
 
-def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, full=False):
+def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, full=False, selected_components=None):
     host = get_host_by_name(hostname)
     vm_manager = VmManager(service_instance)
     folder_manager = FolderManager(service_instance)
@@ -77,9 +77,9 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
     add_permissions_to_datastore(permission_manager, pod_config)
 
     create_networks(network_manager, host, pod, pod_config)
-    clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full)
+    clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, selected_components)
 
-    power_on_components(vm_manager, pod_config, thread)
+    power_on_components(vm_manager, pod_config, thread, selected_components)
 
     # add_to_prtg(pod_config, pod)
 
@@ -163,9 +163,17 @@ def create_networks(network_manager, host, pod, pod_config):
             network_manager.enable_promiscuous_mode(host.fqdn, network['promiscuous_mode'])
 
 
-def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full):
+def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, selected_components=None):
     """Clones the required VMs, updates their networks, and creates snapshots."""
-    for component in pod_config["components"]:
+    components_to_clone = pod_config["components"]
+    if selected_components:
+        # Filter components based on selected_components
+        components_to_clone = [
+            component for component in pod_config["components"]
+            if component["component_name"] in selected_components
+        ]
+
+    for component in components_to_clone:
         vm_manager.logger.name = f'P{pod}'
         clone_vm(vm_manager, pod_config, component, full)
         configure_vm_network(vm_manager, component, pod)
@@ -174,7 +182,7 @@ def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full):
             drive_name = "CD/DVD drive 1"
             iso_type = "Datastore ISO file"
             datastore_name = "vms"
-            iso_path = "podiso/pod-"+str(pod)+"-a.iso"
+            iso_path = f"podiso/pod-{pod}-a.iso"
             vm_manager.modify_cd_drive(component["clone_name"], drive_name, iso_type, datastore_name, iso_path, connected=True)
 
 def clone_vm(vm_manager, pod_config, component, full):
@@ -210,12 +218,19 @@ def create_vm_snapshot(vm_manager, component):
                                    description=f"Snapshot of {component['clone_name']}")
 
 
-def power_on_components(vm_manager, pod_config, thread):
+def power_on_components(vm_manager, pod_config, thread, selected_components=None):
     """Powers on all components of the pod in parallel using threading."""
+    components_to_clone = pod_config["components"]
+    if selected_components:
+        # Filter components based on selected_components
+        components_to_clone = [
+            component for component in pod_config["components"]
+            if component["component_name"] in selected_components
+        ]
     with ThreadPoolExecutor(max_workers=thread) as executor:
         futures = []
         vm_manager.logger.info(f'Power on all components.')
-        for component in pod_config["components"]:
+        for component in components_to_clone:
             if "state" in component and "poweroff" in component["state"]:
                 continue
             poweron_future = executor.submit(vm_manager.poweron_vm, component["clone_name"])

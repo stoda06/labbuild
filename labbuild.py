@@ -75,6 +75,16 @@ def setup_environment(args):
         service_instance.connect()
         futures = []
 
+        # Filter components if --component is specified
+        selected_components = None
+        if args.component:
+            selected_components = [comp.strip() for comp in args.component.split(",")]
+            available_components = [comp['component_name'] for comp in course_config['components']]
+            invalid_components = [comp for comp in selected_components if comp not in available_components]
+            if invalid_components:
+                logger.error(f"Invalid components specified: {', '.join(invalid_components)}")
+                sys.exit(1)
+
         if course_config["vendor"] == "cp":
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
@@ -87,7 +97,8 @@ def setup_environment(args):
                         pod,
                         rebuild=args.re_build,
                         thread=args.thread,
-                        full=args.full
+                        full=args.full,
+                        selected_components=selected_components  # Pass the filtered components
                     )
                     futures.append(deploy_futures)
                 wait_for_futures(futures)
@@ -263,6 +274,10 @@ def main():
     setup_parser.add_argument('-cn', '--class_number', help='Class argument only valid if --course contains a f5')
     setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
+    parser.add_argument(
+        "--component", 
+        help="Comma-separated list of components to build (e.g., R81.20-vr,A-GUI-CCAS-R81.20)"
+    )
     setup_parser.add_argument('--host', required=True, help='Name of the host to create the pods.')
     setup_parser.add_argument('-ds','--datastore', required=False, default="vms", help='Name of the folder in which the pod folder has to be created.')
     setup_parser.add_argument('-t','--thread', type=int, required=False, default=4, help='Number of worker for the cloning process.')
