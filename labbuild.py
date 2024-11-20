@@ -300,7 +300,7 @@ def main():
     setup_parser.add_argument('-cn', '--class_number', help='Class argument only valid if --course contains a f5')
     setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
-    parser.add_argument(
+    setup_parser.add_argument(
         '-c','--component', 
         help="Comma-separated list of components to build (e.g., R81.20-vr,A-GUI-CCAS-R81.20)",
         completer=component_completer
