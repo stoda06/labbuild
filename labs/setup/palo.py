@@ -13,6 +13,8 @@ def update_network_dict_1110(network_dict, pod_number):
             details['mac_address'] = ':'.join(mac_parts)
         else:
             details['network_name'] = details['network_name'].replace('pa-', 'pan-')
+            if 'pan-internal-1' in details['network_name']:
+                details['network_name'] = details['network_name'].replace('1', str(pod_number))
             details['network_name'] = details['network_name'].replace('0', str(pod_number))
 
     return network_dict
