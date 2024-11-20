@@ -291,6 +291,7 @@ def component_completer(prefix, parsed_args, **kwargs):
 
 def main():
     parser = argparse.ArgumentParser(prog='labbuild', description="Lab Build Management Tool")
+    argcomplete.autocomplete(parser)
     subparsers = parser.add_subparsers(dest='command', title='commands', help='Available commands')
 
     # Subparser for the 'setup' command
