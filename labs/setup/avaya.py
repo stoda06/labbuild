@@ -42,8 +42,14 @@ def build_aura_pod(service_instance, pod_config):
             vm_manager.logger.info(f'Waiting for {component["component_name"]} to initialize.')
             sleep(600)
 
-def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
-    
+def build_ipo_pod(service_instance, pod_config, pod, rebuild=False, selected_components=None):
+    components_to_clone = pod_config["components"]
+    if selected_components:
+        # Filter components based on selected_components
+        components_to_clone = [
+            component for component in pod_config["components"]
+            if component["component_name"] in selected_components
+        ]
     # Step-1: Create an instance on VmManager.
     vm_manager = VmManager(service_instance)
     futures = []
@@ -51,7 +57,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
         # Step-1.1: If Reb-build flag is set, delete the existing components.
         if rebuild:
             vm_manager.logger.info(f"Teardown {pod_config['group']} components.")
-            for component in pod_config["components"]:
+            for component in components_to_clone:
                 delete_future = executor.submit(vm_manager.delete_vm, 
                                                 component["clone_name"])
                 futures.append(delete_future)
@@ -60,7 +66,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
 
         # Step-2: Start cloning the components mentioned in the pod_config.
         vm_manager.logger.info(f"Begin cloning {pod_config['group']} components.")
-        for component in pod_config["components"]:
+        for component in components_to_clone:
             clone_future = executor.submit(vm_manager.create_linked_clone, component["base_vm"], 
                                            component["clone_name"], pod_config["group"])
             futures.append(clone_future)
@@ -84,7 +90,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
 
         # Step-4: Create a "base" snapshot on the cloned components.
         snapshot_name = "base"
-        for component in pod_config["components"]:
+        for component in components_to_clone:
             # Create a snapshot of all the cloned VMs to save base config.
             if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
                 snapshot_futures = executor.submit(
@@ -105,7 +111,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False):
 
         # Step-5: Power-on all the components.
         vm_manager.logger.info(f"Begin poweron process.")
-        for component in pod_config["components"]:
+        for component in components_to_clone:
             poweron_future = executor.submit(vm_manager.poweron_vm,
                             component["clone_name"])
             futures.append(poweron_future)
