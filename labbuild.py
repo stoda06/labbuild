@@ -111,25 +111,29 @@ def setup_environment(args):
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        full=args.full)
+                                                        full=args.full,
+                                                        selected_components=selected_components)
                     elif course_config["version"] == "1100-210":
                         build_future = executor.submit(palo.build_1100_210_pod,
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        full=args.full)
+                                                        full=args.full,
+                                                        selected_components=selected_components)
                     elif "1110" in course_config["version"]:
                         build_future = executor.submit(palo.build_1110_pod,
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        full=args.full)
+                                                        full=args.full,
+                                                        selected_components=selected_components)
                     elif course_config["version"] == "1100-220":
                         build_future = executor.submit(palo.build_1100_220_pod,
                                                         service_instance, host_details, 
                                                         pod_config, 
                                                         rebuild=args.re_build,
-                                                        full=args.full)
+                                                        full=args.full,
+                                                        selected_components=selected_components)
                     futures.append(build_future)
                 wait_for_futures(futures)
         
@@ -142,7 +146,8 @@ def setup_environment(args):
                                             service_instance, pod_config)
                     if pod_config["version"] == "ipo":
                         build_future = executor.submit(avaya.build_ipo_pod,
-                                            service_instance, pod_config, pod, rebuild=args.re_build)
+                                            service_instance, pod_config, pod, rebuild=args.re_build,
+                                            selected_components=selected_components)
                     futures.append(build_future)
                 wait_for_futures(futures)
         
@@ -161,7 +166,8 @@ def setup_environment(args):
                     if 'srv' in group["name"]:
                         f5.build_srv(service_instance, class_number, 
                                     parent_resource_pool, group["component"],
-                                    rebuild=args.re_build, full=args.full)
+                                    rebuild=args.re_build, full=args.full,
+                                    selected_components=selected_components)
                     else:
                         with ThreadPoolExecutor() as executor:
                             for pod in range(int(args.start_pod), int(args.end_pod) + 1):
@@ -169,7 +175,8 @@ def setup_environment(args):
                                                                 class_number, parent_resource_pool, 
                                                                 group["component"], str(pod),
                                                                 rebuild=args.re_build, full=args.full, 
-                                                                mem=args.memory)
+                                                                mem=args.memory,
+                                                                selected_components=selected_components)
                                 futures.append(build_future)
                             wait_for_futures(futures)
 
