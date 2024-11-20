@@ -167,7 +167,7 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             vm_manager.poweron_vm(component["vm_name"])
 
-def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, full=False):
+def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None):
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
@@ -200,7 +200,15 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
         nm.logger.info(f'Created portgoups on {network["switch_name"]}.')
     rpm.create_resource_pool("pa", pod_config["group_name"], cpu_allocation, memory_allocation, host_fqdn=host_details.fqdn)
     rpm.logger.info(f'Created resource pool {pod_config["group_name"]}')
-    for component in pod_config["components"]:
+
+    components_to_build = pod_config["components"]
+    if selected_components:
+        components_to_build = [
+            component for component in components_to_build
+            if component["component_name"] in selected_components
+        ]
+
+    for component in components_to_build:
         if not full:
             vmm.logger.info(f'Cloning linked component {component["clone_name"]}.')
             vmm.create_linked_clone(component["base_vm"], component["clone_name"], 
@@ -222,18 +230,24 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
             vmm.create_snapshot(component["clone_name"], snapshot_name, 
                                 description=f"Snapshot of {component['clone_name']}")
         # Step-5: Poweron VMs
-    for component in pod_config["components"]:
+    for component in components_to_build:
         vmm.poweron_vm(component["clone_name"])
     vmm.logger.info('Power-on all VMs.')
 
-def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False):
+def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
     # Step-2: Create Network
+    components_to_build = pod_config["components"]
+    if selected_components:
+        components_to_build = [
+            component for component in components_to_build
+            if component["component_name"] in selected_components
+        ]
     if rebuild:
-        for component in pod_config["components"]:
+        for component in components_to_build:
             vm_manager.delete_vm(component["clone_name"])
         for network in pod_config["network"]:
             solved_port_groups = solve_vlan_id(network["port_groups"])
@@ -247,7 +261,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
                                                 solved_port_groups)
         
     # Step-3: Clone VMs
-    for component in pod_config["components"]:
+    for component in components_to_build:
         if host_details.name == "cliffjumper":
             resource_pool = component["component_name"] + "-cl"
         elif host_details.name == "apollo":
@@ -276,7 +290,7 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
                                         description=f"Snapshot of {component['clone_name']}")
     
     # Step-5: Poweron VMs
-    for component in pod_config["components"]:
+    for component in components_to_build:
         vm_manager.poweron_vm(component["clone_name"])
 
 def teardown_cortex(service_instance, host_details, pod_config):
