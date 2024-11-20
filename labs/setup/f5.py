@@ -116,10 +116,17 @@ def build_class(service_instance, hostname, class_number, course_config):
         rpm.create_resource_pool(class_pool, group_pool, cpu_allocation, memory_allocation)
         rpm.logger.info(f"Created reosurce pool {group_pool}.")
 
-def build_srv(service_instance, class_number, parent_resource_pool, components, rebuild=False, thread=4, full=False):
+def build_srv(service_instance, class_number, parent_resource_pool, components, rebuild=False, thread=4, full=False, selected_components=None):
     vmm = VmManager(service_instance)
     snapshot_name = 'base'
-    for component in components:
+    components_to_clone = components
+    if selected_components:
+        # Filter components based on selected_components
+        components_to_clone = [
+            component for component in components
+            if component["component_name"] in selected_components
+        ]
+    for component in components_to_clone:
         clone_name = component["clone_vm"]+class_number
         if rebuild:
             vmm.delete_vm(clone_name)
@@ -148,7 +155,7 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
                                 description=f"Snapshot of {clone_name}")
     # Step-3.3: Power-on all VMs.
     vmm.logger.info(f'Power on all components in {parent_resource_pool}.')
-    for component in components:
+    for component in components_to_clone:
         with ThreadPoolExecutor(max_workers=thread) as executor:
             tasks = [
                 executor.submit(vmm.poweron_vm, component["clone_vm"]+class_number)
@@ -162,11 +169,18 @@ def build_srv(service_instance, class_number, parent_resource_pool, components, 
                 except Exception as e:
                     vmm.logger.error(f'Error powering on VM: {e}')
 
-def build_pod(service_instance, class_number, parent_resource_pool, components, pod_number, rebuild=False, thread=4, full=False, mem=None):
+def build_pod(service_instance, class_number, parent_resource_pool, components, pod_number, rebuild=False, thread=4, full=False, mem=None, selected_components=None):
     vmm = VmManager(service_instance)
     snapshot_name = 'base'
+    components_to_clone = components
+    if selected_components:
+        # Filter components based on selected_components
+        components_to_clone = [
+            component for component in components
+            if component["component_name"] in selected_components
+        ]
     # Step-3.1: Clone components.
-    for component in components:
+    for component in components_to_clone:
         if 'w10' in component["clone_vm"] or 'li' in component["clone_vm"]:
             clone_name = component["clone_vm"].format(X=pod_number)
         else:
@@ -216,7 +230,7 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
     
     # Step-3.3: Power-on all VMs.
     vmm.logger.info(f'Power on all components in {parent_resource_pool}.')
-    for component in components:
+    for component in components_to_clone:
         if 'w10' in component["clone_vm"] or 'li' in component["clone_vm"]:
             clone_name = component["clone_vm"].format(X=pod_number)
         else:
