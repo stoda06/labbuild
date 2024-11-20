@@ -59,10 +59,39 @@ def wait_for_futures(futures):
                 # Handle cloning failure
                 logger.error(f"Task failed: {e}")
 
+def extract_components_from_json(course_config):
+    """
+    Recursively extracts all unique component names from a course configuration.
+    :param course_config: Dictionary containing course configuration
+    :return: List of component names
+    """
+    components = []
+    if "components" in course_config:
+        # Handle flat component structures
+        components.extend([comp["component_name"] for comp in course_config["components"]])
+
+    if "group" in course_config:
+        # Handle nested group structures
+        for group in course_config["group"]:
+            if "component" in group:
+                components.extend([comp["base_vm"] for comp in group["component"]])
+    
+    # Return unique components
+    return list(set(components))
 
 def setup_environment(args):
 
     course_config = get_setup_config(args.course)
+    if args.component == "?":
+        # Display available components for the specified course
+        if course_config:
+            available_components = extract_components_from_json(course_config)
+            print(f"Available components for course '{args.course}':")
+            for component in available_components:
+                print(f"  - {component}")
+        else:
+            print(f"No components found for course '{args.course}'.")
+        sys.exit(0)  # Exit after displaying the components
 
     if course_config:
         host_details = get_host_by_name(args.host)
@@ -273,22 +302,6 @@ def manage_environment(args):
             futures.append(operation_future)
         wait_for_futures(futures)
 
-# Function to dynamically fetch components from the JSON file
-def component_completer(prefix, parsed_args, **kwargs):
-    if not parsed_args.course:
-        return []  # Return empty if no course is specified
-    try:
-        # Load course configuration
-        course_config = get_setup_config(parsed_args.course)
-        if course_config and "components" in course_config:
-            components = [comp["component_name"] for comp in course_config["components"]]
-            print(f"Available components: {components}")  # Debug log
-            return components
-        return []
-    except Exception as e:
-        print(f"Error fetching components: {e}")  # Debug log
-        return []
-
 def main():
     parser = argparse.ArgumentParser(prog='labbuild', description="Lab Build Management Tool")
     argcomplete.autocomplete(parser)
@@ -302,8 +315,7 @@ def main():
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
     setup_parser.add_argument(
         '-c','--component', 
-        help="Comma-separated list of components to build (e.g., R81.20-vr,A-GUI-CCAS-R81.20)",
-        completer=component_completer
+        help="Comma-separated list of components to build (e.g., R81.20-vr,A-GUI-CCAS-R81.20)"
     )
     setup_parser.add_argument('--host', required=True, help='Name of the host to create the pods.')
     setup_parser.add_argument('-ds','--datastore', required=False, default="vms", help='Name of the folder in which the pod folder has to be created.')
