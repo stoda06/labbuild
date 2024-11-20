@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from argcomplete.completers import ChoicesCompleter
 from concurrent.futures import ThreadPoolExecutor
 from logger.log_config import setup_logger
 from hosts.host import get_host_by_name
@@ -10,6 +11,7 @@ import labs.setup.checkpoint as checkpoint
 import labs.setup.avaya as avaya
 import labs.setup.palo as palo
 import labs.setup.f5 as f5
+import argcomplete
 import argparse
 import logging
 import json
@@ -271,6 +273,22 @@ def manage_environment(args):
             futures.append(operation_future)
         wait_for_futures(futures)
 
+# Function to dynamically fetch components from the JSON file
+def component_completer(prefix, parsed_args, **kwargs):
+    if not parsed_args.course:
+        return []  # Return empty if no course is specified
+    try:
+        # Load course configuration
+        course_config = get_setup_config(parsed_args.course)
+        if course_config and "components" in course_config:
+            components = [comp["component_name"] for comp in course_config["components"]]
+            print(f"Available components: {components}")  # Debug log
+            return components
+        return []
+    except Exception as e:
+        print(f"Error fetching components: {e}")  # Debug log
+        return []
+
 def main():
     parser = argparse.ArgumentParser(prog='labbuild', description="Lab Build Management Tool")
     subparsers = parser.add_subparsers(dest='command', title='commands', help='Available commands')
@@ -282,8 +300,9 @@ def main():
     setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
     parser.add_argument(
-        "--component", 
-        help="Comma-separated list of components to build (e.g., R81.20-vr,A-GUI-CCAS-R81.20)"
+        '-c','--component', 
+        help="Comma-separated list of components to build (e.g., R81.20-vr,A-GUI-CCAS-R81.20)",
+        completer=component_completer
     )
     setup_parser.add_argument('--host', required=True, help='Name of the host to create the pods.')
     setup_parser.add_argument('-ds','--datastore', required=False, default="vms", help='Name of the folder in which the pod folder has to be created.')
@@ -291,7 +310,6 @@ def main():
     setup_parser.add_argument('-r','--re-build', action='store_true', help='Enable re-build to clear any existing resources for the given build and proceed with the build')
     setup_parser.add_argument('-v','--verbose', action='store_true', help='Enable verbose output')
     setup_parser.add_argument('-q','--quiet', action='store_true', help='Suppress output to display only warnings or errors')
-    setup_parser.add_argument('-c','--component', help='Build a specific component for a course.')
     setup_parser.add_argument('-mem','--memory', type=int, default=None, required=False, help='Specify memory for f5 bigip component.')
     setup_parser.add_argument('--full', action='store_true', help='Create full clones to conserve storage space')
     setup_parser.add_argument('--clonefrom', action='store_true', help='Create clones from an existing pod.')
