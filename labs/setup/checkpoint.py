@@ -66,9 +66,6 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
     resource_pool_manager = ResourcePoolManager(service_instance)
     permission_manager = PermissionManager(service_instance)
 
-    if rebuild:
-        handle_rebuild(vm_manager, network_manager, resource_pool_manager, pod, pod_config, host)
-
     create_resource_pool(resource_pool_manager, host, pod, pod_config)
     assign_role_to_resource_pool(resource_pool_manager, pod_config)
 
@@ -77,26 +74,11 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
     add_permissions_to_datastore(permission_manager, pod_config)
 
     create_networks(network_manager, host, pod, pod_config)
-    clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, selected_components)
+    clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, rebuild, selected_components)
 
     power_on_components(vm_manager, pod_config, thread, selected_components)
 
     # add_to_prtg(pod_config, pod)
-
-
-def handle_rebuild(vm_manager, network_manager, resource_pool_manager, pod, pod_config, host):
-    """Handles the rebuilding of resources if rebuild flag is enabled."""
-    vm_manager.logger.info(f'P{pod} - Rebuild flag is enabled.')
-    vm_manager.logger.info(f'P{pod} - Deleting folder {pod_config["folder_name"]}')
-    vm_manager.delete_folder(pod_config["folder_name"], force=True)
-
-    for network in pod_config['network']:
-        network_manager.logger.info(f'P{pod} - Deleting vswitch {network["switch_name"]}')
-        network_manager.delete_vswitch(host.fqdn, network['switch_name'])
-
-    resource_pool_manager.logger.info(f'P{pod} - Deleting resource pool {pod_config["group_name"]}')
-    resource_pool_manager.delete_resource_pool(pod_config["group_name"])
-
 
 def create_resource_pool(resource_pool_manager, host, pod, pod_config):
     """Creates a resource pool for the pod."""
@@ -163,7 +145,7 @@ def create_networks(network_manager, host, pod, pod_config):
             network_manager.enable_promiscuous_mode(host.fqdn, network['promiscuous_mode'])
 
 
-def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, selected_components=None):
+def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, rebuild, selected_components=None):
     """Clones the required VMs, updates their networks, and creates snapshots."""
     components_to_clone = pod_config["components"]
     if selected_components:
@@ -175,6 +157,8 @@ def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, 
 
     for component in components_to_clone:
         vm_manager.logger.name = f'P{pod}'
+        if rebuild:
+            vm_manager.delete_vm(component['clone_name'])
         clone_vm(vm_manager, pod_config, component, full)
         configure_vm_network(vm_manager, component, pod)
         create_vm_snapshot(vm_manager, component)
