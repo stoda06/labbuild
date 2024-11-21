@@ -186,21 +186,7 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
         'expandable_reservation': True,
         'shares': 163840
     }
-
-    for network in pod_config['network']:
-        solved_port_groups = solve_vlan_id(network["port_groups"])
-        if rebuild:
-            rpm.poweroff_all_vms(pod_config["group_name"])
-            rpm.logger.info(f'Power-off all VMs in {pod_config["group_name"]}')
-            rpm.delete_resource_pool(pod_config["group_name"])
-            rpm.logger.info(f'Removed resource pool {pod_config["group_name"]} and all its VMs.')
-            nm.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
-            nm.logger.info(f'Deleted associated port groups from vswitch {network["switch_name"]}')
-        nm.create_vm_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
-        nm.logger.info(f'Created portgoups on {network["switch_name"]}.')
-    rpm.create_resource_pool("pa", pod_config["group_name"], cpu_allocation, memory_allocation, host_fqdn=host_details.fqdn)
-    rpm.logger.info(f'Created resource pool {pod_config["group_name"]}')
-
+    
     components_to_build = pod_config["components"]
     if selected_components:
         components_to_build = [
@@ -208,7 +194,13 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
             if component["component_name"] in selected_components
         ]
 
+    rpm.create_resource_pool("pa", pod_config["group_name"], cpu_allocation, memory_allocation, host_fqdn=host_details.fqdn)
+    rpm.logger.info(f'Created resource pool {pod_config["group_name"]}')
+
     for component in components_to_build:
+        if rebuild:
+            vmm.logger.info(f'Deleting VM {component["clone_name"]}.')
+            vmm.delete_vm(component["clone_name"])
         if not full:
             vmm.logger.info(f'Cloning linked component {component["clone_name"]}.')
             vmm.create_linked_clone(component["base_vm"], component["clone_name"], 
