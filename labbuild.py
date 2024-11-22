@@ -11,6 +11,7 @@ import labs.setup.checkpoint as checkpoint
 import labs.setup.avaya as avaya
 import labs.setup.palo as palo
 import labs.setup.f5 as f5
+from pathlib import Path
 import argcomplete
 import argparse
 import logging
@@ -28,7 +29,7 @@ def load_setup_template(file_path):
         return json.load(file)
 
 def get_setup_config(setup_name):
-    setup_template = load_setup_template('courses/'+ setup_name+'.json')
+    setup_template = load_setup_template(str(Path.home())+'/labbuild/'+'courses/'+ setup_name+'.json')
     setup_config = setup_template.get(setup_name)
     if setup_config is None:
         logger.error(f"Setup {setup_name} not found.")
