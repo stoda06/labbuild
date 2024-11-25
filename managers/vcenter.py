@@ -119,15 +119,28 @@ class VCenter:
     
     def extract_error_message(self, exception):
         """
-        Extracts the 'msg' attribute from a vSphere API exception, if available.
-        Falls back to the default string representation of the exception otherwise.
+        Extracts a detailed error message from a vSphere API exception or falls back to the default string
+        representation of the exception.
 
         :param exception: The exception object to extract the message from.
-        :return: The extracted message or the full exception string if 'msg' is not available.
+        :return: A detailed error message if available, or the string representation of the exception.
         """
         try:
-            return exception.msg
-        except AttributeError:
+            # Attempt to extract detailed error information
+            if hasattr(exception, 'localizedMessage') and exception.localizedMessage:
+                return exception.localizedMessage
+            elif hasattr(exception, 'msg') and exception.msg:
+                return exception.msg
+            elif hasattr(exception, 'reason') and exception.reason:
+                return str(exception.reason)
+            elif hasattr(exception, 'faultCause') and exception.faultCause:
+                return f"Fault cause: {exception.faultCause}"
+            else:
+                # Fall back to default string representation
+                return str(exception)
+        except Exception as e:
+            # If any unexpected error occurs during extraction, log it and return the original exception string
+            self.logger.error(f"Error extracting message from exception: {str(e)}")
             return str(exception)
     
     def wait_for_task(self, task):
@@ -135,13 +148,26 @@ class VCenter:
         Waits for a vCenter task to finish using the WaitForTask method from pyVim.task.
 
         :param task: The vCenter task to wait on.
+        :return: True if the task completes successfully, False otherwise.
         """
         try:
-            WaitForTask(task)  # This will block until the task is complete
+            # Blocking call to wait for the task to complete
+            WaitForTask(task)
             self.logger.debug("Operation completed successfully.")
             return True
-        except Exception as e:
-            self.logger.error(f"Operation failed: {self.extract_error_message(e)}")
+        except vim.fault.VimFault as vim_error:
+            # Handle known vCenter faults specifically
+            error_message = vim_error.msg if hasattr(vim_error, 'msg') else str(vim_error)
+            self.logger.error(f"Operation failed due to a known vCenter fault: {error_message}")
             return False
-    
-    
+        except Exception as e:
+            # Handle generic exceptions
+            task_info = task.info if hasattr(task, 'info') else None
+            error_details = (
+                f"{task_info.error.localizedMessage}" if task_info and task_info.error else self.extract_error_message(e)
+            )
+            self.logger.error(f"Operation failed: {error_details}")
+            return False
+
+        
+        

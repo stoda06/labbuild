@@ -994,7 +994,11 @@ class VmManager(VCenter):
         # Ensure VM is powered off for changes
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
             self.logger.debug(f"Powering off VM '{vm_name}' for network update.")
-            self.wait_for_task(vm.PowerOffVM_Task())
+            try:
+                self.wait_for_task(vm.PowerOffVM_Task())
+            except Exception as e:
+                self.logger.error(f"Failed to power off VM '{vm_name}': {str(e)}")
+                raise
 
         device_changes = []
         for device in vm.config.hardware.device:
@@ -1021,15 +1025,18 @@ class VmManager(VCenter):
         if not device_changes:
             self.logger.warning("No network interface changes detected or applicable.")
             return True
+
         try:
             spec = vim.vm.ConfigSpec(deviceChange=device_changes)
             task = vm.ReconfigVM_Task(spec=spec)
-            if self.wait_for_task(task):
-                self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
-                return True
-            else:
-                self.logger.error("Failed to update network interfaces due to task failure.")
+            if not self.wait_for_task(task):
+                # Retrieve and log specific task failure details
+                task_info = task.info
+                error_message = task_info.error.localizedMessage if task_info.error else "Unknown error"
+                self.logger.error(f"Failed to update network interfaces on VM '{vm_name}': {error_message}")
                 return False
+            self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
+            return True
         except Exception as e:
             self.logger.error(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
             raise
