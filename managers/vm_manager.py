@@ -991,56 +991,68 @@ class VmManager(VCenter):
             self.logger.error(f"VM '{vm_name}' not found.")
             return False
 
-        # Ensure VM is powered off for changes
-        if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
-            self.logger.debug(f"Powering off VM '{vm_name}' for network update.")
+        max_retries = 3  # Number of retries for the network update
+        retry_interval = 10  # Wait time in seconds between retries
+
+        for attempt in range(1, max_retries + 1):
             try:
-                self.wait_for_task(vm.PowerOffVM_Task())
+                # Ensure VM is powered off for changes
+                if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
+                    self.logger.debug(f"Powering off VM '{vm_name}' for network update.")
+                    self.wait_for_task(vm.PowerOffVM_Task())
+
+                device_changes = []
+                for device in vm.config.hardware.device:
+                    if isinstance(device, vim.vm.device.VirtualEthernetCard):
+                        device_label = device.deviceInfo.label
+                        if device_label in network_dict:
+                            network_backing = device.backing
+                            network_name = network_dict[device_label].get("network_name")
+                            mac_address = network_dict[device_label].get("mac_address")
+
+                            if network_name:
+                                network_backing.deviceName = network_name
+
+                            nic_spec = vim.vm.device.VirtualDeviceSpec()
+                            nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                            nic_spec.device = device
+                            nic_spec.device.backing = network_backing
+
+                            if mac_address and device.macAddress != mac_address:
+                                nic_spec.device.macAddress = mac_address
+
+                            device_changes.append(nic_spec)
+
+                if not device_changes:
+                    self.logger.warning("No network interface changes detected or applicable.")
+                    return True
+
+                spec = vim.vm.ConfigSpec(deviceChange=device_changes)
+                task = vm.ReconfigVM_Task(spec=spec)
+
+                if self.wait_for_task(task):
+                    self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
+                    return True
+                else:
+                    task_info = task.info
+                    error_message = task_info.error.localizedMessage if task_info.error else "Unknown error"
+                    self.logger.error(f"Failed to update network interfaces on VM '{vm_name}': {error_message}")
+                    return False
+
+            except vim.fault.TaskInProgress as e:
+                self.logger.warning(
+                    f"VM '{vm_name}' is busy with another operation. Waiting for it to complete (Attempt {attempt}/{max_retries})."
+                )
+                time.sleep(retry_interval)
             except Exception as e:
-                self.logger.error(f"Failed to power off VM '{vm_name}': {str(e)}")
-                raise
+                self.logger.error(f"An unexpected error occurred during attempt {attempt}: {str(e)}")
+                if attempt == max_retries:
+                    self.logger.error(f"All {max_retries} retry attempts failed for updating VM '{vm_name}'.")
+                    raise
 
-        device_changes = []
-        for device in vm.config.hardware.device:
-            if isinstance(device, vim.vm.device.VirtualEthernetCard):
-                device_label = device.deviceInfo.label
-                if device_label in network_dict:
-                    network_backing = device.backing
-                    network_name = network_dict[device_label].get("network_name")
-                    mac_address = network_dict[device_label].get("mac_address")
+        self.logger.error(f"Failed to update VM '{vm_name}' after {max_retries} retries.")
+        return False
 
-                    if network_name:
-                        network_backing.deviceName = network_name
-
-                    nic_spec = vim.vm.device.VirtualDeviceSpec()
-                    nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
-                    nic_spec.device = device
-                    nic_spec.device.backing = network_backing
-
-                    if mac_address and device.macAddress != mac_address:
-                        nic_spec.device.macAddress = mac_address
-
-                    device_changes.append(nic_spec)
-
-        if not device_changes:
-            self.logger.warning("No network interface changes detected or applicable.")
-            return True
-
-        try:
-            spec = vim.vm.ConfigSpec(deviceChange=device_changes)
-            task = vm.ReconfigVM_Task(spec=spec)
-            if not self.wait_for_task(task):
-                # Retrieve and log specific task failure details
-                task_info = task.info
-                error_message = task_info.error.localizedMessage if task_info.error else "Unknown error"
-                self.logger.error(f"Failed to update network interfaces on VM '{vm_name}': {error_message}")
-                return False
-            self.logger.debug(f"Network interfaces on VM '{vm_name}' updated successfully.")
-            return True
-        except Exception as e:
-            self.logger.error(f"An unexpected error occurred while updating VM '{vm_name}': {str(e)}")
-            raise
-    
     def update_serial_port_pipe_name(self, vm_name, serial_port_label, new_pipe_name):
         """
         Update the pipe name of the specified serial port for a given VM.
