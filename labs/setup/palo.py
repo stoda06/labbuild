@@ -194,6 +194,11 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
             if component["component_name"] in selected_components
         ]
 
+    for network in pod_config['network']:
+        solved_port_groups = solve_vlan_id(network["port_groups"])
+        nm.create_vm_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
+        nm.logger.info(f'Created portgoups on {network["switch_name"]}.')
+
     rpm.create_resource_pool("pa", pod_config["group_name"], cpu_allocation, memory_allocation, host_fqdn=host_details.fqdn)
     rpm.logger.info(f'Created resource pool {pod_config["group_name"]}')
 
