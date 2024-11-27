@@ -34,7 +34,7 @@ def perform_vm_operations(service_instance, pod_config, operation, selected_comp
     if selected_components:
         components_to_operate = [
             comp for comp in components_to_operate
-            if comp["clone_name"] in selected_components
+            if comp["component_name"] in selected_components
         ]
 
     with ThreadPoolExecutor() as executor:
