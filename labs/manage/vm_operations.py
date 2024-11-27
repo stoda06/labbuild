@@ -26,20 +26,27 @@ def reboot_vm(vm_manager, vm_name):
     vm_manager.poweroff_vm(vm_name)
     vm_manager.poweron_vm(vm_name)
 
-def perform_vm_operations(service_instance, pod_config, operation):
-
+def perform_vm_operations(service_instance, pod_config, operation, selected_components=None):
     vm_manager = VmManager(service_instance)
+
+    # Filter components if selected_components is specified
+    components_to_operate = pod_config["components"]
+    if selected_components:
+        components_to_operate = [
+            comp for comp in components_to_operate
+            if comp["clone_name"] in selected_components
+        ]
 
     with ThreadPoolExecutor() as executor:
         futures = []
-        for component in pod_config["components"]:
+        for component in components_to_operate:
             if operation == "start":
                 start_future = executor.submit(start_vm, vm_manager, component["clone_name"])
                 futures.append(start_future)
             elif operation == "stop":
-                stop_future = executor.submit(stop_vm, vm_manager,  component["clone_name"])
+                stop_future = executor.submit(stop_vm, vm_manager, component["clone_name"])
                 futures.append(stop_future)
             elif operation == "reboot":
-                reboot_future = executor.submit(reboot_vm, vm_manager,  component["clone_name"])
+                reboot_future = executor.submit(reboot_vm, vm_manager, component["clone_name"])
                 futures.append(reboot_future)
         wait_for_task(futures)

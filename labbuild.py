@@ -30,6 +30,7 @@ def load_setup_template(file_path):
 
 def get_setup_config(setup_name):
     setup_template = load_setup_template(str(Path.home())+'/labbuild/'+'courses/'+ setup_name+'.json')
+    # setup_template = load_setup_template('courses/'+ setup_name+'.json')
     setup_config = setup_template.get(setup_name)
     if setup_config is None:
         logger.error(f"Setup {setup_name} not found.")
@@ -293,13 +294,37 @@ def manage_environment(args):
     service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
     service_instance.connect()
     course_config = get_setup_config(args.course)
+
+    # Filter components if --component is specified
+    selected_components = None
+    if args.component:
+        if args.component == "?":
+            # Display available components for the specified course
+            available_components = extract_components_from_json(course_config)
+            print(f"Available components for course '{args.course}':")
+            for component in available_components:
+                print(f"  - {component}")
+            sys.exit(0)  # Exit after displaying the components
+        else:
+            # Validate selected components
+            selected_components = [comp.strip() for comp in args.component.split(",")]; print(selected_components)
+            available_components = extract_components_from_json(course_config)
+            invalid_components = [comp for comp in selected_components if comp not in available_components]
+            if invalid_components:
+                print(f"Invalid components specified: {', '.join(invalid_components)}")
+                sys.exit(1)
+
     futures = []
-    
     with ThreadPoolExecutor() as executor:
         for pod in range(int(args.start_pod), int(args.end_pod) + 1):
             pod_config = replace_placeholder(course_config, pod)
-            operation_future = executor.submit(manage.perform_vm_operations,
-                                service_instance, pod_config, args.operation)
+            operation_future = executor.submit(
+                manage.perform_vm_operations,
+                service_instance,
+                pod_config,
+                args.operation,
+                selected_components  # Pass filtered components
+            )
             futures.append(operation_future)
         wait_for_futures(futures)
 
@@ -329,10 +354,15 @@ def main():
     setup_parser.add_argument('--clonefrom', action='store_true', help='Create clones from an existing pod.')
 
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
+    manage_parser.add_argument('-cn', '--class_number', help='Class argument only valid if --course contains a f5')
     # manage_parser.add_argument('-cs','--create-snapshot', required=True, help='Name of the snapshot.')
     # manage_parser.add_argument('-mem','--memory', required=True, choices=['True','False'], help='''Include the virtual machine's memory in the snapshot.''')
     # manage_parser.add_argument('-qs','--quiesce', required=True, choices=['True','False'], default='False', help='Quiesce the file system in the virtual machine.')
     manage_parser.add_argument('--course', required=True, help='Path to the configuration file.')
+    manage_parser.add_argument(
+        '-c','--component', 
+        help="Comma-separated list of components to build (e.g., R81.20-vr,A-GUI-CCAS-R81.20)"
+    )
     manage_parser.add_argument('-s', '--start-pod', required=True, help='Starting value for the range of the pods.')
     manage_parser.add_argument('-e', '--end-pod', required=True, help='Ending value for the range of the pods.')
     manage_parser.add_argument('--host', required=True, help='Name of the host where the pods reside.')
