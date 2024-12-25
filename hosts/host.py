@@ -25,7 +25,7 @@ apollo = Host(name="apollo", fqdn="apollo.rededucation.com", vcenter="vcenter-ap
 nightbird = Host(name="nightbird", fqdn="nightbird.rededucation.com", vcenter="vcenter-appliance-2.rededucation.com", resource_pool="cp-nightbird", folder="cp")
 ultramagnus = Host(name="ultramagnus", fqdn="ultramagnus.rededucation.com", vcenter="vcenter-appliance-2.rededucation.com", resource_pool="cp-ultramagnus", folder="cp")
 hotshot = Host(name="hotshot", fqdn="hotshot.rededucation.com", vcenter="vcenter-appliance-3.rededucation.com", resource_pool="cp-hotshot", folder="cp")
-unicron = Host(name="unicron", fqdn="unicron.rededucation.com", vcenter="vcenter-appliance-4.rededucation.com", resource_pool="cp-unicron", folder="cp")
+unicron = Host(name="unicron", fqdn="unicron.rededucation.com", vcenter="vcenter-appliance-1.rededucation.com", resource_pool="cp-unicron", folder="cp")
 ps01 = Host(name="ps01", fqdn="ps01.rededucation.com", vcenter="vcenter-appliance-4.rededucation.com", resource_pool="cp-ps01", folder="cp")
 ps02 = Host(name="ps02", fqdn="ps02.rededucation.com", vcenter="vcenter-appliance-4.rededucation.com", resource_pool="cp-ps02", folder="cp")
 ps03 = Host(name="ps03", fqdn="ps03.rededucation.com", vcenter="vcenter-appliance-4.rededucation.com", resource_pool="cp-ps03", folder="cp")
