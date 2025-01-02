@@ -112,7 +112,7 @@ def setup_environment(args):
         selected_components = None
         if args.component:
             selected_components = [comp.strip() for comp in args.component.split(",")]
-            available_components = [comp['component_name'] for comp in course_config['components']]
+            available_components = extract_components_from_json(course_config)
             invalid_components = [comp for comp in selected_components if comp not in available_components]
             if invalid_components:
                 logger.error(f"Invalid components specified: {', '.join(invalid_components)}")
