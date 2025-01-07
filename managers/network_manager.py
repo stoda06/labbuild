@@ -242,6 +242,10 @@ class NetworkManager(VCenter):
             port_group_spec = port_group.spec
             port_group_spec.policy = vim.host.NetworkPolicy()
             port_group_spec.policy.security = vim.host.NetworkPolicy.SecurityPolicy(allowPromiscuous=True)
+            if "EXT-CCVS" in network_name:
+                port_group_spec.policy.security = vim.host.NetworkPolicy.SecurityPolicy(allowPromiscuous=True,
+                                                                                        macChanges=True, 
+                                                                                        forgedTransmits=True)
 
             try:
                 network_system.UpdatePortGroup(network_name, port_group_spec)
