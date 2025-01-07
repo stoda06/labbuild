@@ -10,6 +10,7 @@ import labs.manage.vm_operations as manage
 import labs.setup.checkpoint as checkpoint
 import labs.setup.avaya as avaya
 import labs.setup.palo as palo
+import labs.setup.pr as pr
 import labs.setup.f5 as f5
 from pathlib import Path
 import argcomplete
@@ -213,6 +214,17 @@ def setup_environment(args):
                                 futures.append(build_future)
                             wait_for_futures(futures)
 
+        if course_config["vendor"] == "prtg":
+            with ThreadPoolExecutor() as executor:
+                for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    pod_config = replace_placeholder(course_config, pod)
+                    build_future = executor.submit(pr.build_pr_pod, service_instance, pod_config, 
+                                                   rebuild=args.re_build,
+                                                   full=args.full, 
+                                                   selected_components=selected_components)
+                    futures.append(build_future)
+                wait_for_futures(futures)
+
 def teardown_environment(args):
 
     host_details = get_host_by_name(args.host)
@@ -393,7 +405,9 @@ def main():
 
     # Execute based on switches
     if args.command == 'setup':
+        logger.info(f"Start building {args.course} pod(s) on {args.host}")
         setup_environment(args)
+        logger.info(f"End building {args.course} pod(s) on {args.host}")
     elif args.command == 'manage':
         if args.operation:
             manage_environment(args)
