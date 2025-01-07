@@ -81,7 +81,7 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
         if "2012" not in clone_name:
             drive_name = "CD/DVD drive 1"
             iso_type = "Datastore ISO file"
-            datastore_name = "vms"
+            datastore_name = "keg2"
             iso_path = "podiso/pod-"+str(pod_number)+"-a.iso"
             vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
         else:
