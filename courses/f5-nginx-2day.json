@@ -8,18 +8,22 @@
                 "name": "srv",
                 "component": [
                     {
+                        "component_name": "vr",
                         "base_vm": "f5-base-vr",
                         "clone_vm": "f5vr-"
                     },
                     {
+                        "component_name": "nginx-jump-box",
                         "base_vm": "f5-nginx-jump-box",
                         "clone_vm": "f5-nginx-jump-box-"
                     },
                     {
+                        "component_name": "nginx-open-source",
                         "base_vm": "nginx-open-source",
                         "clone_vm": "nginx-open-source-"
                     },
                     {
+                        "component_name": "nginx-plus-app-protect",
                         "base_vm": "f5-nginx-plus-app-protect",
                         "clone_vm": "f5-nginx-plus-app-protect-"
                     }
@@ -29,6 +33,7 @@
                 "name": "bigip",
                 "component": [
                     {
+                        "component_name": "bigip",
                         "base_vm": "bigip-v16.1.4-base",
                         "clone_vm": "f5-bigip",
                         "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 XX"
@@ -39,6 +44,7 @@
                 "name": "w10",
                 "component": [
                     {
+                        "component_name": "w10",
                         "base_vm": "f5-base-w10",
                         "clone_vm": "f5-pod{X}-w10"
                     }

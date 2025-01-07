@@ -8,30 +8,37 @@
                 "name": "srv",
                 "component": [
                     {
+                        "component_name": "vr",
                         "base_vm": "f5-base-vr",
                         "clone_vm": "f5vr-"
                     },
                     {
+                        "component_name": "srv-web-370",
                         "base_vm": "f5-srv-web-370-base",
                         "clone_vm": "f5-srv-web-370-"
                     },
                     {
+                        "component_name": "srv-traffic-client-3.0",
                         "base_vm": "f5-srv-traffic-client-3.0-base",
                         "clone_vm": "f5-srv-traffic-client-3.0-"
                     },
                     {
+                        "component_name": "srv-hackit-v2.0",
                         "base_vm": "f5-srv-hackit-v2.0-base",
                         "clone_vm": "f5-srv-hackit-v2.0-"
                     },
                     {
+                        "component_name": "srv-bigip-v16.1.4",
                         "base_vm": "f5-srv-bigip-v16.1.4-base",
                         "clone_vm": "f5-srv-bigip-v16.1.4-"
                     },
                     {
+                        "component_name": "srv-apm",
                         "base_vm": "f5-srv-apm-base",
                         "clone_vm": "f5-srv-apm-"
                     },
                     {
+                        "component_name": "srv-alerts-dashboard",
                         "base_vm": "f5-srv-alerts-dashboard-fps-v4.1.5.0s-base",
                         "clone_vm": "f5-srv-alerts-dashboard-fps-v4.1.5.0s-"
                     }
@@ -41,6 +48,7 @@
                 "name": "bigip",
                 "component": [
                     {
+                        "component_name": "bigip",
                         "base_vm": "bigip-v16.1.4-base",
                         "clone_vm": "f5-bigip",
                         "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 XX"
@@ -51,6 +59,7 @@
                 "name": "w10",
                 "component": [
                     {
+                        "component_name": "w10",
                         "base_vm": "f5-base-w10",
                         "clone_vm": "f5-pod{X}-w10"
                     }

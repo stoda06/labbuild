@@ -8,6 +8,7 @@
                 "name": "bigip",
                 "component": [
                     {
+                        "component_name": "bigip",
                         "base_vm": "bigip-v16.1.4-base",
                         "clone_vm": "f5-bigip",
                         "uuid": "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 XX"
@@ -18,6 +19,7 @@
                 "name": "li",
                 "component": [
                     {
+                        "component_name": "li",
                         "base_vm": "f5-base-li",
                         "clone_vm": "f5-pod{X}-li"
                     }

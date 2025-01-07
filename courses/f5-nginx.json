@@ -8,6 +8,7 @@
                 "name": "app-protect",
                 "component": [
                     {
+                        "component_name": "app-protect",
                         "base_vm": "f5-nginx-plus-app-protect",
                         "clone_vm": "f5-nginx-plus-app-protect-{X}"
                     }
@@ -17,6 +18,7 @@
                 "name": "jump-box",
                 "component": [
                     {
+                        "component_name": "jump-box",
                         "base_vm": "f5-nginx-jump-box",
                         "clone_vm": "f5-nginx-jump-box-{X}"
                     }
@@ -26,10 +28,12 @@
                 "name": "srv",
                 "component": [
                     {
+                        "component_name": "nginx-juice-shop",
                         "base_vm": "f5-nginx-juice-shop",
                         "clone_vm": "f5-nginx-juice-shop-{Y}"
                     },
                     {
+                        "component_name": "nginx-mgmt-suite",
                         "base_vm": "f5-nginx-mgmt-suite",
                         "clone_vm": "nginx-mgmt-suite-{Y}"
                     }
@@ -39,6 +43,7 @@
                 "name": "nginx-ingress-ctrl",
                 "component": [
                     {
+                        "component_name": "nginx-ingress-ctrl",
                         "base_vm": "f5-nginx-ingress-ctrl",
                         "clone_vm": "f5-nginx-ingress-ctrl-{X}"
                     }
@@ -48,6 +53,7 @@
                 "name": "nginx-open-source",
                 "component": [
                     {
+                        "component_name": "nginx-open-source",
                         "base_vm": "nginx-open-source",
                         "clone_vm": "nginx-open-source-{X}"
                     }
