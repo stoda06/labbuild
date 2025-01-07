@@ -405,7 +405,7 @@ def main():
 
     # Execute based on switches
     if args.command == 'setup':
-        logger.info(f"Start of building {args.course} pod range {args.start_pod}->{args.end_pod} on {args.host}. Rebuild: {args.rebuild}")
+        logger.info(f"Start of building {args.course} pod range {args.start_pod}->{args.end_pod} on {args.host}. Rebuild: {args.re_build}")
         setup_environment(args)
         logger.info(f"End of building {args.course} pod range {args.start_pod}->{args.end_pod} on {args.host}")
     elif args.command == 'manage':
