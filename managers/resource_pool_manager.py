@@ -187,15 +187,33 @@ class ResourcePoolManager(VCenter):
             self.logger.error(f"Failed to assign role to user on resource pool: {self.extract_error_message(e)}")
     
     def poweroff_all_vms(self, resource_pool_name):
+        """
+        Powers off all VMs in the specified resource pool and all its nested resource pools.
+        
+        :param resource_pool_name: Name of the resource pool.
+        """
         # Get the resource pool object
         resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
         if not resource_pool:
             self.logger.error(f"Resource pool {resource_pool_name} not found.")
             return
-        
-        # Get all VMs in the resource pool
-        vm_list = resource_pool.vm
-        for vm in vm_list:
+
+        def traverse_resource_pool(pool):
+            """
+            Recursively traverse the resource pool and collect all VMs.
+            :param pool: Resource pool object
+            :return: List of VMs in the resource pool and its nested resource pools
+            """
+            vm_list = list(pool.vm)  # Get all VMs in the current resource pool
+            for nested_pool in pool.resourcePool:  # Recursively traverse nested pools
+                vm_list.extend(traverse_resource_pool(nested_pool))
+            return vm_list
+
+        # Get all VMs in the resource pool and nested resource pools
+        all_vms = traverse_resource_pool(resource_pool)
+
+        # Power off all VMs
+        for vm in all_vms:
             if vm.runtime.powerState == vim.VirtualMachinePowerState.poweredOn:
                 try:
                     task = vm.PowerOffVM_Task()
