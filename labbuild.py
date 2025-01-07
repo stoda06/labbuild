@@ -77,7 +77,7 @@ def extract_components_from_json(course_config):
         # Handle nested group structures
         for group in course_config["group"]:
             if "component" in group:
-                components.extend([comp["base_vm"] for comp in group["component"]])
+                components.extend([comp["component_name"] for comp in group["component"]])
     
     # Return unique components
     return list(set(components))
@@ -405,9 +405,9 @@ def main():
 
     # Execute based on switches
     if args.command == 'setup':
-        logger.info(f"Start building {args.course} pod(s) on {args.host}")
+        logger.info(f"Start of building {args.course} pod range {args.start_pod}->{args.end_pod} on {args.host}. Rebuild: {args.rebuild}")
         setup_environment(args)
-        logger.info(f"End building {args.course} pod(s) on {args.host}")
+        logger.info(f"End of building {args.course} pod range {args.start_pod}->{args.end_pod} on {args.host}")
     elif args.command == 'manage':
         if args.operation:
             manage_environment(args)
