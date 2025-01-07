@@ -1104,6 +1104,56 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"Error updating serial port pipe name: {e}")
     
+    def get_cd_drive(self, vm_name):
+        """
+        Retrieves all CD/DVD drive information for the specified VM.
+        
+        :param vm_name: The name of the virtual machine.
+        :return: A dictionary containing CD/DVD drive information, or an empty dictionary if none found.
+        """
+        try:
+            content = self.connection.content
+            vm = self.get_obj([vim.VirtualMachine], vm_name)
+            if not vm:
+                self.logger.error(f"VM {vm_name} not found.")
+                return {}
+
+            cd_drive_info = {}
+            for device in vm.config.hardware.device:
+                if isinstance(device, vim.vm.device.VirtualCdrom):
+                    drive_details = {
+                        "device_label": device.deviceInfo.label,
+                        "iso_type": None,
+                        "datastore": None,
+                        "iso_path": None,
+                        "connected": device.connectable.connected if device.connectable else False,
+                    }
+
+                    # Determine the type of backing
+                    if isinstance(device.backing, vim.vm.device.VirtualCdrom.RemoteAtapiBackingInfo):
+                        drive_details["iso_type"] = "Client Device"
+                    elif isinstance(device.backing, vim.vm.device.VirtualCdrom.IsoBackingInfo):
+                        drive_details["iso_type"] = "Datastore ISO file"
+                        drive_details["iso_path"] = device.backing.fileName
+                        # Extract datastore name from the ISO path
+                        if device.backing.fileName.startswith("["):
+                            datastore_end = device.backing.fileName.find("]")
+                            if datastore_end != -1:
+                                drive_details["datastore"] = device.backing.fileName[1:datastore_end]
+
+                    cd_drive_info[device.deviceInfo.label] = drive_details
+
+            if not cd_drive_info:
+                self.logger.warning(f"No CD/DVD drives found in VM {vm_name}.")
+            else:
+                self.logger.debug(f"Retrieved CD/DVD drive info for VM {vm_name}: {cd_drive_info}")
+
+            return cd_drive_info
+
+        except vmodl.MethodFault as error:
+            self.logger.error(f"Failed to retrieve CD/DVD drive information for VM {vm_name}: {error}")
+            return {}
+    
     def modify_cd_drive(self, vm_name, drive_name, iso_type, datastore_name, iso_path, connected=False):
         try:
             content = self.connection.content
