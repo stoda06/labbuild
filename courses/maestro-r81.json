@@ -4,8 +4,8 @@
         "user": "labcp-{X}",
         "role": "labcp-0-role",
         "vendor": "cp",
-        "group_name": "cp-maestro",
-        "folder_name": "cp-pod{X}-folder",
+        "group_name": "cp-maestro-pod{X}",
+        "folder_name": "cp-maestro-pod{X}-folder",
         "prtg_container": "8082",
         "prtg_object": "150149",
         "components": [
