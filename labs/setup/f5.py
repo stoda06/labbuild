@@ -210,7 +210,7 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
             if "w10" in clone_name:
                 drive_name = "CD/DVD drive 1"
                 iso_type = "Datastore ISO file"
-                datastore_name = "vms"
+                datastore_name = "keg2"
                 iso_path = "podiso/pod-"+pod_number+"-a.iso"
                 vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
         if 'bigip' in clone_name:
