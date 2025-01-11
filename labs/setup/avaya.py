@@ -68,7 +68,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False, selected_com
         vm_manager.logger.info(f"Begin cloning {pod_config['group']} components.")
         for component in components_to_clone:
             clone_future = executor.submit(vm_manager.create_linked_clone, component["base_vm"], 
-                                           component["clone_name"], pod_config["group"])
+                                           component["clone_name"], "base", pod_config["group"])
             futures.append(clone_future)
         wait_for_task(futures)
         futures.clear()
