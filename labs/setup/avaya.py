@@ -2,6 +2,7 @@ from managers.vm_manager import VmManager
 from managers.resource_pool_manager import ResourcePoolManager
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
+import re
 
 def wait_for_task(futures):
     # Optionally, wait for all cloning tasks to complete and handle their results
@@ -14,6 +15,41 @@ def wait_for_task(futures):
         except Exception as e:
             # Handle cloning failure
             print(f"Task failed: {e}")
+
+
+def update_network_dict(network_dict, pod_number):
+    pod_hex = format(pod_number, '02x')  # Convert pod number to hex format
+
+    def update_mac_address(mac_address):
+        # Split the MAC address into octets
+        mac_octets = mac_address.split(':')
+        # Update the last octet with the hex value of the pod number
+        mac_octets[-1] = pod_hex
+        # Join the octets back into a MAC address
+        return ':'.join(mac_octets)
+
+    def update_network_name(network_name, pod_number):
+        # Use regex to find and replace any "vs" followed by a number in the network name
+        return re.sub(r'ipo\d+', f'ipo-{pod_number}', network_name)
+
+    updated_network_dict = {}
+    for adapter, details in network_dict.items():
+        network_name = details['network_name']
+        mac_address = details['mac_address']
+
+        # Update the network name if it contains "vsX" (where X is any number)
+        network_name = network_name.replace('ipo-1',f'ipo-{pod_number}')
+
+        # Update the MAC address if the network name contains "rdp"
+        if 'rdp' in network_name:
+            mac_address = update_mac_address(mac_address)
+
+        updated_network_dict[adapter] = {
+            'network_name': network_name,
+            'mac_address': mac_address
+        }
+
+    return updated_network_dict
 
 def build_aura_pod(service_instance, pod_config):
     
@@ -78,12 +114,9 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False, selected_com
         vm_manager.logger.info(f"Changing ipo VM UUIDs, Update MAC address on VR and change Networks on cloned VMs..")
         for component in pod_config["components"]:
             # Change VM Network
-            vm_manager.update_vm_networks(component["clone_name"], "ipo", pod)
-            # Update VR MAC Address
-            if "vr" in component["component_name"]:
-                vm_manager.update_mac_address(component["clone_name"],
-                                              "Network adapter 1",
-                                              "00:50:56:0f:" + "{:02x}".format(pod) + ":00")
+            vm_network = vm_manager.get_vm_network(component["base_vm"])
+            updated_vm_network = update_network_dict(vm_network, int(pod))
+            vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
 
         wait_for_task(futures)
         futures.clear()
