@@ -24,7 +24,7 @@ def update_network_dict(network_dict, pod_number):
         # Split the MAC address into octets
         mac_octets = mac_address.split(':')
         # Update the last octet with the hex value of the pod number
-        mac_octets[-1] = pod_hex
+        mac_octets[-2] = pod_hex
         # Join the octets back into a MAC address
         return ':'.join(mac_octets)
 
