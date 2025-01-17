@@ -95,7 +95,7 @@ def create_resource_pool(resource_pool_manager, host, pod, pod_config):
         'shares': 163840
     }
     try:
-        resource_pool_manager.logger.info(f'P{pod} - Creating resource pool {pod_config["group_name"]}')
+        resource_pool_manager.logger.info(f'Creating resource pool {pod_config["group_name"]}')
         resource_pool_manager.create_resource_pool(host.resource_pool,
                                                    pod_config["group_name"],
                                                    cpu_allocation,
@@ -114,7 +114,7 @@ def assign_role_to_resource_pool(resource_pool_manager, pod_config):
 
 def create_folder(folder_manager, host, pod, pod_config):
     """Creates a folder for the pod."""
-    folder_manager.logger.info(f'P{pod} - Creating folder {pod_config["folder_name"]}')
+    folder_manager.logger.info(f'Creating folder {pod_config["folder_name"]}')
     folder_manager.create_folder(host.folder, pod_config['folder_name'])
 
 
@@ -132,7 +132,7 @@ def add_permissions_to_datastore(permission_manager, pod_config):
 
 def create_networks(network_manager, host, pod, pod_config):
     """Creates vSwitches and their associated port groups for the pod."""
-    network_manager.logger.info(f'P{pod} - Creating network')
+    network_manager.logger.info(f'Creating network')
     for network in pod_config['network']:
         network_manager.create_vswitch(host.fqdn, network['switch_name'])
         network_manager.create_vm_port_groups(host.fqdn, network["switch_name"], network["port_groups"])
@@ -156,7 +156,6 @@ def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, 
         ]
 
     for component in components_to_clone:
-        vm_manager.logger.name = f'P{pod}'
         if rebuild:
             vm_manager.delete_vm(component['clone_name'])
         clone_vm(vm_manager, pod_config, component, full)
