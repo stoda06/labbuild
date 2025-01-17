@@ -199,8 +199,6 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
         else:
             vmm.clone_vm(component["base_vm"], clone_name, parent_resource_pool)
             vmm.logger.info(f'Created direct clone {clone_name}.')
-        clone_obj = vmm.get_obj([vim.VirtualMachine], clone_name)
-        clone_datastore_name = clone_obj.datastore[0]
 
         # Step-3.2: Update VR Mac adderess and VM networks.
         vm_network = vmm.get_vm_network(component["base_vm"])
@@ -213,10 +211,10 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
             if "w10" in clone_name:
                 drive_name = "CD/DVD drive 1"
                 iso_type = "Datastore ISO file"
-                if "datastore" in clone_datastore_name:
-                    datastore_name = "datastore2-ho"
-                else:
+                if vmm.get_obj([vim.Datastore], "keg2"):
                     datastore_name = "keg2" 
+                else:
+                    datastore_name = "datastore2-ho"
                 iso_path = "podiso/pod-"+pod_number+"-a.iso"
                 vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
         if 'bigip' in clone_name:
