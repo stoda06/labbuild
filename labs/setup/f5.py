@@ -104,8 +104,6 @@ def build_class(service_instance, hostname, class_number, course_config):
             ] if k == "port_groups" else v
             for k, v in network.items()
         }
-        print(updated_network_details["port_groups"])
-        exit(1)
         nm.create_vm_port_groups(host.fqdn, switch_name, updated_network_details["port_groups"])
         nm.logger.info(f"Created port groups on vswitch {switch_name}")
     # Step-2: Create class resource pool and assign user and permission.
