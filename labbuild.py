@@ -122,6 +122,7 @@ def setup_environment(args):
         if course_config["vendor"] == "cp":
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    logger.name = f'P{pod}'
                     pod_config = replace_placeholder(course_config, pod)
                     deploy_futures = executor.submit(
                         checkpoint.build_cp_pod,
@@ -139,6 +140,7 @@ def setup_environment(args):
         if course_config["vendor"] == "pa":
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    logger.name = f'P{pod}'
                     pod_config = replace_placeholder(course_config, pod)
                     if course_config["version"] == "cortex":
                         build_future = executor.submit(palo.build_cortex_pod,
@@ -174,6 +176,7 @@ def setup_environment(args):
         if course_config["vendor"] == "av":
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    logger.name = f'P{pod}'
                     pod_config = replace_placeholder(course_config, pod)
                     if pod_config["version"] == "aura":
                         build_future = executor.submit(avaya.build_aura_pod,
@@ -189,6 +192,7 @@ def setup_environment(args):
             if "nginx" in course_config["version"]:
                 with ThreadPoolExecutor() as executor:
                     for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                        logger.name = f'P{pod}'
                         pod_config = replace_placeholder(course_config, pod)
             else:
                 class_number = args.class_number
@@ -205,6 +209,7 @@ def setup_environment(args):
                     else:
                         with ThreadPoolExecutor() as executor:
                             for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                                logger.name = f'P{pod}'
                                 build_future = executor.submit(f5.build_pod, service_instance, 
                                                                 class_number, parent_resource_pool, 
                                                                 group["component"], str(pod),
@@ -217,6 +222,7 @@ def setup_environment(args):
         if course_config["vendor"] == "prtg":
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    logger.name = f'P{pod}'
                     pod_config = replace_placeholder(course_config, pod)
                     build_future = executor.submit(pr.build_pr_pod, service_instance, pod_config, 
                                                    rebuild=args.re_build,
