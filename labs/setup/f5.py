@@ -199,8 +199,8 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
         else:
             vmm.clone_vm(component["base_vm"], clone_name, parent_resource_pool)
             vmm.logger.info(f'Created direct clone {clone_name}.')
-            clone_obj = vmm.get_obj([vim.VirtualMachine], clone_name)
-            clone_datastore_name = clone_obj.datastore[0]
+        clone_obj = vmm.get_obj([vim.VirtualMachine], clone_name)
+        clone_datastore_name = clone_obj.datastore[0]
 
         # Step-3.2: Update VR Mac adderess and VM networks.
         vm_network = vmm.get_vm_network(component["base_vm"])
