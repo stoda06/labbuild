@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from managers.network_manager import NetworkManager
 from managers.resource_pool_manager import ResourcePoolManager
 import json
+from pyVmomi import vim
 
 cpu_allocation = {
     'limit': -1,
@@ -96,13 +97,15 @@ def build_class(service_instance, hostname, class_number, course_config):
         updated_network_details = {
             k: [
                 {
-                    sub_k: (f"{sub_v}-{switch_name}" if sub_k == 'name' else sub_v)
+                    sub_k: (f"{sub_v}-{switch_name}" if sub_k == 'port_group_name' else sub_v)
                     for sub_k, sub_v in pg.items()
                 }
                 for pg in v
             ] if k == "port_groups" else v
             for k, v in network.items()
         }
+        print(updated_network_details["port_groups"])
+        exit(1)
         nm.create_vm_port_groups(host.fqdn, switch_name, updated_network_details["port_groups"])
         nm.logger.info(f"Created port groups on vswitch {switch_name}")
     # Step-2: Create class resource pool and assign user and permission.
@@ -198,6 +201,8 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
         else:
             vmm.clone_vm(component["base_vm"], clone_name, parent_resource_pool)
             vmm.logger.info(f'Created direct clone {clone_name}.')
+            clone_obj = vmm.get_obj([vim.VirtualMachine], clone_name)
+            clone_datastore_name = clone_obj.datastore[0]
 
         # Step-3.2: Update VR Mac adderess and VM networks.
         vm_network = vmm.get_vm_network(component["base_vm"])
@@ -210,7 +215,10 @@ def build_pod(service_instance, class_number, parent_resource_pool, components, 
             if "w10" in clone_name:
                 drive_name = "CD/DVD drive 1"
                 iso_type = "Datastore ISO file"
-                datastore_name = "keg2"
+                if "datastore" in clone_datastore_name:
+                    datastore_name = "datastore2-ho"
+                else:
+                    datastore_name = "keg2" 
                 iso_path = "podiso/pod-"+pod_number+"-a.iso"
                 vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
         if 'bigip' in clone_name:
