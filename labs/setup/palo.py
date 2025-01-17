@@ -267,6 +267,8 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
             resource_pool = component["component_name"] + "-ni"
         elif host_details.name == "ultramagnus":
             resource_pool = component["component_name"] + "-ul"
+        elif host_details.name == "unicron":
+            resource_pool = component["component_name"] + "-un"
         else:
             resource_pool = component["component_name"]
         if not full:
