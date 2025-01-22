@@ -1,0 +1,20 @@
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: toor
+      MONGO_INITDB_DATABASE: labbuild_db  # Name of the database to create
+      MONGO_INITDB_USERNAME: labbuild_user  # Username for the new database
+      MONGO_INITDB_PASSWORD: $$u1QBd6&372#$rF  # Password for the new user
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js  # Custom init script to create the user for the new database
+
+volumes:
+  mongodb_data:
+    driver: local
