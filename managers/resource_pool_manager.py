@@ -28,8 +28,20 @@ class ResourcePoolManager(VCenter):
             self.logger.error(f"Failed to create resource pool under host '{host_name}': {self.extract_error_message(e)}")
             return None
 
-    def create_resource_pool(self, parent_resource_pool, rp_name, cpu_allocation, memory_allocation, host_fqdn=None):
+    def create_resource_pool(self, parent_resource_pool, rp_name, host_fqdn=None):
         """Creates a new resource pool under the specified parent resource pool and host."""
+        cpu_allocation = {
+            'limit': -1,
+            'reservation': 0,
+            'expandable_reservation': True,
+            'shares': 4000
+        }
+        memory_allocation = {
+            'limit': -1,
+            'reservation': 0,
+            'expandable_reservation': True,
+            'shares': 163840
+        }
         try:
             if host_fqdn:
                 # Find the specific ESXi host by its FQDN
