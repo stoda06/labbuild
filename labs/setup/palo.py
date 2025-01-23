@@ -173,19 +173,6 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
     rpm = ResourcePoolManager(service_instance)
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
-    # Create resource pool for the pod.
-    cpu_allocation = {
-        'limit': -1,
-        'reservation': 0,
-        'expandable_reservation': True,
-        'shares': 4000
-    }
-    memory_allocation = {
-        'limit': -1,
-        'reservation': 0,
-        'expandable_reservation': True,
-        'shares': 163840
-    }
     
     components_to_build = pod_config["components"]
     if selected_components:
@@ -199,7 +186,7 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
         nm.create_vm_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
         nm.logger.info(f'Created portgoups on {network["switch_name"]}.')
 
-    rpm.create_resource_pool("pa", pod_config["group_name"], cpu_allocation, memory_allocation, host_fqdn=host_details.fqdn)
+    rpm.create_resource_pool("pa", pod_config["group_name"], host_fqdn=host_details.fqdn)
     rpm.logger.info(f'Created resource pool {pod_config["group_name"]}')
 
     for component in components_to_build:

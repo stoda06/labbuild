@@ -82,24 +82,10 @@ def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thr
 
 def create_resource_pool(resource_pool_manager, host, pod, pod_config):
     """Creates a resource pool for the pod."""
-    cpu_allocation = {
-        'limit': -1,
-        'reservation': 0,
-        'expandable_reservation': True,
-        'shares': 4000
-    }
-    memory_allocation = {
-        'limit': -1,
-        'reservation': 0,
-        'expandable_reservation': True,
-        'shares': 163840
-    }
     try:
         resource_pool_manager.logger.info(f'Creating resource pool {pod_config["group_name"]}')
         resource_pool_manager.create_resource_pool(host.resource_pool,
-                                                   pod_config["group_name"],
-                                                   cpu_allocation,
-                                                   memory_allocation)
+                                                   pod_config["group_name"])
     except Exception as e:
         resource_pool_manager.logger.error(f"An error occurred: {e}")
         sys.exit(1)

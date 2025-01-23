@@ -1,22 +1,5 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from managers.resource_pool_manager import ResourcePoolManager
-from managers.network_manager import NetworkManager
 from managers.vm_manager import VmManager
-from hosts.host import get_host_by_name
-import json
-
-cpu_allocation = {
-    'limit': -1,
-    'reservation': 0,
-    'expandable_reservation': True,
-    'shares': 4000
-}
-memory_allocation = {
-    'limit': -1,
-    'reservation': 0,
-    'expandable_reservation': True,
-    'shares': 163840
-}
 
 
 def update_network_dict(network_dict, pod_number):
@@ -50,7 +33,7 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
 
     parent_resource_pool = pod_config["group"]
     group_pool = parent_resource_pool + "-pod" + str(pod_number)
-    rpm.create_resource_pool(parent_resource_pool, group_pool, cpu_allocation, memory_allocation)
+    rpm.create_resource_pool(parent_resource_pool, group_pool)
 
     if selected_components:
         components_to_build = [
