@@ -58,81 +58,84 @@ def update_network_dict(network_dict, pod_number):
     return updated_network_dict
 
 
-def build_cp_pod(service_instance, pod_config, hostname, pod, rebuild=False, thread=4, full=False, selected_components=None):
-    host = get_host_by_name(hostname)
+def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=False, selected_components=None):
+    host = pod_config["host"].split(".")[0]
+    pod = pod_config["pod_number"]
     vm_manager = VmManager(service_instance)
     folder_manager = FolderManager(service_instance)
     network_manager = NetworkManager(service_instance)
     resource_pool_manager = ResourcePoolManager(service_instance)
     permission_manager = PermissionManager(service_instance)
 
-    create_resource_pool(resource_pool_manager, host, pod, pod_config)
-    assign_role_to_resource_pool(resource_pool_manager, pod_config)
+    create_resource_pool(resource_pool_manager, pod_config)
 
-    create_folder(folder_manager, host, pod, pod_config)
-    assign_role_to_folder(folder_manager, pod_config)
-    add_permissions_to_datastore(permission_manager, pod_config)
+    create_folder(folder_manager, pod_config)
+    # add_permissions_to_datastore(permission_manager, pod_config)
 
-    create_networks(network_manager, host, pod, pod_config)
-    clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, rebuild, selected_components)
+    create_networks(network_manager, pod_config)
+    clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_components)
 
     power_on_components(vm_manager, pod_config, thread, selected_components)
 
     # add_to_prtg(pod_config, pod)
 
-def create_resource_pool(resource_pool_manager, host, pod, pod_config):
+def create_resource_pool(resource_pool_manager, pod_config):
     """Creates a resource pool for the pod."""
     try:
-        resource_pool_manager.logger.info(f'Creating resource pool {pod_config["group_name"]}')
-        resource_pool_manager.create_resource_pool(host.resource_pool,
-                                                   pod_config["group_name"])
+        parent_resource_pool = pod_config["vendor_shortcode"] + "-" + pod_config["host_fqdn"].split(".")[0]
+        pod_resource_pool = pod_config["vendor_shortcode"] + "-pod" + pod_config["pod_number"]
+        user = f"labcp-{pod_config['pod_number']}"
+        domain = "vcenter.rededucation.com"
+        role = "labcp-0-role"
+        resource_pool_manager.logger.info(f'Creating resource pool {pod_resource_pool}')
+        resource_pool_manager.create_resource_pool(parent_resource_pool, pod_resource_pool)
+        resource_pool_manager.assign_role_to_resource_pool(pod_resource_pool, f'{domain}\\{user}', role)
     except Exception as e:
         resource_pool_manager.logger.error(f"An error occurred: {e}")
-        sys.exit(1)
+        sys.exit(1)  
 
 
-def assign_role_to_resource_pool(resource_pool_manager, pod_config):
-    """Assigns a user and role to the created resource pool."""
-    resource_pool_manager.assign_role_to_resource_pool(pod_config["group_name"],
-                                                       f'{pod_config["domain"]}\\{pod_config["user"]}',
-                                                       pod_config["role"])
-
-
-def create_folder(folder_manager, host, pod, pod_config):
+def create_folder(folder_manager, pod_config):
     """Creates a folder for the pod."""
-    folder_manager.logger.info(f'Creating folder {pod_config["folder_name"]}')
-    folder_manager.create_folder(host.folder, pod_config['folder_name'])
-
-
-def assign_role_to_folder(folder_manager, pod_config):
-    """Assigns a user and role to the created folder."""
-    folder_manager.assign_user_to_folder(pod_config["folder_name"],
-                                         f'{pod_config["domain"]}\\{pod_config["user"]}',
-                                         pod_config["role"])
+    try:
+        folder_name = f"cp-pod{pod_config['pod_number']}-folder"
+        user = f"labcp-{pod_config['pod_number']}"
+        domain = "vcenter.rededucation.com"
+        role = "labcp-0-role"
+        folder_manager.logger.info(f'Creating folder {folder_name}')
+        folder_manager.create_folder(pod_config["vendor"], folder_name)
+        folder_manager.assign_user_to_folder(folder_name, f'{domain}\\{user}', role)
+    except Exception as e:
+        folder_manager.logger.error(f"An error occurred: {e}")
+    
 
 def add_permissions_to_datastore(permission_manager, pod_config):
     """Adds permissions for a specified user or group to a datastore."""
-    permission_manager.add_permissions_to_datastore("checkpoint", 
-                                                    f'{pod_config["domain"]}\\{pod_config["user"]}', 
-                                                    pod_config["role"])
+    user = f"labcp-{pod_config['pod_number']}"
+    domain = "vcenter.rededucation.com"
+    role = "labcp-0-role"
+    permission_manager.add_permissions_to_datastore("checkpoint", f'{domain}\\{user}', role)
 
-def create_networks(network_manager, host, pod, pod_config):
+def create_networks(network_manager, pod_config):
     """Creates vSwitches and their associated port groups for the pod."""
+    user = f"labcp-{pod_config['pod_number']}"
+    domain = "vcenter.rededucation.com"
+    role = "labcp-0-role"
     network_manager.logger.info(f'Creating network')
     for network in pod_config['network']:
-        network_manager.create_vswitch(host.fqdn, network['switch_name'])
-        network_manager.create_vm_port_groups(host.fqdn, network["switch_name"], network["port_groups"])
+        network_manager.create_vswitch(pod_config["host"], network['switch_name'])
+        network_manager.create_vm_port_groups(pod_config["host"], network["switch_name"], network["port_groups"])
 
         network_names = [pg["port_group_name"] for pg in network["port_groups"]]
-        network_manager.apply_user_role_to_networks(f'{pod_config["domain"]}\\{pod_config["user"]}',
-                                                    pod_config["role"], network_names)
+        network_manager.apply_user_role_to_networks(f'{domain}\\{user}', role, network_names)
 
         if network['promiscuous_mode']:
-            network_manager.enable_promiscuous_mode(host.fqdn, network['promiscuous_mode'])
+            network_manager.enable_promiscuous_mode(pod_config["host"], network['promiscuous_mode'])
 
 
-def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, rebuild, selected_components=None):
+def clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_components=None):
     """Clones the required VMs, updates their networks, and creates snapshots."""
+    pod = pod_config["pod_number"]
     components_to_clone = pod_config["components"]
     if selected_components:
         # Filter components based on selected_components
@@ -156,6 +159,8 @@ def clone_and_configure_vms(vm_manager, network_manager, pod, pod_config, full, 
 
 def clone_vm(vm_manager, pod_config, component, full):
     """Clones a VM based on the component configuration."""
+    folder_name = f"cp-pod{pod_config['pod_number']}-folder"
+    pod_resource_pool = pod_config["vendor"] + "-pod" + pod_config["pod_number"]
     if not full:
         vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
         if not vm_manager.snapshot_exists(component["base_vm"], "base"):
@@ -163,11 +168,11 @@ def clone_vm(vm_manager, pod_config, component, full):
                                        description="Snapshot used for creating linked clones.")
         vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base",
                                        pod_config["group_name"],
-                                       directory_name=pod_config["folder_name"])
+                                       directory_name=folder_name)
     else:
         vm_manager.logger.info(f'Cloning component {component["clone_name"]}.')
         vm_manager.clone_vm(component["base_vm"], component["clone_name"],
-                            pod_config["group_name"], directory_name=pod_config["folder_name"])
+                            pod_resource_pool, directory_name=folder_name)
 
 
 def configure_vm_network(vm_manager, component, pod):
@@ -238,17 +243,21 @@ def add_to_last_octet(ip_address, number_to_add):
         raise ValueError(f"Error processing IP address: {e}")
 
 
-def teardown_pod(service_instance, pod_config, hostname):
-
-    host = get_host_by_name(hostname)
+def teardown_pod(service_instance, pod_config):
+    
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
     resource_pool_manager = ResourcePoolManager(service_instance)
 
+    if "maestro" in pod_config["course_name"]:
+        group_name = f'cp-maestro-pod{pod_config["pod_number"]}'
+    else:
+        group_name = f'cp-pod{pod_config["pod_number"]}'
+
     vm_manager.delete_folder(pod_config["folder_name"], force=True)
-    for network in pod_config['network']:
-        network_manager.delete_vswitch(host.fqdn, network['switch_name'])
-    resource_pool_manager.delete_resource_pool(pod_config["group_name"])
+    for network in pod_config['networks']:
+        network_manager.delete_vswitch(pod_config["host_fqdn"], network['switch_name'])
+    resource_pool_manager.delete_resource_pool(group_name)
 
 
 def add_to_prtg(pod_config, pod):

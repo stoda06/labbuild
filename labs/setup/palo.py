@@ -167,7 +167,8 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
         else:
             vm_manager.poweron_vm(component["vm_name"])
 
-def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None):
+def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, selected_components=None):
+
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
@@ -181,13 +182,15 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
             if component["component_name"] in selected_components
         ]
 
-    for network in pod_config['network']:
+    for network in pod_config['networks']:
+        nm.create_vswitch(pod_config["host_fqdn"], network["switch_name"])
         solved_port_groups = solve_vlan_id(network["port_groups"])
-        nm.create_vm_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
+        nm.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups)
         nm.logger.info(f'Created portgoups on {network["switch_name"]}.')
 
-    rpm.create_resource_pool("pa", pod_config["group_name"], host_fqdn=host_details.fqdn)
-    rpm.logger.info(f'Created resource pool {pod_config["group_name"]}')
+    group_name = f'pa-pod{pod_config["pod_number"]}'
+    rpm.create_resource_pool("pa", group_name, host_fqdn=pod_config["host_fqdn"])
+    rpm.logger.info(f'Created resource pool {group_name}')
 
     for component in components_to_build:
         if rebuild:
@@ -196,9 +199,9 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
         if not full:
             vmm.logger.info(f'Cloning linked component {component["clone_name"]}.')
             vmm.create_linked_clone(component["base_vm"], component["clone_name"], 
-                                    "base", pod_config["group_name"])
+                                    "base", group_name)
         else:
-            vmm.clone_vm(component["base_vm"], component["clone_name"], pod_config["group_name"])
+            vmm.clone_vm(component["base_vm"], component["clone_name"], group_name)
         
         # Update VM networks and MAC address.
         vm_network = vmm.get_vm_network(component["base_vm"])
@@ -218,7 +221,7 @@ def build_1110_pod(service_instance, host_details, pod_config, rebuild=False, fu
         vmm.poweron_vm(component["clone_name"])
     vmm.logger.info('Power-on all VMs.')
 
-def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None):
+def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, selected_components=None):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
     pod = int(pod_config["pod_number"])
@@ -235,26 +238,26 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
             vm_manager.delete_vm(component["clone_name"])
         for network in pod_config["network"]:
             solved_port_groups = solve_vlan_id(network["port_groups"])
-            network_manager.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
+            network_manager.delete_port_groups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups)
 
-    for network in pod_config["network"]:
+    for network in pod_config["networks"]:
         if not rebuild:
             solved_port_groups = solve_vlan_id(network["port_groups"])
-        network_manager.create_vswitch_portgroups(host_details.fqdn,
+        network_manager.create_vswitch_portgroups(pod_config["host_fqdn"],
                                                 network["switch_name"],
                                                 solved_port_groups)
         
     # Step-3: Clone VMs
     for component in components_to_build:
-        if host_details.name == "cliffjumper":
+        if pod_config["host_fqdn"].split(".")[0] == "cliffjumper":
             resource_pool = component["component_name"] + "-cl"
-        elif host_details.name == "apollo":
+        elif pod_config["host_fqdn"].split(".")[0] == "apollo":
             resource_pool = component["component_name"] + "-ap"
-        elif host_details.name == "nightbird":
+        elif pod_config["host_fqdn"].split(".")[0] == "nightbird":
             resource_pool = component["component_name"] + "-ni"
-        elif host_details.name == "ultramagnus":
+        elif pod_config["host_fqdn"].split(".")[0] == "ultramagnus":
             resource_pool = component["component_name"] + "-ul"
-        elif host_details.name == "unicron":
+        elif pod_config["host_fqdn"].split(".")[0] == "unicron":
             resource_pool = component["component_name"] + "-un"
         else:
             resource_pool = component["component_name"]
@@ -303,15 +306,17 @@ def teardown_1100(service_instance, pod_config):
             vm_manager.logger.info(f'Power-off VM {component["vm_name"]}')
             vm_manager.poweroff_vm(component["vm_name"])
 
-def teardown_1110(service_instance, host_details, pod_config):
+def teardown_1110(service_instance, pod_config):
     rpm = ResourcePoolManager(service_instance)
     nm = NetworkManager(service_instance)
 
-    for network in pod_config['network']:
+    group_name = f'pa-pod{pod_config["pod_number"]}'
+
+    for network in pod_config['networks']:
         solved_port_groups = solve_vlan_id(network["port_groups"])
-        rpm.poweroff_all_vms(pod_config["group_name"])
-        rpm.logger.info(f'Power-off all VMs in {pod_config["group_name"]}')
-        rpm.delete_resource_pool(pod_config["group_name"])
-        rpm.logger.info(f'Removed resource pool {pod_config["group_name"]} and all its VMs.')
-        nm.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
+        rpm.poweroff_all_vms(group_name)
+        rpm.logger.info(f'Power-off all VMs in {group_name}')
+        rpm.delete_resource_pool(group_name)
+        rpm.logger.info(f'Removed resource pool {group_name} and all its VMs.')
+        nm.delete_port_groups(pod_config['host_fqdn'], network["switch_name"], solved_port_groups)
         nm.logger.info(f'Deleted associated port groups from vswitch {network["switch_name"]}')

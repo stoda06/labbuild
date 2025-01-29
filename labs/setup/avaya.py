@@ -55,8 +55,10 @@ def build_aura_pod(service_instance, pod_config):
     
     vm_manager = VmManager(service_instance)
     resource_pool_manager = ResourcePoolManager(service_instance)
-    resource_pool_manager.logger.info(f'Power off all the VMs in {pod_config["group"]}')
-    resource_pool_manager.poweroff_all_vms(pod_config["group"])
+    group_name = f'av-pod{pod_config["pod_number"]}'
+
+    resource_pool_manager.logger.info(f'Power off all the VMs in {group_name}')
+    resource_pool_manager.poweroff_all_vms(group_name)
 
     futures = []
     # Step-2: Revert snapshot to base.
@@ -78,7 +80,8 @@ def build_aura_pod(service_instance, pod_config):
             vm_manager.logger.info(f'Waiting for {component["component_name"]} to initialize.')
             sleep(600)
 
-def build_ipo_pod(service_instance, pod_config, pod, rebuild=False, selected_components=None):
+def build_ipo_pod(service_instance, pod_config, rebuild=False, selected_components=None):
+    group_name = f'av-pod{pod_config["pod_number"]}'
     components_to_clone = pod_config["components"]
     if selected_components:
         # Filter components based on selected_components
@@ -92,7 +95,7 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False, selected_com
     with ThreadPoolExecutor() as executor:
         # Step-1.1: If Reb-build flag is set, delete the existing components.
         if rebuild:
-            vm_manager.logger.info(f"Teardown {pod_config['group']} components.")
+            vm_manager.logger.info(f"Teardown {group_name} components.")
             for component in components_to_clone:
                 delete_future = executor.submit(vm_manager.delete_vm, 
                                                 component["clone_name"])
@@ -101,21 +104,21 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False, selected_com
             futures.clear()
 
         # Step-2: Start cloning the components mentioned in the pod_config.
-        vm_manager.logger.info(f"Begin cloning {pod_config['group']} components.")
+        vm_manager.logger.info(f"Begin cloning {group_name} components.")
         for component in components_to_clone:
             clone_future = executor.submit(vm_manager.create_linked_clone, component["base_vm"], 
-                                           component["clone_name"], "base", pod_config["group"])
+                                           component["clone_name"], "base", group_name)
             futures.append(clone_future)
         wait_for_task(futures)
         futures.clear()
-        vm_manager.logger.info(f"Cloning {pod_config['group']} components completed.")
+        vm_manager.logger.info(f"Cloning {group_name} components completed.")
 
         # Step-3: Change VM UUIDs and MAC on VR.
         vm_manager.logger.info(f"Changing ipo VM UUIDs, Update MAC address on VR and change Networks on cloned VMs..")
         for component in pod_config["components"]:
             # Change VM Network
             vm_network = vm_manager.get_vm_network(component["base_vm"])
-            updated_vm_network = update_network_dict(vm_network, int(pod))
+            updated_vm_network = update_network_dict(vm_network, int(pod_config["pod_number"]))
             vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
 
         wait_for_task(futures)
@@ -153,7 +156,9 @@ def build_ipo_pod(service_instance, pod_config, pod, rebuild=False, selected_com
     
 def teardown_ipo(service_instance, pod_config):
     vm_manager = VmManager(service_instance)
-    vm_manager.logger.info(f"Teardown {pod_config['group']} components.")
+    group_name = f'av-ipo-pod{pod_config["pod_number"]}'
+
+    vm_manager.logger.info(f"Teardown {group_name} components.")
     futures = []
     with ThreadPoolExecutor() as executor:
         for component in pod_config["components"]:
@@ -165,5 +170,7 @@ def teardown_ipo(service_instance, pod_config):
 
 def teardown_aura(service_instance, pod_config):
     rpm = ResourcePoolManager(service_instance)
-    rpm.logger.info(f"Teardown {pod_config['group']} components.")
-    rpm.poweroff_all_vms(pod_config["group"])
+    group_name = f'av-pod{pod_config["pod_number"]}'
+
+    rpm.logger.info(f"Teardown {group_name} components.")
+    rpm.poweroff_all_vms(group_name)
