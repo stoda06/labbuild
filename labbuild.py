@@ -540,7 +540,7 @@ def teardown_environment(args):
 
 def manage_environment(args):
     host_details = get_host_by_name(args.host)
-    vc_host = host_details.vcenter
+    vc_host = host_details["vcenter"]
     vc_user = os.getenv("VC_USER")
     vc_password = os.getenv("VC_PASS")
     vc_port = 443
@@ -548,6 +548,12 @@ def manage_environment(args):
     service_instance = VCenter(vc_host, vc_user, vc_password, vc_port)
     service_instance.connect()
     course_config = fetch_and_prepare_course_config(args.course)
+
+    data = {
+            "tag": args.tag,
+            "course_name": args.course,
+            "pod_details": []
+        }
 
     selected_components = None
     if args.component:
@@ -577,6 +583,14 @@ def manage_environment(args):
                 selected_components
             )
             futures.append(operation_future)
+            if args.operation == 'start':
+                pod_details = {"pod_number": pod, "pod_host": args.host, "poweron": "True"}
+                data["pod_details"].append(pod_details)
+                update_database(data)
+            if args.operation == 'stop':
+                pod_details = {"pod_number": pod, "pod_host": args.host, "poweron": "False"}
+                data["pod_details"].append(pod_details)
+                update_database(data)
         wait_for_futures(futures)
 
 def main():
