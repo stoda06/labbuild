@@ -85,10 +85,9 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
         vmm.poweron_vm(component["clone_name"])
 
 def teardown_pr_pod(service_instance, pod_config):
-    rpm = ResourcePoolManager(service_instance)
-    pod_number = int(pod_config["pod_number"])
-    parent_resource_pool = pod_config["group"]
 
-    group_pool = parent_resource_pool + "-pod" + str(pod_number)
+    rpm = ResourcePoolManager(service_instance)
+    group_pool = f'pr-pod{pod_config["pod_number"]}'
+    
     rpm.poweroff_all_vms(group_pool)
     rpm.delete_resource_pool(group_pool)

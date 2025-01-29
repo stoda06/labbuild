@@ -474,6 +474,7 @@ def teardown_environment(args):
                     pod_config
                 )
                 futures.append(teardown_future)
+                delete_from_database(args.tag, course_name=pod_config["course_name"], pod_number=pod)
             wait_for_futures(futures)
 
     if course_config["vendor_shortcode"] == "f5":
@@ -520,6 +521,7 @@ def teardown_environment(args):
                 elif "aura" in course_config["course_name"]:
                     teardown_future = executor.submit(avaya.teardown_aura, service_instance, pod_config)
                 futures.append(teardown_future)
+                delete_from_database(args.tag, course_name=pod_config["course_name"], pod_number=pod)
             wait_for_futures(futures)
 
     if course_config["vendor_shortcode"] == "prtg":
@@ -531,6 +533,7 @@ def teardown_environment(args):
                 pod_config["pod_number"] = pod
                 teardown_future = executor.submit(pr.teardown_pr_pod, service_instance, pod_config)
                 futures.append(teardown_future)
+                delete_from_database(args.tag, course_name=pod_config["course_name"], pod_number=pod)
             wait_for_futures(futures)
 
     logger.info(f"Teardown process complete.")
