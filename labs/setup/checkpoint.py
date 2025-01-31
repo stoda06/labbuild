@@ -58,7 +58,7 @@ def update_network_dict(network_dict, pod_number):
 
 
 def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=False, selected_components=None):
-    
+
     vm_manager = VmManager(service_instance)
     folder_manager = FolderManager(service_instance)
     network_manager = NetworkManager(service_instance)
@@ -104,7 +104,7 @@ def create_folder(folder_manager, pod_config):
         domain = "vcenter.rededucation.com"
         role = "labcp-0-role"
         folder_manager.logger.info(f'Creating folder {folder_name}')
-        folder_manager.create_folder(pod_config["vendor"], folder_name)
+        folder_manager.create_folder(pod_config["vendor_shortcode"], folder_name)
         folder_manager.assign_user_to_folder(folder_name, f'{domain}\\{user}', role)
     except Exception as e:
         folder_manager.logger.error(f"An error occurred: {e}")
@@ -123,15 +123,15 @@ def create_networks(network_manager, pod_config):
     domain = "vcenter.rededucation.com"
     role = "labcp-0-role"
     network_manager.logger.info(f'Creating network')
-    for network in pod_config['network']:
-        network_manager.create_vswitch(pod_config["host"], network['switch_name'])
-        network_manager.create_vm_port_groups(pod_config["host"], network["switch_name"], network["port_groups"])
+    for network in pod_config['networks']:
+        network_manager.create_vswitch(pod_config["host_fqdn"], network['switch_name'])
+        network_manager.create_vm_port_groups(pod_config["host_fqdn"], network["switch_name"], network["port_groups"])
 
         network_names = [pg["port_group_name"] for pg in network["port_groups"]]
         network_manager.apply_user_role_to_networks(f'{domain}\\{user}', role, network_names)
 
         if network['promiscuous_mode']:
-            network_manager.enable_promiscuous_mode(pod_config["host"], network['promiscuous_mode'])
+            network_manager.enable_promiscuous_mode(pod_config["host_fqdn"], network['promiscuous_mode'])
 
 
 def clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_components=None):
@@ -161,7 +161,7 @@ def clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_comp
 def clone_vm(vm_manager, pod_config, component, full):
     """Clones a VM based on the component configuration."""
     folder_name = f"cp-pod{pod_config['pod_number']}-folder"
-    pod_resource_pool = pod_config["vendor"] + "-pod" + pod_config["pod_number"]
+    pod_resource_pool = pod_config["vendor_shortcode"] + "-pod" + pod_config["pod_number"]
     if not full:
         vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
         if not vm_manager.snapshot_exists(component["base_vm"], "base"):
