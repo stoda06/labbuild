@@ -6,7 +6,6 @@ from managers.folder_manager import FolderManager
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.permission_manager import PermissionManager
 from monitor.prtg import PRTGManager
-from monitor.prtg import checkpoint_server_info
 from logger.log_config import setup_logger
 import sys
 import re
@@ -59,8 +58,7 @@ def update_network_dict(network_dict, pod_number):
 
 
 def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=False, selected_components=None):
-    host = pod_config["host"].split(".")[0]
-    pod = pod_config["pod_number"]
+    
     vm_manager = VmManager(service_instance)
     folder_manager = FolderManager(service_instance)
     network_manager = NetworkManager(service_instance)
@@ -98,7 +96,10 @@ def create_resource_pool(resource_pool_manager, pod_config):
 def create_folder(folder_manager, pod_config):
     """Creates a folder for the pod."""
     try:
-        folder_name = f"cp-pod{pod_config['pod_number']}-folder"
+        if "maestro" in pod_config["course_name"]:
+            folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
+        else:
+            folder_name = f'cp-{pod_config["pod_number"]}-folder'
         user = f"labcp-{pod_config['pod_number']}"
         domain = "vcenter.rededucation.com"
         role = "labcp-0-role"
@@ -244,15 +245,17 @@ def add_to_last_octet(ip_address, number_to_add):
 
 
 def teardown_pod(service_instance, pod_config):
-    
+
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
     resource_pool_manager = ResourcePoolManager(service_instance)
 
     if "maestro" in pod_config["course_name"]:
         group_name = f'cp-maestro-pod{pod_config["pod_number"]}'
+        folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
     else:
         group_name = f'cp-pod{pod_config["pod_number"]}'
+        folder_name = f'cp-{pod_config["pod_number"]}-folder'
 
     vm_manager.delete_folder(pod_config["folder_name"], force=True)
     for network in pod_config['networks']:
@@ -260,10 +263,16 @@ def teardown_pod(service_instance, pod_config):
     resource_pool_manager.delete_resource_pool(group_name)
 
 
-def add_to_prtg(pod_config, pod):
+def add_to_prtg(pod_config, client):
+
     logger = setup_logger()
+    pod = pod_config["pod_number"]
+    db = client["labbuild_db"]
+    collection = db["prtg"]
+
+    servers = collection.find_one({"vendor_shortcode": "cp"}) 
     
-    for server in checkpoint_server_info["servers"]:
+    for server in servers["servers"]:
         prtg_obj = PRTGManager(server["url"], server["apitoken"])
         if prtg_obj.get_up_sensor_count() >= 500:
             continue
