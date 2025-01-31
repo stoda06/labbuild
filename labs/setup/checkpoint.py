@@ -258,7 +258,7 @@ def teardown_pod(service_instance, pod_config):
         folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
     else:
         group_name = f'cp-pod{pod_config["pod_number"]}'
-        folder_name = f'cp-{pod_config["pod_number"]}-folder'
+        folder_name = f'cp-pod{pod_config["pod_number"]}-folder'
 
     vm_manager.delete_folder(folder_name, force=True)
     for network in pod_config['networks']:
