@@ -440,7 +440,7 @@ def setup_environment(args):
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
                     pod_config["host_fqdn"] = host_details["fqdn"]
-                    pod_config["class_number"] = args.class_number
+                    pod_config["pod_number"] = str(pod)
                     build_future = executor.submit(pr.build_pr_pod, service_instance, pod_config, 
                                                    rebuild=args.re_build,
                                                    full=args.full, 
@@ -456,7 +456,7 @@ def setup_environment(args):
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
                     pod_config["host_fqdn"] = host_details["fqdn"]
-                    pod_config["class_number"] = args.class_number
+                    pod_config["pod_number"] = pod
                     build_future = executor.submit(nu.build_nu_pod, service_instance, pod_config, 
                                                    rebuild=args.re_build,
                                                    full=args.full, 
