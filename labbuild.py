@@ -29,8 +29,8 @@ load_dotenv()
 
 logger = setup_logger()
 
-MONGO_USER = quote_plus("MONGO_USER")
-MONGO_PASSWORD = quote_plus("MONGO_PASSWORD")
+MONGO_USER = os.getenv("MONGO_USER")
+MONGO_PASSWORD = os.getenv("MONGO_PASSWORD")
 MONGO_HOST = os.getenv("MONG_HOST")
 MONGO_DATABASE = os.getenv("MONGO_DATABASE")
 MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:27017/{MONGO_DATABASE}"
