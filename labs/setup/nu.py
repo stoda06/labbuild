@@ -30,7 +30,7 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
         parent_resource_pool = f'{pod_config["vendor_shortcode"]}-{pod_config["host_fqdn"][0:2]}'
     else:
         parent_resource_pool = f'{pod_config["vendor_shortcode"]}'
-    resource_pool = f'nu-pod{pod_config["pod_number"]}-{pod_config["host_fqdn"].split(".")[0]}'
+    resource_pool = f'nu-pod{pod_config["pod_number"]}-{pod_config["host_fqdn"][0:2]}'
     snapshot_name = 'base'
 
     rpm.create_resource_pool(parent_resource_pool, resource_pool)
@@ -64,5 +64,4 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
             vmm.create_snapshot(component["clone_name"], snapshot_name, 
                                 description=f"Snapshot of {component['clone_name']}")
         
-        if "state" not in component and "poweroff" not in component["state"]:
-            vmm.poweron_vm(component["clone_name"])
+        vmm.poweron_vm(component["clone_name"])
