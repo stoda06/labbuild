@@ -160,20 +160,23 @@ def clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_comp
 
 def clone_vm(vm_manager, pod_config, component, full):
     """Clones a VM based on the component configuration."""
-    folder_name = f"cp-pod{pod_config['pod_number']}-folder"
-    pod_resource_pool = pod_config["vendor_shortcode"] + "-pod" + pod_config["pod_number"]
+    if "maestro" in pod_config["course_name"]:
+        group_name = f'cp-maestro-pod{pod_config["pod_number"]}'
+        folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
+    else:
+        group_name = f'cp-pod{pod_config["pod_number"]}'
+        folder_name = f'cp-{pod_config["pod_number"]}-folder'
     if not full:
         vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
         if not vm_manager.snapshot_exists(component["base_vm"], "base"):
             vm_manager.create_snapshot(component["base_vm"], "base",
                                        description="Snapshot used for creating linked clones.")
-        vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base",
-                                       pod_config["group_name"],
-                                       directory_name=folder_name)
+        vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", 
+                                       group_name, directory_name=folder_name)
     else:
         vm_manager.logger.info(f'Cloning component {component["clone_name"]}.')
         vm_manager.clone_vm(component["base_vm"], component["clone_name"],
-                            pod_resource_pool, directory_name=folder_name)
+                            group_name, directory_name=folder_name)
 
 
 def configure_vm_network(vm_manager, component, pod):
