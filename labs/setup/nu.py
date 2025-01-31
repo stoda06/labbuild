@@ -26,11 +26,14 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
     rpm = ResourcePoolManager(service_instance)
     vmm = VmManager(service_instance)
     pod = pod_config["pod_number"]
-    vendor = pod_config["vendor_shortcode"]
+    if not "hotshot" in pod_config["host_fqdn"]:
+        parent_resource_pool = f'{pod_config["vendor_shortcode"]}-{pod_config["host_fqdn"].split(".")[0]}'
+    else:
+        parent_resource_pool = f'{pod_config["vendor_shortcode"]}'
     resource_pool = f'nu-pod{pod_config["pod_number"]}-{pod_config["host_fqdn"].split(".")[0]}'
     snapshot_name = 'base'
 
-    rpm.create_resource_pool(vendor, resource_pool)
+    rpm.create_resource_pool(parent_resource_pool, resource_pool)
     components_to_build = pod_config["components"]
 
     if selected_components:
