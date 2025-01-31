@@ -845,25 +845,9 @@ class VmManager(VCenter):
                     return False
 
             base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
-            # If the base VM is not found, check all hosts in the datacenter
             if not base_vm:
-                self.logger.warning(f"Base VM '{base_vm_name}' not found on the current host. Searching all hosts in the datacenter...")
-                datacenter = self.get_obj([vim.Datacenter], "Red Education")
-                if datacenter:
-                    for cluster in datacenter.hostFolder.childEntity:
-                        for host in cluster.host:
-                            for vm in host.vm:
-                                if vm.name == base_vm_name:
-                                    base_vm = vm
-                                    self.logger.info(f"Base VM '{base_vm_name}' found on host '{host.name}'.")
-                                    break
-                            if base_vm:
-                                break
-                        if base_vm:
-                            break
-                if not base_vm:
-                    self.logger.error(f"Base VM '{base_vm_name}' not found on any host in the datacenter.")
-                    return False
+                self.logger.error(f"VM '{base_vm_name}' not found.")
+                return False
 
             if not base_vm.snapshot:
                 try:
