@@ -57,7 +57,7 @@ def fetch_and_prepare_course_config(setup_name, pod=None, f5_class=None):
         setup_config = collection.find_one({"course_name": setup_name})
         if setup_config is None:
             logger.error(f"Setup {setup_name} not found in the database.")
-            return None
+            exit(1)
 
         # Remove MongoDB's default _id field from the result to avoid serialization issues
         setup_config.pop("_id", None)
