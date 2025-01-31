@@ -81,7 +81,7 @@ def create_resource_pool(resource_pool_manager, pod_config):
     """Creates a resource pool for the pod."""
     try:
         parent_resource_pool = pod_config["vendor_shortcode"] + "-" + pod_config["host_fqdn"].split(".")[0]
-        pod_resource_pool = pod_config["vendor_shortcode"] + "-pod" + pod_config["pod_number"]
+        pod_resource_pool =  f'{pod_config["vendor_shortcode"]}-pod{pod_config["pod_number"]}'
         user = f"labcp-{pod_config['pod_number']}"
         domain = "vcenter.rededucation.com"
         role = "labcp-0-role"
@@ -260,7 +260,7 @@ def teardown_pod(service_instance, pod_config):
         group_name = f'cp-pod{pod_config["pod_number"]}'
         folder_name = f'cp-{pod_config["pod_number"]}-folder'
 
-    vm_manager.delete_folder(pod_config["folder_name"], force=True)
+    vm_manager.delete_folder(folder_name, force=True)
     for network in pod_config['networks']:
         network_manager.delete_vswitch(pod_config["host_fqdn"], network['switch_name'])
     resource_pool_manager.delete_resource_pool(group_name)
