@@ -307,16 +307,17 @@ def teardown_1100(service_instance, pod_config):
             vm_manager.poweroff_vm(component["vm_name"])
 
 def teardown_1110(service_instance, pod_config):
+    
     rpm = ResourcePoolManager(service_instance)
     nm = NetworkManager(service_instance)
-
     group_name = f'pa-pod{pod_config["pod_number"]}'
+
+    rpm.poweroff_all_vms(group_name)
+    rpm.logger.info(f'Power-off all VMs in {group_name}')
+    rpm.delete_resource_pool(group_name)
+    rpm.logger.info(f'Removed resource pool {group_name} and all its VMs.')
 
     for network in pod_config['networks']:
         solved_port_groups = solve_vlan_id(network["port_groups"])
-        rpm.poweroff_all_vms(group_name)
-        rpm.logger.info(f'Power-off all VMs in {group_name}')
-        rpm.delete_resource_pool(group_name)
-        rpm.logger.info(f'Removed resource pool {group_name} and all its VMs.')
         nm.delete_port_groups(pod_config['host_fqdn'], network["switch_name"], solved_port_groups)
         nm.logger.info(f'Deleted associated port groups from vswitch {network["switch_name"]}')
