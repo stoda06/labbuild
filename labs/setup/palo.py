@@ -236,7 +236,7 @@ def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, se
     if rebuild:
         for component in components_to_build:
             vm_manager.delete_vm(component["clone_name"])
-        for network in pod_config["network"]:
+        for network in pod_config["networks"]:
             solved_port_groups = solve_vlan_id(network["port_groups"])
             network_manager.delete_port_groups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups)
 
@@ -282,7 +282,7 @@ def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, se
     for component in components_to_build:
         vm_manager.poweron_vm(component["clone_name"])
 
-def teardown_cortex(service_instance, host_details, pod_config):
+def teardown_cortex(service_instance, pod_config):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
 
@@ -290,10 +290,10 @@ def teardown_cortex(service_instance, host_details, pod_config):
         vm_manager.logger.info(f'Deleting VM {component["clone_name"]}')
         vm_manager.delete_vm(component["clone_name"])
 
-    for network in pod_config["network"]:
+    for network in pod_config["networks"]:
         network_manager.logger.info(f'Deleting port-groups from {network["switch_name"]} vswitch.')
         solved_port_groups = solve_vlan_id(network["port_groups"])
-        network_manager.delete_port_groups(host_details.fqdn, network["switch_name"], solved_port_groups)
+        network_manager.delete_port_groups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups)
 
 def teardown_1100(service_instance, pod_config):
     vm_manager = VmManager(service_instance)
