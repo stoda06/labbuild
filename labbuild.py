@@ -29,9 +29,11 @@ load_dotenv()
 
 logger = setup_logger()
 
-MONGO_USER = quote_plus("labbuild_user")
-MONGO_PASSWORD = quote_plus("$$u1QBd6&372#$rF")
-MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@localhost:27017/labbuild_db"
+MONGO_USER = quote_plus("MONGO_USER")
+MONGO_PASSWORD = quote_plus("MONGO_PASSWORD")
+MONGO_HOST = os.getenv("MONG_HOST")
+MONGO_DATABASE = os.getenv("MONGO_DATABASE")
+MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:27017/{MONGO_DATABASE}"
 
 def fetch_and_prepare_course_config(setup_name, pod=None, f5_class=None):
     """
