@@ -21,6 +21,7 @@ import labs.setup.checkpoint as checkpoint
 import labs.setup.f5 as f5
 import labs.setup.palo as palo
 import labs.setup.pr as pr
+import labs.setup.nu as nu
 from logger.log_config import setup_logger
 from managers.vcenter import VCenter
 
@@ -437,7 +438,25 @@ def setup_environment(args):
             with ThreadPoolExecutor() as executor:
                 for pod in range(int(args.start_pod), int(args.end_pod) + 1):
                     pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
+                    pod_config["host_fqdn"] = host_details["fqdn"]
+                    pod_config["class_number"] = args.class_number
                     build_future = executor.submit(pr.build_pr_pod, service_instance, pod_config, 
+                                                   rebuild=args.re_build,
+                                                   full=args.full, 
+                                                   selected_components=selected_components)
+                    futures.append(build_future)
+                    pod_details = {"pod_number": pod, "pod_host": args.host, "poweron": "True"}
+                    data["pod_details"].append(pod_details)
+                    update_database(data)
+                wait_for_futures(futures)
+
+        if course_config["vendor_shortcode"] == "nu":
+            with ThreadPoolExecutor() as executor:
+                for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
+                    pod_config["host_fqdn"] = host_details["fqdn"]
+                    pod_config["class_number"] = args.class_number
+                    build_future = executor.submit(nu.build_nu_pod, service_instance, pod_config, 
                                                    rebuild=args.re_build,
                                                    full=args.full, 
                                                    selected_components=selected_components)
