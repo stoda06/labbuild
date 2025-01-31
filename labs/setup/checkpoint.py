@@ -99,7 +99,7 @@ def create_folder(folder_manager, pod_config):
         if "maestro" in pod_config["course_name"]:
             folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
         else:
-            folder_name = f'cp-{pod_config["pod_number"]}-folder'
+            folder_name = f'cp-pod{pod_config["pod_number"]}-folder'
         user = f"labcp-{pod_config['pod_number']}"
         domain = "vcenter.rededucation.com"
         role = "labcp-0-role"
