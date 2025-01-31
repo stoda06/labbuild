@@ -27,7 +27,7 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
     vmm = VmManager(service_instance)
     pod = pod_config["pod_number"]
     if not "hotshot" in pod_config["host_fqdn"]:
-        parent_resource_pool = f'{pod_config["vendor_shortcode"]}-{pod_config["host_fqdn"].split(".")[0]}'
+        parent_resource_pool = f'{pod_config["vendor_shortcode"]}-{pod_config["host_fqdn"][0:2]}'
     else:
         parent_resource_pool = f'{pod_config["vendor_shortcode"]}'
     resource_pool = f'nu-pod{pod_config["pod_number"]}-{pod_config["host_fqdn"].split(".")[0]}'
