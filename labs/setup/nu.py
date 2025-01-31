@@ -43,25 +43,27 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
         ]
 
     for component in components_to_build:
+        clone_status = False
         if rebuild:
             vmm.logger.info(f'Deleting VM {component["clone_name"]}.')
             vmm.delete_vm(component["clone_name"])
         if not full:
             vmm.logger.info(f'Cloning linked component {component["clone_name"]}.')
-            vmm.create_linked_clone(component["base_vm"], component["clone_name"], 
+            clone_status = vmm.create_linked_clone(component["base_vm"], component["clone_name"], 
                                     "base", resource_pool)
         else:
             vmm.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
         
-        # Update VM networks and MAC address.
-        vm_network = vmm.get_vm_network(component["base_vm"])
-        updated_vm_network = update_network_dict_1110(vm_network, int(pod))
-        vmm.update_vm_network(component["clone_name"], updated_vm_network)
-        vmm.connect_networks_to_vm(component["clone_name"], updated_vm_network)
+        if clone_status:
+            # Update VM networks and MAC address.
+            vm_network = vmm.get_vm_network(component["base_vm"])
+            updated_vm_network = update_network_dict_1110(vm_network, int(pod))
+            vmm.update_vm_network(component["clone_name"], updated_vm_network)
+            vmm.connect_networks_to_vm(component["clone_name"], updated_vm_network)
 
-        # Create a snapshot of all the cloned VMs to save base config.
-        if not vmm.snapshot_exists(component["clone_name"], snapshot_name):
-            vmm.create_snapshot(component["clone_name"], snapshot_name, 
-                                description=f"Snapshot of {component['clone_name']}")
-        
-        vmm.poweron_vm(component["clone_name"])
+            # Create a snapshot of all the cloned VMs to save base config.
+            if not vmm.snapshot_exists(component["clone_name"], snapshot_name):
+                vmm.create_snapshot(component["clone_name"], snapshot_name, 
+                                    description=f"Snapshot of {component['clone_name']}")
+            
+            vmm.poweron_vm(component["clone_name"])
