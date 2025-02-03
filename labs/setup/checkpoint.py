@@ -165,7 +165,7 @@ def clone_vm(vm_manager, pod_config, component, full):
         folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
     else:
         group_name = f'cp-pod{pod_config["pod_number"]}'
-        folder_name = f'cp-{pod_config["pod_number"]}-folder'
+        folder_name = f'cp-pod{pod_config["pod_number"]}-folder'
     if not full:
         vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
         if not vm_manager.snapshot_exists(component["base_vm"], "base"):
