@@ -1,22 +1,19 @@
 from managers.vm_manager import VmManager
-from concurrent.futures import ThreadPoolExecutor
-from managers.network_manager import NetworkManager
-from managers.folder_manager import FolderManager
 from managers.resource_pool_manager import ResourcePoolManager
-from managers.permission_manager import PermissionManager
 from monitor.prtg import PRTGManager
 
-def update_network_dict_1110(network_dict, pod_number):
+def update_network_dict(network_dict, pod_number):
     pod_hex = format(pod_number, '02x')  # Convert pod number to a two-digit hexadecimal string
+    network_name = f'nuvr-{pod_number}'
 
     for adapter, details in network_dict.items():
-        if 'pa-rdp' in details['network_name']:
+        if 'nu-rdp' in details['network_name']:
             mac_address_preset = '00:50:56:05:00:00'
             mac_parts = mac_address_preset.split(':')
             mac_parts[-1] = pod_hex
             details['mac_address'] = ':'.join(mac_parts)
         else:
-            details['network_name'] = details['network_name'].replace('0', str(pod_number))
+            details['network_name'] = network_name
 
     return network_dict
 
@@ -57,7 +54,7 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
         if clone_status:
             # Update VM networks and MAC address.
             vm_network = vmm.get_vm_network(component["base_vm"])
-            updated_vm_network = update_network_dict_1110(vm_network, int(pod))
+            updated_vm_network = update_network_dict(vm_network, int(pod))
             vmm.update_vm_network(component["clone_name"], updated_vm_network)
             vmm.connect_networks_to_vm(component["clone_name"], updated_vm_network)
 
