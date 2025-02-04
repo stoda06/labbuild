@@ -842,7 +842,7 @@ class VmManager(VCenter):
             for vm in resource_pool.vm:
                 if vm.name == clone_name:
                     self.logger.warning(f"VM '{clone_name}' already exists in the resource pool '{resource_pool_name}'.")
-                    return False
+                    return True
 
             base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
             if not base_vm:
@@ -936,6 +936,7 @@ class VmManager(VCenter):
             self.logger.error(f"Error reading the VMX file '{local_vmx_path}': {str(e)}")
             return False
 
+
     def get_vm_network(self, vm_name):
         """
         Retrieves the network details of an existing VM, including network names,
@@ -954,10 +955,12 @@ class VmManager(VCenter):
             if isinstance(device, vim.vm.device.VirtualEthernetCard):
                 network_name = device.backing.network.name if device.backing.network else "N/A"
                 mac_address = device.macAddress
+                connected_at_power_on = device.connectable.startConnected
 
                 network_details[device.deviceInfo.label] = {
                     "network_name": network_name,
-                    "mac_address": mac_address
+                    "mac_address": mac_address,
+                    "connected_at_power_on": connected_at_power_on
                 }
 
         return network_details
@@ -968,6 +971,15 @@ class VmManager(VCenter):
 
         :param vm_name: The name of the VM to update.
         :param network_dict: A dictionary containing the network details to update.
+                            Expected format:
+                            {
+                                "Network adapter 1": {
+                                    "network_name": "NewNetwork",
+                                    "mac_address": "00:50:56:XX:XX:XX",
+                                    "connected_at_power_on": True
+                                },
+                                ...
+                            }
         :return: True if the network update is successful, False otherwise.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
@@ -993,6 +1005,7 @@ class VmManager(VCenter):
                             network_backing = device.backing
                             network_name = network_dict[device_label].get("network_name")
                             mac_address = network_dict[device_label].get("mac_address")
+                            connected_at_power_on = network_dict[device_label].get("connected_at_power_on")
 
                             if network_name:
                                 network_backing.deviceName = network_name
@@ -1004,6 +1017,15 @@ class VmManager(VCenter):
 
                             if mac_address and device.macAddress != mac_address:
                                 nic_spec.device.macAddress = mac_address
+
+                            # Ensure connectable attributes are updated correctly
+                            if hasattr(device, "connectable") and device.connectable:
+                                nic_spec.device.connectable.startConnected = connected_at_power_on
+                            else:
+                                nic_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+                                nic_spec.device.connectable.startConnected = connected_at_power_on
+                                nic_spec.device.connectable.allowGuestControl = True  # Allow guest OS to control connection state
+                                nic_spec.device.connectable.connected = False  # Adapter will connect on power-on
 
                             device_changes.append(nic_spec)
 
@@ -1036,6 +1058,7 @@ class VmManager(VCenter):
 
         self.logger.error(f"Failed to update VM '{vm_name}' after {max_retries} retries.")
         return False
+
 
     def update_serial_port_pipe_name(self, vm_name, serial_port_label, new_pipe_name):
         """
@@ -1194,10 +1217,21 @@ class VmManager(VCenter):
         
     def connect_networks_to_vm(self, vm_name, network_dict):
         """
-        Connects the networks in the provided network_dict to the specified VM.
+        Connects the networks in the provided network_dict to the specified VM, 
+        including setting the 'Connected at Power On' attribute.
 
         :param vm_name: The name of the VM.
-        :param network_dict: A dictionary containing the network names and corresponding MAC addresses.
+        :param network_dict: A dictionary containing network names, MAC addresses, 
+                            and 'connected_at_power_on' flag.
+                            Expected format:
+                            {
+                                "Network adapter 1": {
+                                    "network_name": "NewNetwork",
+                                    "mac_address": "00:50:56:XX:XX:XX",
+                                    "connected_at_power_on": True
+                                },
+                                ...
+                            }
         :return: True if all networks were connected successfully, False otherwise.
         """
         try:
@@ -1208,8 +1242,9 @@ class VmManager(VCenter):
 
             device_change = []
             for adapter_label, network_info in network_dict.items():
-                network_name = network_info['network_name']
-                mac_address = network_info['mac_address']
+                network_name = network_info.get('network_name')
+                mac_address = network_info.get('mac_address')
+                connected_at_power_on = network_info.get('connected_at_power_on', False)
 
                 network = self.get_obj([vim.Network], network_name)
                 if not network:
@@ -1218,18 +1253,28 @@ class VmManager(VCenter):
 
                 for device in vm.config.hardware.device:
                     if isinstance(device, vim.vm.device.VirtualEthernetCard) and device.macAddress == mac_address:
-                        if not device.connectable.connected:
+                        if not device.connectable.connected or device.connectable.startConnected != connected_at_power_on:
                             device_spec = vim.vm.device.VirtualDeviceSpec()
                             device_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
                             device_spec.device = device
-                            device_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
-                            device_spec.device.connectable.connected = True
-                            device_spec.device.connectable.startConnected = True
+
+                            # Ensure connectable attributes are properly handled
+                            if hasattr(device, "connectable") and device.connectable:
+                                device_spec.device.connectable.startConnected = connected_at_power_on
+                                device_spec.device.connectable.connected = True  # Ensure the adapter is connected
+                            else:
+                                device_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+                                device_spec.device.connectable.startConnected = connected_at_power_on
+                                device_spec.device.connectable.allowGuestControl = True
+                                device_spec.device.connectable.connected = True
+
+                            # Update network backing info
                             device_spec.device.backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
                             device_spec.device.backing.network = network
                             device_spec.device.backing.deviceName = network_name
+
                             device_change.append(device_spec)
-                        break
+                        break  # Stop searching once the correct adapter is found
 
             if device_change:
                 spec = vim.vm.ConfigSpec()
@@ -1242,12 +1287,13 @@ class VmManager(VCenter):
                     self.logger.error(f"Failed to connect networks to VM '{vm_name}'.")
                     return False
             else:
-                self.logger.debug(f"No networks required connection for VM '{vm_name}'.")
+                self.logger.debug(f"No networks required connection changes for VM '{vm_name}'.")
                 return True
 
         except Exception as e:
             self.logger.error(f"Failed to connect networks to VM '{vm_name}': {e}")
             return False
+
         
     def reconfigure_vm_resources(self, vm_name, new_cpu_count=None, new_memory_size_mb=None):
         try:
