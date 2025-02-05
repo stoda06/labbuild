@@ -1023,9 +1023,10 @@ class VmManager(VCenter):
                                 nic_spec.device.connectable.startConnected = connected_at_power_on
                             else:
                                 nic_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
-                                nic_spec.device.connectable.startConnected = connected_at_power_on
                                 nic_spec.device.connectable.allowGuestControl = True  # Allow guest OS to control connection state
                                 nic_spec.device.connectable.connected = False  # Adapter will connect on power-on
+                                nic_spec.device.connectable.startConnected = connected_at_power_on  # Explicitly set startConnected
+
 
                             device_changes.append(nic_spec)
 
