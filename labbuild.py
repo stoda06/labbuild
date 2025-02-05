@@ -346,9 +346,6 @@ def setup_environment(args):
                     pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
                     pod_config["host_fqdn"] = host_details["fqdn"]
                     pod_config["pod_number"] = pod
-                    pod_details = {"pod_number": pod, "pod_host": args.host, "poweron": "True"}
-                    data["pod_details"].append(pod_details)
-                    update_database(data)
                     deploy_futures = executor.submit(
                         checkpoint.build_cp_pod,
                         service_instance,
@@ -359,6 +356,12 @@ def setup_environment(args):
                         selected_components=selected_components
                     )
                     futures.append(deploy_futures)
+                    client = pymongo.MongoClient(MONGO_URI)
+                    prtg_url = checkpoint.add_to_prtg(pod_config, client)
+                    pod_details = {"pod_number": pod, "pod_host": args.host, "poweron": "True", "prtg_url": prtg_url}
+                    data["pod_details"].append(pod_details)
+                    update_database(data)
+                    client.close()
                 wait_for_futures(futures)
 
         if course_config["vendor_shortcode"] == "pa":
