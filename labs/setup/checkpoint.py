@@ -41,6 +41,7 @@ def update_network_dict(network_dict, pod_number):
     for adapter, details in network_dict.items():
         network_name = details['network_name']
         mac_address = details['mac_address']
+        connected_at_power_on = details['connected_at_power_on']
 
         # Update the network name if it contains "vsX" (where X is any number)
         network_name = update_network_name(network_name, pod_number)
@@ -51,7 +52,8 @@ def update_network_dict(network_dict, pod_number):
 
         updated_network_dict[adapter] = {
             'network_name': network_name,
-            'mac_address': mac_address
+            'mac_address': mac_address,
+            'connected_at_power_on': connected_at_power_on
         }
 
     return updated_network_dict
@@ -75,7 +77,6 @@ def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
 
     power_on_components(vm_manager, pod_config, thread, selected_components)
 
-    # add_to_prtg(pod_config, pod)
 
 def create_resource_pool(resource_pool_manager, pod_config):
     """Creates a resource pool for the pod."""
@@ -267,33 +268,85 @@ def teardown_pod(service_instance, pod_config):
 
 
 def add_to_prtg(pod_config, client):
+    """
+    Adds a monitoring device to PRTG based on the given pod configuration.
 
+    This function retrieves available PRTG servers from the database and selects one with 
+    available monitoring capacity. It then attempts to find or create a monitoring device 
+    for the specified pod and enables it. If successful, it returns the URL of the newly 
+    configured PRTG monitor.
+
+    Parameters:
+        pod_config (dict): Configuration dictionary containing pod details and PRTG settings.
+        client (MongoClient): Database client for accessing the PRTG server collection.
+
+    Returns:
+        str: The URL of the newly created or updated PRTG monitor.
+        None: If no device was successfully added.
+    """
+
+    # Set up logging for debugging and status tracking
     logger = setup_logger()
+    
+    # Extract the pod number from the configuration
     pod = pod_config["pod_number"]
+
+    # Connect to the database and access the 'prtg' collection
     db = client["labbuild_db"]
     collection = db["prtg"]
 
+    # Retrieve the PRTG server details for vendor 'cp'
     servers = collection.find_one({"vendor_shortcode": "cp"}) 
-    
+
+    # Iterate through available PRTG servers
     for server in servers["servers"]:
+        # Initialize the PRTGManager with the server URL and API token
         prtg_obj = PRTGManager(server["url"], server["apitoken"])
+        
+        # Skip the server if it already has 500 or more active sensors
         if prtg_obj.get_up_sensor_count() >= 500:
             continue
-        device_id = prtg_obj.search_device(pod_config["prtg_container"], pod_config["prtg_object_name"])
+        
+        # Try to find an existing device for the pod
+        device_id = prtg_obj.search_device(
+            pod_config["prtg"]["container"], f'cp-R81-vr-{pod_config["pod_number"]}'
+        )
+
         if device_id:
+            # If the device exists but is disabled, update its IP and enable it
             if not prtg_obj.get_device_status(device_id):
-                base_device_ip = prtg_obj.get_device_ip(pod_config["prtg_object"])
+                base_device_ip = prtg_obj.get_device_ip(pod_config["prtg"]["object"])
                 new_deviceip = add_to_last_octet(base_device_ip, pod)
                 prtg_obj.set_device_ip(device_id, new_deviceip)
                 prtg_obj.enable_device(device_id)
         else:
-            device_id = prtg_obj.clone_device(pod_config["prtg_object"], pod_config["prtg_container"], pod_config["prtg_object_name"])
-            base_device_ip = prtg_obj.get_device_ip(pod_config["prtg_object"])
+            # Clone a new device from a template and configure its IP address
+            device_id = prtg_obj.clone_device(
+                pod_config["prtg"]["object"], 
+                pod_config["prtg"]["container"],
+                f'cp-R81-vr-{pod_config["pod_number"]}' 
+            )
+
+            # Get the base IP of the device and modify it for the new pod
+            base_device_ip = prtg_obj.get_device_ip(pod_config["prtg"]["object"])
             new_deviceip = add_to_last_octet(base_device_ip, pod)
+            
+            # Set the new IP for the cloned device
             prtg_obj.set_device_ip(device_id, new_deviceip)
+            
+            # Enable the newly created device
             status = prtg_obj.enable_device(device_id)
+
             if status:
                 logger.info(f"Successfully enabled monitor {device_id}.")
-                break
+                
+                # Return the URL of the PRTG monitor for the newly configured device
+                return f"{server['url']}/device.htm?id={device_id}"
             else: 
                 logger.error(f"Failed to enable monitor {device_id}.")
+    
+    # Return None if no PRTG monitor was successfully added
+    return None
+
+def delete_device_prtg(pod_config, client):
+    pass
