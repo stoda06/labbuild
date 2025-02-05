@@ -12,13 +12,15 @@ def update_network_dict(network_dict, pod_number):
     for adapter, details in network_dict.items():
         network_name = details['network_name']
         mac_address = details['mac_address']
+        connected_at_power_on = details['connected_at_power_on']
 
         if 'rdp' in network_name:
             mac_address = replace_mac_octet(mac_address, pod_number)
 
         updated_network_dict[adapter] = {
             'network_name': network_name,
-            'mac_address': mac_address
+            'mac_address': mac_address,
+            'connected_at_power_on': connected_at_power_on
         }
 
     return updated_network_dict
