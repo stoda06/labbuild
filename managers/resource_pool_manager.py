@@ -1,6 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from managers.vcenter import VCenter
 from pyVmomi import vim
-import threading
 
 
 class ResourcePoolManager(VCenter):
@@ -102,14 +102,15 @@ class ResourcePoolManager(VCenter):
             return None
 
     def delete_resource_pool(self, rp_name):
-        """Deletes the specified resource pool and all its child components."""
+        """Deletes the specified resource pool and all its child components,
+        ensuring that all VMs in the resource pool and its children are deleted first."""
         try:
             rp = self.get_obj([vim.ResourcePool], rp_name)
             if rp is None:
                 self.logger.error(f"Resource pool '{rp_name}' not found.")
                 return False
 
-            # Delete child resource pools and VMs within the resource pool
+            # First, recursively delete all child resource pools.
             for child_rp in rp.resourcePool:
                 child_rp_name = child_rp.name
                 self.logger.debug(f"Deleting child resource pool '{child_rp_name}' within '{rp_name}'.")
@@ -117,7 +118,7 @@ class ResourcePoolManager(VCenter):
                     self.logger.error(f"Failed to delete child resource pool '{child_rp_name}' within '{rp_name}'.")
                     return False
 
-            # Function to delete a single VM
+            # Define a function to delete a single VM.
             def delete_vm(vm):
                 vm_name = vm.name
                 self.logger.debug(f"Deleting VM '{vm_name}' within resource pool '{rp_name}'.")
@@ -125,27 +126,30 @@ class ResourcePoolManager(VCenter):
                     task = vm.Destroy_Task()
                     self.wait_for_task(task)
                     self.logger.debug(f"VM '{vm_name}' deleted successfully.")
+                    return True
                 except Exception as e:
                     self.logger.error(f"Failed to delete VM '{vm_name}': {self.extract_error_message(e)}")
+                    return False
 
-            # List to keep track of threads
-            threads = []
+            # Delete all VMs within the current resource pool concurrently and wait for all to finish.
+            deletion_successful = True
+            if rp.vm:
+                with ThreadPoolExecutor(max_workers=len(rp.vm)) as executor:
+                    future_to_vm = {executor.submit(delete_vm, vm): vm for vm in rp.vm}
+                    for future in as_completed(future_to_vm):
+                        if not future.result():
+                            deletion_successful = False
 
-            # Start a thread for each VM deletion task
-            for vm in rp.vm:
-                thread = threading.Thread(target=delete_vm, args=(vm,))
-                threads.append(thread)
-                thread.start()
+                if not deletion_successful:
+                    self.logger.error(f"One or more VMs failed to delete in resource pool '{rp_name}'. Aborting deletion of resource pool.")
+                    return False
 
-            # Wait for all threads to complete
-            for thread in threads:
-                thread.join()
-
-            # Delete the resource pool itself
+            # Only after all VMs are confirmed deleted, delete the resource pool itself.
             task = rp.Destroy_Task()
             self.wait_for_task(task)
             self.logger.debug(f"Resource pool '{rp_name}' deleted successfully.")
             return True
+
         except Exception as e:
             self.logger.error(f"Failed to delete resource pool '{rp_name}': {self.extract_error_message(e)}")
             return False
