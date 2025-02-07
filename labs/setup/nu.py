@@ -64,3 +64,13 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
                                     description=f"Snapshot of {component['clone_name']}")
             
             vmm.poweron_vm(component["clone_name"])
+
+
+def teardown_nu_pod(service_instance, pod_config):
+    rpm = ResourcePoolManager(service_instance)
+    group_name = f'nu-pod{pod_config["pod_number"]}-{pod_config["host_fqdn"][0:2]}'
+
+    rpm.poweroff_all_vms(group_name)
+    rpm.logger.info(f'Power-off all VMs in {group_name}')
+    rpm.delete_resource_pool(group_name)
+    rpm.logger.info(f'Removed resource pool {group_name} and all its VMs.')
