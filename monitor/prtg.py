@@ -427,6 +427,8 @@ class PRTGManager:
 
             try:
                 last_octet = int(ip_parts[3])
+                if '11.1-vr' in clone_name:
+                    last_octet = 101
             except ValueError:
                 logger.error(f"Last octet of template IP '{template_ip}' is not a valid integer.")
                 continue
