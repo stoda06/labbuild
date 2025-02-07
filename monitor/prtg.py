@@ -337,19 +337,19 @@ class PRTGManager:
 
         This static method retrieves available PRTG server configurations from the database,
         selects one with available monitoring capacity, and then attempts to find or create a
-        monitoring device for the specified pod. It also sets the device's IP address (if provided)
-        and enables the device. If successful, the method returns the URL of the newly configured
-        PRTG monitor.
+        monitoring device for the specified pod. It also sets the device's IP address based on the
+        template object's IP plus the pod number, and enables the device. If successful, the method
+        returns the URL of the newly configured PRTG monitor.
 
         Args:
             pod_config (dict): Configuration dictionary containing pod details and PRTG settings.
                 Expected keys include:
                     - "pod_number": The unique identifier for the pod.
                     - "container_id": The PRTG container (group) ID where the device should reside.
-                    - "device_name": (Optional) The name to assign to the device. Defaults to "pod-{pod_number}".
-                    - "template_obj_id": The object ID of the template to clone if the device does not already exist.
-                    - "ip_address": (Optional) The IP address to set for the device.
-            client (MongoClient): A MongoDB client instance for accessing the PRTG server collection.
+                    - "prtg": A dictionary with keys:
+                        - "name": The name to assign to the device.
+                        - "object": The object ID of the template to clone if the device does not already exist.
+            db_client (MongoClient): A MongoDB client instance for accessing the PRTG server collection.
 
         Returns:
             str: The URL of the newly created or updated PRTG monitor if successful.
@@ -387,7 +387,7 @@ class PRTGManager:
                 continue
 
             # Determine the device name to use.
-            clone_name = f'cp-R81-vr-{pod_config["pod_number"]}'
+            clone_name = pod_config.get("prtg", {}).get("name")
             
             # Look for an existing device with the specified name.
             device_id = prtg_obj.search_device(container_id, clone_name)
@@ -402,12 +402,44 @@ class PRTGManager:
                     logger.error(f"Failed to clone device for {clone_name}.")
                     continue
 
-            # Set the device's IP address if it is provided in the configuration.
-            ip_address = pod_config.get("ip_address")
-            if ip_address:
-                if not prtg_obj.set_device_ip(device_id, ip_address):
-                    logger.error(f"Failed to set IP address {ip_address} for device {device_id}.")
-                    continue
+            # Instead of reading the IP from pod_config, fetch the template object's IP,
+            # add the pod number to its last octet, and set the result as the new device's IP.
+            template_obj_id = pod_config.get("prtg", {}).get("object")
+            if not template_obj_id:
+                logger.error("Template object ID not specified in pod_config.")
+                continue
+
+            template_ip = prtg_obj.get_device_ip(template_obj_id)
+            if not template_ip:
+                logger.error(f"Failed to retrieve IP from template object {template_obj_id}.")
+                continue
+
+            try:
+                pod_number = int(pod)
+            except ValueError:
+                logger.error(f"Pod number '{pod}' is not a valid integer.")
+                continue
+
+            ip_parts = template_ip.split('.')
+            if len(ip_parts) != 4:
+                logger.error(f"Template IP '{template_ip}' is not a valid IPv4 address.")
+                continue
+
+            try:
+                last_octet = int(ip_parts[3])
+            except ValueError:
+                logger.error(f"Last octet of template IP '{template_ip}' is not a valid integer.")
+                continue
+
+            new_last_octet = last_octet + pod_number - 1
+            if new_last_octet > 255:
+                logger.error(f"Resulting IP's last octet {new_last_octet} exceeds 255.")
+                continue
+
+            new_ip = '.'.join(ip_parts[:3] + [str(new_last_octet)])
+            if not prtg_obj.set_device_ip(device_id, new_ip):
+                logger.error(f"Failed to set IP address {new_ip} for device {device_id}.")
+                continue
 
             # Ensure that the device is enabled; if not, attempt to enable it.
             if not prtg_obj.get_device_status(device_id):
