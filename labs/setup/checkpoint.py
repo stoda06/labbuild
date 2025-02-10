@@ -207,7 +207,7 @@ def power_on_components(vm_manager, pod_config, thread, selected_components=None
         futures = []
         vm_manager.logger.info(f'Power on all components.')
         for component in components_to_clone:
-            if "state" in component and "poweroff" in component["state"]:
+            if component.get("state") == "poweroff":
                 continue
             poweron_future = executor.submit(vm_manager.poweron_vm, component["clone_name"])
             futures.append(poweron_future)

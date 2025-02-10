@@ -63,7 +63,8 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
                 vmm.create_snapshot(component["clone_name"], snapshot_name, 
                                     description=f"Snapshot of {component['clone_name']}")
             
-            vmm.poweron_vm(component["clone_name"])
+            if component.get("state") != "poweroff":
+                vmm.poweron_vm(component["clone_name"])
 
 
 def teardown_nu_pod(service_instance, pod_config):

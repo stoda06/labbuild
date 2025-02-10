@@ -84,7 +84,8 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
             vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
     
     for component in components_to_build:
-        vmm.poweron_vm(component["clone_name"])
+        if component.get("state") != "poweroff":
+            vmm.poweron_vm(component["clone_name"])
 
 def teardown_pr_pod(service_instance, pod_config):
 

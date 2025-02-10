@@ -101,8 +101,9 @@ def build_class(service_instance, class_config, rebuild=False, full=False, selec
                     vmm.create_snapshot(clone_name, "base", 
                                         description=f"Snapshot of {clone_name}")
                 
-                if "state" not in component and "poweroff" not in component["state"]:
-                    vmm.poweron_vm(component["clone_name"])
+                if component.get("state") != "poweroff":
+                    vmm.poweron_vm(component["clone_vm"])
+
 
 def build_pod(service_instance, pod_config, mem=None, rebuild=False, full=False, selected_components=None):
     vmm = VmManager(service_instance)
@@ -168,8 +169,10 @@ def build_pod(service_instance, pod_config, mem=None, rebuild=False, full=False,
                     vmm.create_snapshot(clone_name, snapshot_name, 
                                         description=f"Snapshot of {clone_name}")
                 
-                if "state" not in component and "poweroff" not in component["state"]:
-                    vmm.poweron_vm(component["clone_name"])
+                if component.get("state") != "poweroff":
+                    vmm.poweron_vm(component["clone_vm"])
+
+
 
 
 def teardown_class(service_instance, course_config):

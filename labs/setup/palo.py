@@ -280,7 +280,9 @@ def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, se
     
     # Step-5: Poweron VMs
     for component in components_to_build:
-        vm_manager.poweron_vm(component["clone_name"])
+        if component.get("state") != "poweroff":
+            vm_manager.poweron_vm(component["clone_name"])
+
 
 def teardown_cortex(service_instance, pod_config):
     vm_manager = VmManager(service_instance)
