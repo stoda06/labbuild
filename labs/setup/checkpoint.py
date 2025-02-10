@@ -79,7 +79,10 @@ def create_resource_pool(resource_pool_manager, pod_config):
     """Creates a resource pool for the pod."""
     try:
         parent_resource_pool = pod_config["vendor_shortcode"] + "-" + pod_config["host_fqdn"].split(".")[0]
-        pod_resource_pool =  f'{pod_config["vendor_shortcode"]}-pod{pod_config["pod_number"]}'
+        if "maestro" in pod_config["course_name"]:
+            pod_resource_pool = f'cp-maestro-pod{pod_config["pod_number"]}'
+        else:
+            pod_resource_pool =  f'{pod_config["vendor_shortcode"]}-pod{pod_config["pod_number"]}'
         user = f"labcp-{pod_config['pod_number']}"
         domain = "vcenter.rededucation.com"
         role = "labcp-0-role"
