@@ -152,10 +152,14 @@ def clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_comp
         clone_vm(vm_manager, pod_config, component, full)
         configure_vm_network(vm_manager, component, pod)
         create_vm_snapshot(vm_manager, component)
+        cd_drive_info = vm_manager.get_cd_drive(component['clone_name'])
         if "maestro" in component["component_name"]:
             drive_name = "CD/DVD drive 1"
             iso_type = "Datastore ISO file"
-            datastore_name = "keg2"
+            if "datastore" in cd_drive_info["datastore"]:
+                datastore_name = "datastore2-ho"
+            else:
+                datastore_name = "keg2"
             iso_path = f"podiso/pod-{pod}-a.iso"
             vm_manager.modify_cd_drive(component["clone_name"], drive_name, iso_type, datastore_name, iso_path, connected=True)
 
