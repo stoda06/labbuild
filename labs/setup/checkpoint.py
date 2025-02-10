@@ -156,7 +156,7 @@ def clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_comp
         if "maestro" in component["component_name"]:
             drive_name = "CD/DVD drive 1"
             iso_type = "Datastore ISO file"
-            if "datastore" in cd_drive_info["datastore"]:
+            if "datastore" in cd_drive_info['CD/DVD drive 1']['datastore']:
                 datastore_name = "datastore2-ho"
             else:
                 datastore_name = "keg2"
