@@ -55,6 +55,8 @@ def build_class(service_instance, class_config, rebuild=False, full=False, selec
         switch_name = network['switch']
         nm.create_vswitch(class_config["host_fqdn"], switch_name)
         nm.logger.info(f"Created vswitch {switch_name}.")
+        nm.create_vswitch_portgroups(class_config["host_fqdn"], network["switch"], network["port_groups"])
+        nm.logger.info(f"Created portgroups on vswitch {switch_name}.")
 
     class_pool = f'f5-class{class_config["class_number"]}'
     rpm.create_resource_pool(f'f5-{class_config["host_fqdn"][0:2]}', class_pool)
@@ -92,6 +94,7 @@ def build_class(service_instance, class_config, rebuild=False, full=False, selec
                 vm_network = vmm.get_vm_network(component["base_vm"])
                 updated_vm_network = update_network_dict(clone_name, vm_network, int(class_config["class_number"]), int(class_config["class_number"]))
                 vmm.update_vm_network(clone_name, updated_vm_network)
+                vmm.connect_networks_to_vm(clone_name, updated_vm_network)
                 vmm.logger.info(f'Updated VM {clone_name} networks.')
                 if "bigip" in component["clone_vm"]:
                     vmm.update_serial_port_pipe_name(clone_name, "Serial port 1",r"\\.\pipe\com_"+str(class_config["class_number"]))
