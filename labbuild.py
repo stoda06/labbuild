@@ -604,6 +604,34 @@ def setup_environment(args):
     if not host_details:
         logger.error("Host details could not be retrieved for host '%s'.", args.host)
         sys.exit(1)
+    
+    # --monitor-only branch: Skip build and create monitors only.
+    if str(args.monitor_only).lower() == "true":
+        logger.info("Monitor-only mode enabled. Creating monitors without building pods.")
+        data = {"tag": args.tag, "course_name": args.course, "pod_details": []}
+        vendor = course_config.get("vendor_shortcode")
+        
+        if vendor == "f5":
+            # f5 courses require a class number – make sure one is provided.
+            if not args.class_number:
+                logger.error("Class number is required for f5 courses in monitor-only mode.")
+                sys.exit(1)
+            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                # Prepare pod configuration including the f5-specific class replacement.
+                pod_config = fetch_and_prepare_course_config(args.course, pod=pod, f5_class=args.class_number)
+                pod_config["host_fqdn"] = host_details["fqdn"]
+                pod_config["class_number"] = args.class_number
+                pod_config["pod_number"] = str(pod)
+                # Create/update the monitor and database entry.
+                update_monitor_and_database(pod_config, args, data, extra_details={"class_number": args.class_number})
+        else:
+            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
+                pod_config["host_fqdn"] = host_details["fqdn"]
+                pod_config["pod_number"] = pod
+                update_monitor_and_database(pod_config, args, data)
+        logger.info("Monitor-only process complete.")
+        sys.exit(0)
 
     logger.info("Connecting to vCenter for host '%s'.", args.host)
     service_instance = get_vcenter_instance(host_details)
@@ -720,6 +748,7 @@ def main():
     setup_parser.add_argument('--full', action='store_true', help='Create full clones.')
     setup_parser.add_argument('--clonefrom', action='store_true', help='Clone from an existing pod.')
     setup_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
+    setup_parser.add_argument('--monitor-only', default="False", help='Create only monitors for the pod range.')
 
     # Manage command
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
