@@ -327,7 +327,13 @@ def update_monitor_and_database(pod_config: dict, args, data: dict, extra_detail
     :param extra_details: Optional extra details to merge into the pod record.
     """
     with mongo_client() as client:
-        prtg_url = PRTGManager.add_monitor(pod_config, client)
+        vendor_shortcode = pod_config["vendor_shortcode"]
+        if vendor_shortcode == "cp":
+            prtg_url = checkpoint.add_monitor(pod_config, client)
+        elif vendor_shortcode == "pa":
+            prtg_url = palo.add_monitor(pod_config, client)
+        else:
+            prtg_url = PRTGManager.add_monitor(pod_config, client)
         logger.debug("PRTG monitor added with URL: %s", prtg_url)
     pod_details = {
         "pod_number": pod_config.get("pod_number"),
