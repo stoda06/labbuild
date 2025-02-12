@@ -748,7 +748,7 @@ def main():
     setup_parser.add_argument('--full', action='store_true', help='Create full clones.')
     setup_parser.add_argument('--clonefrom', action='store_true', help='Clone from an existing pod.')
     setup_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
-    setup_parser.add_argument('--monitor-only', default="False", help='Create only monitors for the pod range.')
+    setup_parser.add_argument('--monitor-only', action='store_true', help='Create only monitors for the pod range.')
 
     # Manage command
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
