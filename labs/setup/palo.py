@@ -1,6 +1,8 @@
 from managers.vm_manager import VmManager
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.network_manager import NetworkManager
+from monitor.prtg import PRTGManager
+from logger.log_config import setup_logger
 
 def update_network_dict_1110(network_dict, pod_number):
     pod_hex = format(pod_number, '02x')  # Convert pod number to a two-digit hexadecimal string
@@ -323,3 +325,118 @@ def teardown_1110(service_instance, pod_config):
         solved_port_groups = solve_vlan_id(network["port_groups"])
         nm.delete_port_groups(pod_config['host_fqdn'], network["switch_name"], solved_port_groups)
         nm.logger.info(f'Deleted associated port groups from vswitch {network["switch_name"]}')
+
+
+def add_monitor(pod_config, db_client):
+    """
+    Adds a PRTG monitor for a Palo pod based on the provided configuration.
+
+    The vendor shortcode is fixed to "pa" (for Palo). The device IP is computed as follows:
+      - If the pod's course name contains "cortex":
+            * For host "hotshot": base IP = 172.26.7.200
+            * For all other hosts: base IP = 172.30.7.200
+      - Otherwise:
+            * For host "hotshot": base IP = 172.26.7.100
+            * For all other hosts: base IP = 172.30.7.100
+    In every case, (pod_number - 1) is added to the last octet.
+    
+    The function iterates over the PRTG servers (retrieved from MongoDB under vendor "pa")
+    and skips any server that already has 500 or more sensors. For the chosen server, it
+    either finds or clones a device, sets its IP address, and enables the device.
+
+    Args:
+        pod_config (dict): The pod configuration dictionary. It must include:
+            - "pod_number": The pod number.
+            - "course_name": The course name.
+            - "prtg": A dictionary with keys:
+                - "name": The device name to search/clone.
+                - "container": The PRTG container (group) ID.
+                - "object": The template device object ID.
+        db_client (MongoClient): An open MongoDB client.
+        host (str): The host name (used to determine the base IP).
+
+    Returns:
+        str: The URL of the newly created or updated PRTG monitor if successful.
+             Returns None if no suitable server is found or if an error occurs.
+    """
+    logger = setup_logger()
+    host = pod_config["host_fqdn"].split(".")[0]
+
+    # Validate and extract the pod number.
+    try:
+        pod_number = int(pod_config.get("pod_number"))
+    except (TypeError, ValueError):
+        logger.error("Invalid or missing pod number in pod_config.")
+        return None
+
+    # Determine the base IP based on the course name and host.
+    course_name = pod_config.get("course_name", "")
+    if "cortex" in course_name.lower():
+        base_ip = "172.26.7.200" if host.lower() == "hotshot" else "172.30.7.200"
+    else:
+        base_ip = "172.26.7.100" if host.lower() == "hotshot" else "172.30.7.100"
+
+    # Compute the new IP by adding (pod_number - 1) to the base IP's last octet.
+    base_ip_parts = base_ip.split('.')
+    try:
+        base_last_octet = int(base_ip_parts[3])
+    except ValueError:
+        logger.error("Invalid base IP: %s", base_ip)
+        return None
+
+    new_last_octet = base_last_octet + pod_number
+    if new_last_octet > 255:
+        logger.error("Resulting IP's last octet (%s) exceeds 255.", new_last_octet)
+        return None
+
+    new_ip = ".".join(base_ip_parts[:3] + [str(new_last_octet)])
+    logger.debug("Computed new IP for PRTG monitor: %s", new_ip)
+
+    # Retrieve PRTG server configuration for vendor "pa"
+    db = db_client["labbuild_db"]
+    collection = db["prtg"]
+    server_data = collection.find_one({"vendor_shortcode": "pa"})
+    if not server_data or "servers" not in server_data:
+        logger.error("No PRTG server configuration found for vendor 'pa'.")
+        return None
+
+    # Iterate over the available PRTG servers.
+    for server in server_data["servers"]:
+        prtg_obj = PRTGManager(server["url"], server["apitoken"])
+
+        # Skip the server if it already has 500 or more sensors.
+        if prtg_obj.get_up_sensor_count() >= 499:
+            logger.debug("Server %s has 500 or more sensors; skipping.", server["url"])
+            continue
+
+        container_id = pod_config.get("prtg", {}).get("container")
+        clone_name   = pod_config.get("prtg", {}).get("name")
+        template_obj = pod_config.get("prtg", {}).get("object")
+        if not container_id or not clone_name or not template_obj:
+            logger.error("Missing required PRTG configuration in pod_config (container, name, or object).")
+            continue
+
+        # Search for an existing device.
+        device_id = prtg_obj.search_device(container_id, clone_name)
+        if device_id:
+            # If the device exists but is not enabled, update its IP and enable it.
+            if not prtg_obj.get_device_status(device_id):
+                prtg_obj.set_device_ip(device_id, new_ip)
+                prtg_obj.enable_device(device_id)
+        else:
+            # Clone a new device from the template.
+            device_id = prtg_obj.clone_device(template_obj, container_id, clone_name)
+            if not device_id:
+                logger.error("Failed to clone device for %s.", clone_name)
+                continue
+            prtg_obj.set_device_ip(device_id, new_ip)
+            if not prtg_obj.enable_device(device_id):
+                logger.error("Failed to enable monitor %s.", device_id)
+                continue
+
+        monitor_url = f"{server['url']}/device.htm?id={device_id}"
+        logger.info("PRTG monitor added successfully: %s", monitor_url)
+        return monitor_url
+
+    logger.error("Failed to add/update monitor on any available PRTG server.")
+    return None
