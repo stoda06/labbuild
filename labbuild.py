@@ -628,7 +628,7 @@ def setup_environment(args):
     if args.component != "?":
         logger.info("Fetching course configuration for setup.")
     course_config = fetch_and_prepare_course_config(args.course)
-    
+
     # If --component is "?" list available components for the provided course.
     if args.component == "?":
         comps = extract_components(course_config)
@@ -824,8 +824,10 @@ def main():
         print("Error: --vendor is required.")
         sys.exit(1)
 
-    # Check that if vendor is f5 or the course name contains "f5", then --class_number is required.
-    if (args.vendor.lower() == "f5" or (args.course and "f5" in args.course.lower())) and not args.class_number:
+    # Check that if vendor is "f5" or the course name contains "f5",
+    # then --class_number is required unless the course or component is in lookup mode ("?").
+    if (args.vendor.lower() == "f5" or (args.course and "f5" in args.course.lower())) \
+       and args.course != "?" and args.component != "?" and not args.class_number:
         print("Error: --class_number is required when vendor is 'f5' or the course name contains 'f5'.")
         sys.exit(1)
 
