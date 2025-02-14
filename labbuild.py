@@ -577,6 +577,39 @@ def vendor_teardown(service_instance, host_details, args, course_config):
 
 
 # -----------------------------------------------------------------------------
+# Helper to list courses for a given vendor
+# -----------------------------------------------------------------------------
+def list_vendor_courses(vendor: str):
+    """
+    List available courses for the given vendor by querying the "courseconfig" collection
+    from the "labbuild_db" MongoDB database.
+
+    Each document in the collection is expected to have a "vendor_shortcode" field and a "course_name" field.
+    If a document's vendor_shortcode matches the provided vendor (case insensitive), its course_name is returned.
+
+    If matching courses are found, they are printed; otherwise, an appropriate message is printed.
+    """
+    try:
+        with mongo_client() as client:
+            db = client["labbuild_db"]
+            collection = db["courseconfig"]
+            # Query for documents where vendor_shortcode matches vendor (case-insensitive)
+            courses_cursor = collection.find({"vendor_shortcode": vendor.lower()})
+            courses = [doc["course_name"] for doc in courses_cursor if "course_name" in doc]
+            
+            if courses:
+                print(f"Available courses for vendor '{vendor}':")
+                for course in courses:
+                    print(f"  - {course}")
+            else:
+                print(f"No courses found for vendor '{vendor}'.")
+    except Exception as e:
+        print(f"Error accessing course configurations: {e}")
+    
+    sys.exit(0)
+
+
+# -----------------------------------------------------------------------------
 # Environment Operations: Setup, Teardown, and Manage
 # -----------------------------------------------------------------------------
 def setup_environment(args):
@@ -588,8 +621,15 @@ def setup_environment(args):
     
     :param args: Parsed command-line arguments.
     """
-    logger.info("Fetching course configuration for setup.")
+    # If --course is "?" list available courses and exit.
+    if args.course == "?":
+        list_vendor_courses(args.vendor)
+
+    if args.component != "?":
+        logger.info("Fetching course configuration for setup.")
     course_config = fetch_and_prepare_course_config(args.course)
+    
+    # If --component is "?" list available components for the provided course.
     if args.component == "?":
         comps = extract_components(course_config)
         print(f"Available components for course '{args.course}':")
@@ -618,17 +658,14 @@ def setup_environment(args):
         vendor = course_config.get("vendor_shortcode")
         
         if vendor == "f5":
-            # f5 courses require a class number – make sure one is provided.
             if not args.class_number:
                 logger.error("Class number is required for f5 courses in monitor-only mode.")
                 sys.exit(1)
             for pod in range(int(args.start_pod), int(args.end_pod) + 1):
-                # Prepare pod configuration including the f5-specific class replacement.
                 pod_config = fetch_and_prepare_course_config(args.course, pod=pod, f5_class=args.class_number)
                 pod_config["host_fqdn"] = host_details["fqdn"]
                 pod_config["class_number"] = args.class_number
                 pod_config["pod_number"] = str(pod)
-                # Create/update the monitor and database entry.
                 update_monitor_and_database(pod_config, args, data, extra_details={"class_number": args.class_number})
         else:
             for pod in range(int(args.start_pod), int(args.end_pod) + 1):
@@ -641,7 +678,6 @@ def setup_environment(args):
 
     logger.info("Connecting to vCenter for host '%s'.", args.host)
     service_instance = get_vcenter_instance(host_details)
-
     data = {"tag": args.tag, "course_name": args.course, "pod_details": []}
     vendor_setup(service_instance, host_details, args, course_config, selected_components, data)
 
@@ -663,7 +699,6 @@ def teardown_environment(args):
 
     logger.info("Connecting to vCenter for teardown.")
     service_instance = get_vcenter_instance(host_details)
-
     course_config = fetch_and_prepare_course_config(args.course)
     vendor_teardown(service_instance, host_details, args, course_config)
     logger.info("Teardown process complete.")
@@ -717,7 +752,6 @@ def manage_environment(args):
             )
             future.pod_number = pod  # Attach pod number to the future
             futures.append(future)
-            # Immediately update the database for VM operations
             power_status = "True" if args.operation == "start" else "False"
             pod_details = {"pod_number": pod, "pod_host": args.host, "poweron": power_status}
             data["pod_details"].append(pod_details)
@@ -739,16 +773,18 @@ def main():
 
     # Setup command
     setup_parser = subparsers.add_parser('setup', help='Set up the lab environment')
-    setup_parser.add_argument('--course', required=True, help='Course configuration name.')
-    setup_parser.add_argument('-cn', '--class_number', help='Required if course contains "f5".')
-    setup_parser.add_argument('-s', '--start-pod', required=True, help='Starting pod number.')
-    setup_parser.add_argument('-e', '--end-pod', required=True, help='Ending pod number.')
+    # New vendor argument
+    setup_parser.add_argument('-v', '--vendor', help='Vendor code (e.g., pa, cp, f5, etc.)')
+    setup_parser.add_argument('--course', help='Course configuration name.')
+    setup_parser.add_argument('-cn', '--class_number', help='Required if vendor is f5 or course contains "f5".')
+    setup_parser.add_argument('-s', '--start-pod', help='Starting pod number.')
+    setup_parser.add_argument('-e', '--end-pod', help='Ending pod number.')
     setup_parser.add_argument('-c', '--component', help='Comma-separated components or "?" for a list.')
-    setup_parser.add_argument('--host', required=True, help='Host name for pod creation.')
+    setup_parser.add_argument('--host', help='Host name for pod creation.')
     setup_parser.add_argument('-ds', '--datastore', default="vms", help='Folder for pod storage.')
     setup_parser.add_argument('-th', '--thread', type=int, default=4, help='Number of cloning threads.')
     setup_parser.add_argument('-r', '--re-build', action='store_true', help='Rebuild existing resources.')
-    setup_parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output.')
+    setup_parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
     setup_parser.add_argument('-q', '--quiet', action='store_true', help='Suppress output except warnings/errors.')
     setup_parser.add_argument('-mem', '--memory', type=int, default=None, help='Memory for F5 bigip component.')
     setup_parser.add_argument('--full', action='store_true', help='Create full clones.')
@@ -758,33 +794,74 @@ def main():
 
     # Manage command
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
+    manage_parser.add_argument('-v', '--vendor', help='Vendor code (e.g., pa, cp, f5, etc.)')
     manage_parser.add_argument('-cn', '--class_number', help='Class number for f5 courses.')
-    manage_parser.add_argument('--course', required=True, help='Course configuration name.')
+    manage_parser.add_argument('--course', help='Course configuration name.')
     manage_parser.add_argument('-c', '--component', help='Comma-separated components or "?" for a list.')
-    manage_parser.add_argument('-s', '--start-pod', required=True, help='Starting pod number.')
-    manage_parser.add_argument('-e', '--end-pod', required=True, help='Ending pod number.')
-    manage_parser.add_argument('--host', required=True, help='Host name where pods reside.')
+    manage_parser.add_argument('-s', '--start-pod', help='Starting pod number.')
+    manage_parser.add_argument('-e', '--end-pod', help='Ending pod number.')
+    manage_parser.add_argument('--host', help='Host name where pods reside.')
     manage_parser.add_argument('-o', '--operation', choices=['start', 'stop', 'reboot'], required=True,
                                help='VM operation to perform.')
     manage_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
-    manage_parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output.')
+    manage_parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
 
     # Teardown command
     teardown_parser = subparsers.add_parser('teardown', help='Tear down the lab environment.')
-    teardown_parser.add_argument('--course', required=True, help='Course configuration name.')
-    teardown_parser.add_argument('-cn', '--class_number', help='Required if course contains "f5".')
-    teardown_parser.add_argument('-s', '--start-pod', required=True, help='Starting pod number.')
-    teardown_parser.add_argument('-e', '--end-pod', required=True, help='Ending pod number.')
-    teardown_parser.add_argument('--host', required=True, help='Host name where pods reside.')
+    teardown_parser.add_argument('-v', '--vendor', help='Vendor code (e.g., pa, cp, f5, etc.)')
+    teardown_parser.add_argument('--course', help='Course configuration name.')
+    teardown_parser.add_argument('-cn', '--class_number', help='Required if vendor is f5 or course contains "f5".')
+    teardown_parser.add_argument('-s', '--start-pod', help='Starting pod number.')
+    teardown_parser.add_argument('-e', '--end-pod', help='Ending pod number.')
+    teardown_parser.add_argument('--host', help='Host name where pods reside.')
     teardown_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
-    teardown_parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output.')
+    teardown_parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
 
     args = parser.parse_args()
 
-    # F5 courses require a class number.
-    if 'f5' in args.course.lower() and not args.class_number:
-        print("Error: --class_number is required when the course contains 'f5'.")
+    # Ensure vendor is provided.
+    if not args.vendor:
+        print("Error: --vendor is required.")
         sys.exit(1)
+
+    # Check that if vendor is f5 or the course name contains "f5", then --class_number is required.
+    if (args.vendor.lower() == "f5" or (args.course and "f5" in args.course.lower())) and not args.class_number:
+        print("Error: --class_number is required when vendor is 'f5' or the course name contains 'f5'.")
+        sys.exit(1)
+
+    # When listing components, ensure a valid course (not "?") is provided.
+    if args.component == "?" and (not args.course or args.course == "?"):
+        print("Error: When listing components, a valid --course value must be provided (cannot be '?').")
+        sys.exit(1)
+
+    # For commands where we're not just listing courses or components,
+    # if the course is not "?" and not listing components (i.e. --component != "?"),
+    # then validate that host, start-pod, and end-pod are provided.
+    if args.command in ['setup', 'manage', 'teardown']:
+        if args.course != "?" and not (args.command == 'setup' and args.component == "?"):
+            missing = []
+            if not args.host:
+                missing.append("--host")
+            if not args.start_pod:
+                missing.append("--start-pod")
+            if not args.end_pod:
+                missing.append("--end-pod")
+            if missing:
+                print("Error: The following arguments are required for the '{}' command: {}".format(
+                    args.command, ", ".join(missing)
+                ))
+                sys.exit(1)
+
+            # Check that start-pod is not greater than end-pod.
+            try:
+                start_pod = int(args.start_pod)
+                end_pod = int(args.end_pod)
+                if start_pod > end_pod:
+                    print("Error: --start-pod value must be less than or equal to --end-pod value.")
+                    sys.exit(1)
+            except ValueError:
+                print("Error: Pod numbers must be integers.")
+                sys.exit(1)
 
     # Set logging level.
     if args.verbose:
@@ -793,11 +870,15 @@ def main():
     else:
         logger.setLevel(logging.INFO)
 
-    if args.command == 'setup':
+    # Only log the initiating message when all required build arguments are provided.
+    if args.command == 'setup' and args.course != "?" and args.component != "?":
         logger.info("Initiating setup for course '%s' on host '%s' (pods %s-%s); Rebuild=%s",
                     args.course, args.host, args.start_pod, args.end_pod, args.re_build)
         setup_environment(args)
         logger.info("Setup complete for course '%s'.", args.course)
+    elif args.command == 'setup':
+        # When listing courses/components, just call setup_environment() without the build logs.
+        setup_environment(args)
     elif args.command == 'manage':
         logger.info("Initiating management operations for course '%s' on host '%s'.", args.course, args.host)
         manage_environment(args)
