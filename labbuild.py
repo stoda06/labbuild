@@ -832,7 +832,7 @@ def main():
         sys.exit(1)
 
     # When listing components, ensure a valid course (not "?") is provided.
-    if args.component == "?" and (not args.course or args.course == "?"):
+    if getattr(args, "component", None) == "?" and (not args.course or args.course == "?"):
         print("Error: When listing components, a valid --course value must be provided (cannot be '?').")
         sys.exit(1)
 
