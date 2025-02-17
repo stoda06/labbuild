@@ -329,6 +329,35 @@ class PRTGManager:
             return True
         except requests.exceptions.RequestException as e:
             return False
+    
+    def get_template_sensor_count(self, template_obj_id):
+        """
+        Retrieves the sensor count for the specified template device.
+
+        This method queries the PRTG API to count all sensors associated with the template device,
+        identified by its object ID.
+
+        Args:
+            template_obj_id (str): The object ID of the template device.
+
+        Returns:
+            int: The number of sensors for the template device. Returns 0 if the count cannot be retrieved.
+        """
+        sensor_url = f"{self.prtg_url}/api/table.json"
+        sensor_params = {
+            'content': 'sensors',
+            'output': 'json',
+            'count': 'true',
+            'id': template_obj_id,
+            'apitoken': self.api_token  # Added API token for authentication.
+        }
+        try:
+            response = self.session.get(sensor_url, params=sensor_params, verify=False, timeout=60)
+            response.raise_for_status()
+            return response.json().get('treesize', 0)
+        except Exception as e:
+            # Optionally, log the error here using your logger.
+            return 0
 
     @staticmethod
     def add_monitor(pod_config, db_client):
