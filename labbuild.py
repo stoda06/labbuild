@@ -775,7 +775,7 @@ def main():
     setup_parser = subparsers.add_parser('setup', help='Set up the lab environment')
     # New vendor argument
     setup_parser.add_argument('-v', '--vendor', help='Vendor code (e.g., pa, cp, f5, etc.)')
-    setup_parser.add_argument('--course', help='Course configuration name.')
+    setup_parser.add_argument('-g', '--course', help='Course configuration name.')
     setup_parser.add_argument('-cn', '--class_number', help='Required if vendor is f5 or course contains "f5".')
     setup_parser.add_argument('-s', '--start-pod', help='Starting pod number.')
     setup_parser.add_argument('-e', '--end-pod', help='Ending pod number.')
@@ -796,7 +796,7 @@ def main():
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
     manage_parser.add_argument('-v', '--vendor', help='Vendor code (e.g., pa, cp, f5, etc.)')
     manage_parser.add_argument('-cn', '--class_number', help='Class number for f5 courses.')
-    manage_parser.add_argument('--course', help='Course configuration name.')
+    manage_parser.add_argument('-g', '--course', help='Course configuration name.')
     manage_parser.add_argument('-c', '--component', help='Comma-separated components or "?" for a list.')
     manage_parser.add_argument('-s', '--start-pod', help='Starting pod number.')
     manage_parser.add_argument('-e', '--end-pod', help='Ending pod number.')
@@ -809,7 +809,7 @@ def main():
     # Teardown command
     teardown_parser = subparsers.add_parser('teardown', help='Tear down the lab environment.')
     teardown_parser.add_argument('-v', '--vendor', help='Vendor code (e.g., pa, cp, f5, etc.)')
-    teardown_parser.add_argument('--course', help='Course configuration name.')
+    teardown_parser.add_argument('-g', '--course', help='Course configuration name.')
     teardown_parser.add_argument('-cn', '--class_number', help='Required if vendor is f5 or course contains "f5".')
     teardown_parser.add_argument('-s', '--start-pod', help='Starting pod number.')
     teardown_parser.add_argument('-e', '--end-pod', help='Ending pod number.')
