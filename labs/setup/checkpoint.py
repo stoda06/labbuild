@@ -278,8 +278,9 @@ def add_monitor(pod_config, db_client):
     Adds a PRTG monitor for the given pod configuration.
 
     The function uses the vendor shortcode "cp" to retrieve the PRTG server
-    configuration from the database. For each server, it skips servers that have
-    500 or more sensors. The device IP is computed as follows:
+    configuration from the database. For each server, it skips servers where the sum
+    of the current up sensor count and the sensor count from the template object is
+    greater than or equal to 499. The device IP is computed as follows:
       - If the course_name (from pod_config) contains "maestro":
             * For host "hotshot": base IP = 172.26.4.200
             * For all other hosts: base IP = 172.30.4.200
@@ -302,7 +303,6 @@ def add_monitor(pod_config, db_client):
                 - "container": The PRTG container (group) ID.
                 - "object": The template device object ID.
         db_client (MongoClient): An open MongoDB client.
-        host (str): The host name used to determine the base IP.
 
     Returns:
         str: The URL of the newly created or updated PRTG monitor if successful.
@@ -352,14 +352,22 @@ def add_monitor(pod_config, db_client):
     # Iterate over the available PRTG servers.
     for server in server_data["servers"]:
         prtg_obj = PRTGManager(server["url"], server["apitoken"])
-        # Skip server if it already has 500 or more sensors.
-        if prtg_obj.get_up_sensor_count() >= 499:
-            logger.debug("Server %s has 500 or more sensors; skipping.", server["url"])
+        
+        # Retrieve the current up sensor count from the server.
+        current_sensor_count = prtg_obj.get_up_sensor_count()
+
+        # Retrieve the sensor count for the template device.
+        template_obj_id = pod_config.get("prtg", {}).get("object")
+        template_sensor_count = prtg_obj.get_template_sensor_count(template_obj_id)
+
+        # Check if adding the template sensor count would exceed the threshold.
+        if (current_sensor_count + template_sensor_count) >= 499:
+            logger.info("Server %s would exceed sensor limits (current: %s, template: %s); skipping.",
+                         server["url"], current_sensor_count, template_sensor_count)
             continue
 
         container_id = pod_config.get("prtg", {}).get("container")
         clone_name = pod_config.get("prtg", {}).get("name")
-        template_obj_id = pod_config.get("prtg", {}).get("object")
         if not container_id or not clone_name or not template_obj_id:
             logger.error("Missing required PRTG configuration in pod_config (container, name, or object).")
             continue
