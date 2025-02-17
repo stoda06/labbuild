@@ -696,10 +696,30 @@ def teardown_environment(args):
     if not host_details:
         logger.error("Host details could not be retrieved for host '%s'.", args.host)
         sys.exit(1)
+    
+    # Fetch the course configuration regardless of teardown type.
+    course_config = fetch_and_prepare_course_config(args.course)
+
+    # If monitor-only, only delete monitors and update the database.
+    if getattr(args, "monitor_only", False):
+        logger.info("Monitor-only mode enabled for teardown. Deleting only monitors...")
+        with mongo_client() as client:
+            if course_config.get("vendor_shortcode") == "f5":
+                class_config = fetch_and_prepare_course_config(args.course, f5_class=args.class_number)
+                prtg_url = get_prtg_url(args.tag, class_config["course_name"], None)
+                PRTGManager.delete_monitor(prtg_url, client)
+                delete_from_database(args.tag, course_name=class_config["course_name"], class_number=args.class_number)
+            else:
+                for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                    pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
+                    prtg_url = get_prtg_url(args.tag, pod_config["course_name"], pod)
+                    PRTGManager.delete_monitor(prtg_url, client)
+                    delete_from_database(args.tag, course_name=pod_config["course_name"], pod_number=pod)
+        logger.info("Monitor-only teardown complete.")
+        return
 
     logger.info("Connecting to vCenter for teardown.")
     service_instance = get_vcenter_instance(host_details)
-    course_config = fetch_and_prepare_course_config(args.course)
     vendor_teardown(service_instance, host_details, args, course_config)
     logger.info("Teardown process complete.")
 
@@ -816,6 +836,7 @@ def main():
     teardown_parser.add_argument('--host', help='Host name where pods reside.')
     teardown_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
     teardown_parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
+    teardown_parser.add_argument('--monitor-only', action='store_true', help='Delete only monitors without tearing down VMs.')
 
     args = parser.parse_args()
 
