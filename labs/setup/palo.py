@@ -329,31 +329,34 @@ def teardown_1110(service_instance, pod_config):
 
 def add_monitor(pod_config, db_client):
     """
-    Adds a PRTG monitor for a Palo pod based on the provided configuration.
+    Adds a PRTG monitor for the given pod configuration.
 
-    The vendor shortcode is fixed to "pa" (for Palo). The device IP is computed as follows:
-      - If the pod's course name contains "cortex":
+    The function uses the vendor shortcode "pa" to retrieve the PRTG server
+    configuration from the database. For each server, it skips servers where the sum
+    of the current up sensor count and the sensor count from the template object is
+    greater than or equal to 499. The device IP is computed as follows:
+      - If the course_name (from pod_config) contains "cortex":
             * For host "hotshot": base IP = 172.26.7.200
             * For all other hosts: base IP = 172.30.7.200
       - Otherwise:
             * For host "hotshot": base IP = 172.26.7.100
             * For all other hosts: base IP = 172.30.7.100
-    In every case, (pod_number - 1) is added to the last octet.
-    
-    The function iterates over the PRTG servers (retrieved from MongoDB under vendor "pa")
-    and skips any server that already has 500 or more sensors. For the chosen server, it
-    either finds or clones a device, sets its IP address, and enables the device.
+    In all cases, (pod_number - 1) is added to the base IP’s last octet.
+
+    The function then looks for an existing device with the specified name (from
+    pod_config["prtg"]["name"]). If it exists but is not enabled, it updates its IP
+    and enables it. If no device exists, it clones one using the template device
+    (pod_config["prtg"]["object"]), sets its IP, and enables it.
 
     Args:
-        pod_config (dict): The pod configuration dictionary. It must include:
+        pod_config (dict): Pod configuration containing keys:
             - "pod_number": The pod number.
             - "course_name": The course name.
-            - "prtg": A dictionary with keys:
-                - "name": The device name to search/clone.
+            - "prtg": A dictionary with at least:
+                - "name": The name to use for the PRTG monitor.
                 - "container": The PRTG container (group) ID.
                 - "object": The template device object ID.
         db_client (MongoClient): An open MongoDB client.
-        host (str): The host name (used to determine the base IP).
 
     Returns:
         str: The URL of the newly created or updated PRTG monitor if successful.
@@ -369,7 +372,7 @@ def add_monitor(pod_config, db_client):
         logger.error("Invalid or missing pod number in pod_config.")
         return None
 
-    # Determine the base IP based on the course name and host.
+    # Determine the base IP depending on course and host.
     course_name = pod_config.get("course_name", "")
     if "cortex" in course_name.lower():
         base_ip = "172.26.7.200" if host.lower() == "hotshot" else "172.30.7.200"
@@ -392,7 +395,7 @@ def add_monitor(pod_config, db_client):
     new_ip = ".".join(base_ip_parts[:3] + [str(new_last_octet)])
     logger.debug("Computed new IP for PRTG monitor: %s", new_ip)
 
-    # Retrieve PRTG server configuration for vendor "pa"
+    # Retrieve PRTG server configuration for vendor "cp"
     db = db_client["labbuild_db"]
     collection = db["prtg"]
     server_data = collection.find_one({"vendor_shortcode": "pa"})
@@ -403,16 +406,23 @@ def add_monitor(pod_config, db_client):
     # Iterate over the available PRTG servers.
     for server in server_data["servers"]:
         prtg_obj = PRTGManager(server["url"], server["apitoken"])
+        
+        # Retrieve the current up sensor count from the server.
+        current_sensor_count = prtg_obj.get_up_sensor_count()
 
-        # Skip the server if it already has 500 or more sensors.
-        if prtg_obj.get_up_sensor_count() >= 499:
-            logger.debug("Server %s has 500 or more sensors; skipping.", server["url"])
+        # Retrieve the sensor count for the template device.
+        template_obj_id = pod_config.get("prtg", {}).get("object")
+        template_sensor_count = prtg_obj.get_template_sensor_count(template_obj_id)
+
+        # Check if adding the template sensor count would exceed the threshold.
+        if (current_sensor_count + template_sensor_count) >= 499:
+            logger.info("Server %s would exceed sensor limits (current: %s, template: %s); skipping.",
+                         server["url"], current_sensor_count, template_sensor_count)
             continue
 
         container_id = pod_config.get("prtg", {}).get("container")
-        clone_name   = pod_config.get("prtg", {}).get("name")
-        template_obj = pod_config.get("prtg", {}).get("object")
-        if not container_id or not clone_name or not template_obj:
+        clone_name = pod_config.get("prtg", {}).get("name")
+        if not container_id or not clone_name or not template_obj_id:
             logger.error("Missing required PRTG configuration in pod_config (container, name, or object).")
             continue
 
@@ -425,7 +435,7 @@ def add_monitor(pod_config, db_client):
                 prtg_obj.enable_device(device_id)
         else:
             # Clone a new device from the template.
-            device_id = prtg_obj.clone_device(template_obj, container_id, clone_name)
+            device_id = prtg_obj.clone_device(template_obj_id, container_id, clone_name)
             if not device_id:
                 logger.error("Failed to clone device for %s.", clone_name)
                 continue
