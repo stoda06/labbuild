@@ -31,7 +31,6 @@ import labs.setup.pr as pr
 import labs.setup.nu as nu
 
 from logger.log_config import setup_logger
-from logger.log_config import print_error_summary as print_error_summary
 from managers.vcenter import VCenter
 from monitor.prtg import PRTGManager
 
@@ -330,7 +329,11 @@ def update_monitor_and_database(pod_config: dict, args, data: dict, extra_detail
     with mongo_client() as client:
         vendor_shortcode = pod_config["vendor_shortcode"]
         if vendor_shortcode == "cp":
-            prtg_url = checkpoint.add_monitor(pod_config, client)
+            prtg_url = checkpoint.add_monitor(
+                pod_config,
+                client,
+                prtg_server=getattr(args, 'prtg_server', None)
+            )
         elif vendor_shortcode == "pa":
             prtg_url = palo.add_monitor(pod_config, client)
         else:
@@ -812,6 +815,7 @@ def main():
     setup_parser.add_argument('--clonefrom', action='store_true', help='Clone from an existing pod.')
     setup_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
     setup_parser.add_argument('--monitor-only', action='store_true', help='Create only monitors for the pod range.')
+    setup_parser.add_argument('--prtg-server', help='Specify the PRTG server name to use for monitor creation')
 
     # Manage command
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
@@ -838,6 +842,7 @@ def main():
     teardown_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
     teardown_parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
     teardown_parser.add_argument('--monitor-only', action='store_true', help='Delete only monitors without tearing down VMs.')
+    teardown_parser.add_argument('--prtg-server', help='Specify the PRTG server name to use for monitor deletion')
 
     args = parser.parse_args()
 
@@ -911,7 +916,7 @@ def main():
         teardown_environment(args)
     else:
         parser.print_help()
-    print_error_summary()
+
 
 if __name__ == "__main__":
     start_time = time.perf_counter()

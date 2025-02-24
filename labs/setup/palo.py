@@ -17,7 +17,8 @@ def update_network_dict_1110(network_dict, pod_number):
             details['network_name'] = details['network_name'].replace('pa-', 'pan-')
             if 'pan-internal-1' in details['network_name']:
                 details['network_name'] = details['network_name'].replace('1', str(pod_number))
-            details['network_name'] = details['network_name'].replace('0', str(pod_number))
+            else:
+                details['network_name'] = details['network_name'].replace('0', str(pod_number))
 
     return network_dict
 
@@ -36,7 +37,7 @@ def update_network_dict_1100(network_dict, pod_number):
     return network_dict
 
 def update_network_dict_cortex(network_dict, pod_number):
-    pod_hex = format(100+pod_number, '02x')  # Convert pod number to hex with at least two digits
+    pod_hex = format(pod_number, '02x')  # Convert pod number to hex with at least two digits
 
     for adapter, details in network_dict.items():
         if 'pa-rdp' in details['network_name']:
@@ -373,11 +374,7 @@ def add_monitor(pod_config, db_client):
         return None
 
     # Determine the base IP depending on course and host.
-    course_name = pod_config.get("course_name", "")
-    if "cortex" in course_name.lower():
-        base_ip = "172.26.7.200" if host.lower() == "hotshot" else "172.30.7.200"
-    else:
-        base_ip = "172.26.7.100" if host.lower() == "hotshot" else "172.30.7.100"
+    base_ip = "172.26.7.100" if host.lower() == "hotshot" else "172.30.7.100"
 
     # Compute the new IP by adding (pod_number - 1) to the base IP's last octet.
     base_ip_parts = base_ip.split('.')
