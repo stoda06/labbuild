@@ -31,6 +31,7 @@ import labs.setup.pr as pr
 import labs.setup.nu as nu
 
 from logger.log_config import setup_logger
+from logger.log_config import print_error_summary as print_error_summary
 from managers.vcenter import VCenter
 from monitor.prtg import PRTGManager
 
@@ -916,7 +917,7 @@ def main():
         teardown_environment(args)
     else:
         parser.print_help()
-
+    print_error_summary()
 
 if __name__ == "__main__":
     start_time = time.perf_counter()
