@@ -221,24 +221,47 @@ class PRTGManager:
 
     def get_up_sensor_count(self):
         """
-        Retrieves the count of sensors that are currently reporting as "Up".
+        Retrieves the count of sensors that are not paused.
 
-        This method queries the PRTG API to count sensors that have a status indicating they are operational.
+        This method first queries the PRTG API to get the total sensor count, then 
+        queries to get the count of paused sensors. The difference between these two 
+        values represents the number of sensors that are not paused.
 
         Returns:
-            int: The number of sensors with a status of "Up".
+            int: The number of sensors that are not paused.
         """
         sensors_url = f"{self.prtg_url}/api/table.json"
-        sensors_params = {
+        
+        # Get the total sensor count.
+        total_params = {
             'content': 'sensors',
             'output': 'json',
             'count': 'true',
-            'filter_status': '3',  # Status 3 corresponds to "Up".
             'apitoken': self.api_token
         }
-        response = self.session.get(sensors_url, params=sensors_params, verify=False, timeout=60)
-        response.raise_for_status()
-        return response.json().get('treesize', 0)
+        total_response = self.session.get(sensors_url, params=total_params, verify=False, timeout=60)
+        total_response.raise_for_status()
+        total_count = total_response.json().get('treesize', 0)
+        
+        # Get the count of paused sensors.
+        paused_params = [
+            ('content', 'sensors'),
+            ('output', 'json'),
+            ('count', 'true'),
+            ('apitoken', self.api_token),
+            ('filter_status', '7'),
+            ('filter_status', '9'),
+            ('filter_status', '8'),
+            ('filter_status', '12'),
+            ('filter_status', '11')
+        ]
+        paused_response = self.session.get(sensors_url, params=paused_params, verify=False, timeout=60)
+        paused_response.raise_for_status()
+        paused_count = paused_response.json().get('treesize', 0)
+        
+        # Return the count of sensors that are not paused.
+        return total_count - paused_count
+
     
     def get_device_ip(self, device_id):
         """
