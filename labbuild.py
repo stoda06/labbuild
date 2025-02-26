@@ -564,8 +564,7 @@ def vendor_teardown(service_instance, host_details, args, course_config):
                 elif vendor == "prtg":
                     teardown_func = pr.teardown_pr_pod
                 elif vendor == "nu":
-                    teardown_func = nu.teardown_nu_pod
-                    continue
+                    teardown_func = nu.teardown_nu_pod   
                 else:
                     logger.error("Unsupported vendor for teardown: %s", vendor)
                     continue
