@@ -271,6 +271,51 @@ def teardown_pod(service_instance, pod_config):
     for network in pod_config['networks']:
         network_manager.delete_vswitch(pod_config["host_fqdn"], network['switch_name'])
     resource_pool_manager.delete_resource_pool(group_name)
+    
+
+def perm_only_cp_pod(service_instance, pod_config):
+    """
+    For a given pod configuration, only apply permission functions:
+      1. Assign user to folder.
+      2. Assign role to resource pool.
+      3. Apply user role to networks.
+    """
+    from managers.folder_manager import FolderManager
+    from managers.resource_pool_manager import ResourcePoolManager
+    from managers.network_manager import NetworkManager
+
+    folder_manager = FolderManager(service_instance)
+    resource_pool_manager = ResourcePoolManager(service_instance)
+    network_manager = NetworkManager(service_instance)
+
+    # Define user, domain, and role.
+    user = f"labcp-{pod_config['pod_number']}"
+    domain = "vcenter.rededucation.com"
+    role = "labcp-0-role"
+
+    # Determine folder name and resource pool name based on course name.
+    if "maestro" in pod_config["course_name"]:
+        folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
+        pod_resource_pool = f'cp-maestro-pod{pod_config["pod_number"]}'
+    else:
+        folder_name = f'cp-pod{pod_config["pod_number"]}-folder'
+        pod_resource_pool = f'cp-pod{pod_config["pod_number"]}'
+
+    # Gather network names from pod_config.
+    network_names = []
+    for network in pod_config.get('networks', []):
+        network_names.extend([pg["port_group_name"] for pg in network.get("port_groups", [])])
+
+    # Call the permission functions.
+    folder_manager.logger.info("Assigning user to folder '%s'.", folder_name)
+    folder_manager.assign_user_to_folder(folder_name, f'{domain}\\{user}', role)
+
+    resource_pool_manager.logger.info("Assigning role to resource pool '%s'.", pod_resource_pool)
+    resource_pool_manager.assign_role_to_resource_pool(pod_resource_pool, f'{domain}\\{user}', role)
+
+    network_manager.logger.info("Applying user role to networks: %s.", network_names)
+    network_manager.apply_user_role_to_networks(f'{domain}\\{user}', role, network_names)
+
 
 
 def add_monitor(pod_config, db_client, prtg_server=None):

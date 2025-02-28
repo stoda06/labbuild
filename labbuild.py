@@ -654,6 +654,21 @@ def setup_environment(args):
         logger.error("Host details could not be retrieved for host '%s'.", args.host)
         sys.exit(1)
     
+    # Check for the --perm flag: if present, run only the permission functions.
+    if getattr(args, "perm", False):
+        logger.info("Permission-only mode enabled. Running permission functions only.")
+        service_instance = get_vcenter_instance(host_details)
+        # Import the permission-only function from checkpoint.py
+        from labs.setup import checkpoint
+        for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+            pod_config = fetch_and_prepare_course_config(args.course, pod=pod)
+            pod_config["host_fqdn"] = host_details["fqdn"]
+            pod_config["pod_number"] = pod
+            logger.info("Running permission functions for pod %s.", pod)
+            checkpoint.perm_only_cp_pod(service_instance, pod_config)
+        logger.info("Permission-only process complete.")
+        sys.exit(0)
+    
     # --monitor-only branch: Skip build and create monitors only.
     if str(args.monitor_only).lower() == "true":
         logger.info("Monitor-only mode enabled. Creating monitors without building pods.")
@@ -815,6 +830,8 @@ def main():
     setup_parser.add_argument('-t', '--tag', default="untagged", help='Tag for the pod range.')
     setup_parser.add_argument('--monitor-only', action='store_true', help='Create only monitors for the pod range.')
     setup_parser.add_argument('--prtg-server', help='Specify the PRTG server name to use for monitor creation')
+    setup_parser.add_argument('--perm', action='store_true', help='Only run permission functions.')
+
 
     # Manage command
     manage_parser = subparsers.add_parser('manage', help='Manage the lab environment.')
