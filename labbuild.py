@@ -870,9 +870,12 @@ def main():
     # Check that if vendor is "f5" or the course name contains "f5",
     # then --class_number is required unless the course or component is in lookup mode ("?").
     if (args.vendor.lower() == "f5" or (args.course and "f5" in args.course.lower())) \
-       and args.course != "?" and args.component != "?" and not args.class_number:
+        and args.course != "?" \
+        and getattr(args, 'component', None) != "?" \
+        and not args.class_number:
         print("Error: --class_number is required when vendor is 'f5' or the course name contains 'f5'.")
         sys.exit(1)
+
 
     # When listing components, ensure a valid course (not "?") is provided.
     if getattr(args, "component", None) == "?" and (not args.course or args.course == "?"):
