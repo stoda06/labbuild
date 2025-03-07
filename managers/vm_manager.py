@@ -667,32 +667,72 @@ class VmManager(VCenter):
             self.logger.error("Virtual machine not found.")
             return None
     
-    def download_vmx_file(self, vm_name, local_path):
+    def download_file(self, url, local_path, session_cookie, max_retries=3, backoff_factor=5):
         """
-        Downloads the VMX file for a specified VM.
-
-        :param vm_name: The name of the VM to download the VMX file for.
-        :param local_path: The local path where the VMX file should be saved.
+        Downloads a file from a given URL using a session cookie for authentication, with a retry mechanism.
+        
+        This method is designed for critical file downloads (e.g., VMX files) from the vCenter server.
+        It attempts to download the file from the specified URL while handling transient errors such as 
+        internal server errors (HTTP 500) by retrying the download. The retry mechanism uses exponential backoff
+        to gradually increase the delay between attempts.
+        
+        :param url: str
+            The URL from which the file will be downloaded.
+        :param local_path: str
+            The local file path where the downloaded file will be saved.
+        :param session_cookie: str
+            The session cookie value required for authenticated access to the file.
+        :param max_retries: int, optional
+            The maximum number of retry attempts if the download fails (default is 3).
+        :param backoff_factor: int, optional
+            The multiplier (in seconds) for the delay between retries, which increases exponentially (default is 5).
+        :return: bool
+            True if the file is downloaded successfully; otherwise, False.
         """
-        vm = self.get_obj([vim.VirtualMachine], vm_name)
-        if not vm:
-            self.logger.error(f"VM '{vm_name}' not found.")
-            return False
-
-        try:
-            # Get the Datacenter object
-            datacenter = self.get_datacenter(vm.runtime.host)
-            datastore = vm.datastore[0]
-            vmx_path = vm.config.files.vmPathName
-
-            url, session_cookie = self.get_vmx_file_url(datacenter, datastore, vmx_path)
-
-            self.download_file(url, local_path, session_cookie)
-            self.logger.debug(f"VMX file downloaded successfully to {local_path}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Error downloading VMX file: {e}")
-            return False
+        # Prepare the headers with the session cookie for authentication
+        headers = {
+            'Cookie': f'vmware_soap_session={session_cookie}'
+        }
+        
+        # Loop to attempt the download up to max_retries times
+        for attempt in range(max_retries):
+            try:
+                # Use a streaming GET request to handle large file downloads efficiently
+                with requests.get(url, headers=headers, stream=True, verify=False) as response:
+                    # If the server returns a 500 error, we raise an HTTPError to trigger a retry
+                    if response.status_code == 500:
+                        raise requests.exceptions.HTTPError("Internal Server Error")
+                    
+                    # Check for other HTTP errors; if found, raise an exception
+                    response.raise_for_status()
+                    
+                    # Open the specified local path in binary write mode to save the file
+                    with open(local_path, 'wb') as file:
+                        # Iterate over the response data in chunks to avoid using too much memory
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:  # Filter out any keep-alive chunks that may be empty
+                                file.write(chunk)
+                
+                # Log the successful download and exit the loop
+                self.logger.debug(f"VMX file downloaded successfully to {local_path}")
+                return True
+            
+            except requests.exceptions.HTTPError as e:
+                # Log the HTTP error encountered during this attempt
+                self.logger.error(f"Attempt {attempt+1}: HTTP error downloading VMX file: {e}")
+            
+            except requests.exceptions.RequestException as e:
+                # Log any request-specific exceptions encountered during the attempt
+                self.logger.error(f"Attempt {attempt+1}: Request error: {e}")
+            
+            # Calculate the delay time using exponential backoff
+            delay = backoff_factor * (attempt + 1)
+            self.logger.debug(f"Waiting for {delay} seconds before retrying...")
+            time.sleep(delay)
+        
+        # Log a final error message after exhausting all retry attempts
+        self.logger.error(f"Failed to download VMX file from {url} after {max_retries} attempts.")
+        return False
 
     def get_datacenter(self, host):
         """
