@@ -336,6 +336,8 @@ def update_monitor_and_database(pod_config: dict, args, data: dict, extra_detail
             )
         elif vendor_shortcode == "pa":
             prtg_url = palo.add_monitor(pod_config, client)
+        elif vendor_shortcode == "f5":
+            prtg_url = f5.add_monitor(pod_config, client)
         else:
             prtg_url = PRTGManager.add_monitor(pod_config, client)
         logger.debug("PRTG monitor added with URL: %s", prtg_url)
