@@ -30,15 +30,16 @@ def update_network_dict(network_dict, pod_number):
 
     def update_network_name(network_name, pod_number):
         # Use regex to find and replace any "vs" followed by a number in the network name
-        return re.sub(r'ipo\d+', f'ipo-{pod_number}', network_name)
+        return re.sub(r'ipo-\d+', f'ipo-{pod_number}', network_name)
 
     updated_network_dict = {}
     for adapter, details in network_dict.items():
         network_name = details['network_name']
         mac_address = details['mac_address']
+        connected_at_power_on = details['connected_at_power_on']
 
         # Update the network name if it contains "vsX" (where X is any number)
-        network_name = network_name.replace('ipo-1',f'ipo-{pod_number}')
+        network_name = update_network_name(network_name, pod_number)
 
         # Update the MAC address if the network name contains "rdp"
         if 'rdp' in network_name:
@@ -46,7 +47,8 @@ def update_network_dict(network_dict, pod_number):
 
         updated_network_dict[adapter] = {
             'network_name': network_name,
-            'mac_address': mac_address
+            'mac_address': mac_address,
+            'connected_at_power_on': connected_at_power_on
         }
 
     return updated_network_dict
@@ -81,7 +83,9 @@ def build_aura_pod(service_instance, pod_config):
             sleep(600)
 
 def build_ipo_pod(service_instance, pod_config, rebuild=False, selected_components=None):
-    group_name = f'av-pod{pod_config["pod_number"]}'
+    group_name = f'av-ipo-pod{pod_config["pod_number"]}'
+    rpm = ResourcePoolManager(service_instance)
+    rpm.create_resource_pool('av', group_name, pod_config["host_fqdn"])
     components_to_clone = pod_config["components"]
     if selected_components:
         # Filter components based on selected_components
@@ -145,6 +149,16 @@ def build_ipo_pod(service_instance, pod_config, rebuild=False, selected_componen
         wait_for_task(futures)
         futures.clear()
 
+        if "w10" in component["component_name"]:
+            drive_name = "CD/DVD drive 1"
+            iso_type = "Datastore ISO file"
+            if "hotshot" in pod_config["host_fqdn"]:
+                datastore_name = "datastore2-ho"
+            else:
+                datastore_name = "keg2"
+            iso_path = f"podiso/pod-{pod_config['pod_number']}-a.iso"
+            vm_manager.modify_cd_drive(component["clone_name"], drive_name, iso_type, datastore_name, iso_path, connected=True)
+
         # Step-5: Power-on all the components.
         vm_manager.logger.info(f"Begin poweron process.")
         for component in components_to_clone:
@@ -157,6 +171,7 @@ def build_ipo_pod(service_instance, pod_config, rebuild=False, selected_componen
 def teardown_ipo(service_instance, pod_config):
     vm_manager = VmManager(service_instance)
     group_name = f'av-ipo-pod{pod_config["pod_number"]}'
+    resource_pool_manager = ResourcePoolManager(service_instance)
 
     vm_manager.logger.info(f"Teardown {group_name} components.")
     futures = []
@@ -167,6 +182,7 @@ def teardown_ipo(service_instance, pod_config):
             futures.append(delete_future)
         wait_for_task(futures)
     futures.clear()
+    resource_pool_manager.delete_resource_pool(group_name)
 
 def teardown_aura(service_instance, pod_config):
     rpm = ResourcePoolManager(service_instance)
