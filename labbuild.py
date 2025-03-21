@@ -659,7 +659,7 @@ def setup_environment(args):
     # NEW: DB-only mode: update the database without building any pods.
     if getattr(args, "db_only", False):
         logger.info("DB-only mode enabled: updating database without building resources.")
-        data = {"tag": args.tag, "course_name": args.course, "pod_details": []}
+        data = {"tag": args.tag, "course_name": args.course, "vendor": args.vendor, "pod_details": []}
         for pod in range(int(args.start_pod), int(args.end_pod) + 1):
             pod_detail = {
                 "pod_number": pod,
