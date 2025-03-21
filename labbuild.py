@@ -656,6 +656,24 @@ def setup_environment(args):
         logger.error("Host details could not be retrieved for host '%s'.", args.host)
         sys.exit(1)
     
+    # NEW: DB-only mode: update the database without building any pods.
+    if getattr(args, "db_only", False):
+        logger.info("DB-only mode enabled: updating database without building resources.")
+        data = {"tag": args.tag, "course_name": args.course, "pod_details": []}
+        for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+            pod_detail = {
+                "pod_number": pod,
+                "pod_host": args.host,
+                "poweron": "False",  # Indicate that the pod is not powered on since no build is done
+                "prtg_url": None
+            }
+            if args.vendor.lower() == "f5":
+                pod_detail["class_number"] = args.class_number
+            data["pod_details"].append(pod_detail)
+        update_database(data)
+        logger.info("Database updated in DB-only mode.")
+        sys.exit(0)
+    
     # Check for the --perm flag: if present, run only the permission functions.
     if getattr(args, "perm", False):
         logger.info("Permission-only mode enabled. Running permission functions only.")
@@ -698,7 +716,7 @@ def setup_environment(args):
 
     logger.info("Connecting to vCenter for host '%s'.", args.host)
     service_instance = get_vcenter_instance(host_details)
-    data = {"tag": args.tag, "course_name": args.course, "pod_details": []}
+    data = {"tag": args.tag, "course_name": args.course, "vendor": args.vendor, "pod_details": []}
     vendor_setup(service_instance, host_details, args, course_config, selected_components, data)
 
 
@@ -833,6 +851,7 @@ def main():
     setup_parser.add_argument('--monitor-only', action='store_true', help='Create only monitors for the pod range.')
     setup_parser.add_argument('--prtg-server', help='Specify the PRTG server name to use for monitor creation')
     setup_parser.add_argument('--perm', action='store_true', help='Only run permission functions.')
+    setup_parser.add_argument('--db-only', action='store_true', help='Only update the database and skip actual build operations.')
 
 
     # Manage command
