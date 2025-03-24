@@ -77,6 +77,7 @@ def update_database(data: dict):
             collection = db["currentallocation"]
             tag = data["tag"]
             course_name = data["course_name"]
+            vendor = data.get("vendor")
             pod_details = data["pod_details"]
 
             logger.debug("Updating database for tag '%s', course '%s'.", tag, course_name)
@@ -87,7 +88,9 @@ def update_database(data: dict):
                      if course.get("course_name") == course_name),
                     None
                 )
+
                 if existing_course:
+                    existing_course.setdefault("vendor", vendor)
                     for new_pod in pod_details:
                         existing_pod = next(
                             (pod for pod in existing_course["pod_details"]
@@ -103,6 +106,7 @@ def update_database(data: dict):
                 else:
                     tag_entry.setdefault("courses", []).append({
                         "course_name": course_name,
+                        "vendor": vendor,
                         "pod_details": pod_details
                     })
                     logger.debug("Added new course '%s' to tag '%s'.", course_name, tag)
@@ -112,6 +116,7 @@ def update_database(data: dict):
                     "tag": tag,
                     "courses": [{
                         "course_name": course_name,
+                        "vendor": vendor,
                         "pod_details": pod_details
                     }]
                 }
@@ -381,20 +386,20 @@ def wait_for_futures(futures: list):
 # -----------------------------------------------------------------------------
 def on_success_update(future, pod_config, args, data, extra_details=None):
     """
-    Callback to update the monitor and database only if the build succeeded.
-    
-    :param future: The completed future.
-    :param pod_config: Pod configuration used for the build.
-    :param args: Command-line arguments.
-    :param data: Data dictionary for the database update.
-    :param extra_details: Optional extra details.
+    Callback invoked when a build finishes.
+    Unpacks build_cp_pod’s (success, step, error) return value.
     """
-    pod_number = getattr(future, "pod_number", "Unknown")
-    if future.exception() is None:
-        logger.info("Build successful for pod %s. Updating monitor and database.", pod_number)
+    success, failed_step, error = future.result()
+    pod_number = pod_config["pod_number"]
+
+    if success:
+        logger.info("Build successful for pod %s — updating monitor & DB.", pod_number)
         update_monitor_and_database(pod_config, args, data, extra_details)
     else:
-        logger.error("Build failed for pod %s. Skipping monitor and database update.", pod_number)
+        logger.error(
+            "Build FAILED for pod %s at step '%s': %s",
+            pod_number, failed_step, error
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -738,6 +743,18 @@ def teardown_environment(args):
     # Fetch the course configuration regardless of teardown type.
     course_config = fetch_and_prepare_course_config(args.course)
 
+    # NEW: DB‑only teardown — remove only database records (no VMs, no monitors)
+    if getattr(args, "db_only", False):
+        logger.info("DB‑only teardown enabled: deleting database entries only.")
+        # For F5 courses delete by class_number
+        if course_config.get("vendor_shortcode") == "f5":
+            delete_from_database(args.tag, course_name=course_config["course_name"], class_number=args.class_number)
+        else:
+            for pod in range(int(args.start_pod), int(args.end_pod) + 1):
+                delete_from_database(args.tag, course_name=course_config["course_name"], pod_number=pod)
+        logger.info("DB‑only teardown complete.")
+        return
+
     # If monitor-only, only delete monitors and update the database.
     if getattr(args, "monitor_only", False):
         logger.info("Monitor-only mode enabled for teardown. Deleting only monitors...")
@@ -880,6 +897,7 @@ def main():
     teardown_parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
     teardown_parser.add_argument('--monitor-only', action='store_true', help='Delete only monitors without tearing down VMs.')
     teardown_parser.add_argument('--prtg-server', help='Specify the PRTG server name to use for monitor deletion')
+    teardown_parser.add_argument('--db-only', action='store_true', help='Only update the database and skip actual build operations.')
 
     args = parser.parse_args()
 
