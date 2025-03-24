@@ -14,33 +14,39 @@ class FolderManager(VCenter):
         """
         Creates a new folder under a specified parent folder.
 
+        Returns True if the folder is created successfully or already exists;
+        otherwise, returns False.
+
         :param parent_folder_name: The name of the parent folder.
         :param new_folder_name: The name of the new folder to be created.
-        :return: A message indicating success or failure.
+        :return: bool
         """
+        # Retrieve the parent folder object.
         parent_folder = self.get_obj([vim.Folder], parent_folder_name)
         if not parent_folder:
             self.logger.error(f"Parent folder '{parent_folder_name}' not found.")
-            raise ValueError(f"Parent folder '{parent_folder_name}' not found.")
+            return False
 
+        # Check if the folder already exists under the parent.
         for child in parent_folder.childEntity:
             if isinstance(child, vim.Folder) and child.name == new_folder_name:
                 self.logger.debug(f"Folder '{new_folder_name}' already exists under '{parent_folder_name}'.")
-                return None
+                return True
 
         try:
-            new_folder = parent_folder.CreateFolder(name=new_folder_name)
+            # Attempt to create the new folder.
+            parent_folder.CreateFolder(name=new_folder_name)
             self.logger.debug(f"Folder '{new_folder_name}' created successfully under '{parent_folder_name}'.")
-            return new_folder
+            return True
         except vim.fault.DuplicateName:
             self.logger.error(f"A folder with the name '{new_folder_name}' already exists.")
-            return None
+            return False
         except vim.fault.InvalidName:
             self.logger.error(f"The folder name '{new_folder_name}' is invalid.")
-            return None
+            return False
         except Exception as e:
             self.logger.error(f"Failed to create folder '{new_folder_name}': {e}")
-            return None
+            return False
 
     def assign_user_to_folder(self, folder_name, user_name, role_name, propagate=True):
         """

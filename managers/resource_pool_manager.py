@@ -29,7 +29,18 @@ class ResourcePoolManager(VCenter):
             return None
 
     def create_resource_pool(self, parent_resource_pool, rp_name, host_fqdn=None):
-        """Creates a new resource pool under the specified parent resource pool and host."""
+        """
+        Creates a new resource pool under the specified parent resource pool and host.
+
+        Returns True if the resource pool is created successfully or already exists;
+        otherwise, returns False.
+
+        :param parent_resource_pool: Name of the parent resource pool.
+        :param rp_name: Name for the new resource pool.
+        :param host_fqdn: (Optional) Fully Qualified Domain Name of the host to locate the parent resource pool.
+        :return: bool
+        """
+        # Define default CPU and memory allocation configurations.
         cpu_allocation = {
             'limit': -1,
             'reservation': 0,
@@ -42,15 +53,17 @@ class ResourcePoolManager(VCenter):
             'expandable_reservation': True,
             'shares': 163840
         }
+        
         try:
+            # Retrieve the parent resource pool based on host_fqdn availability.
             if host_fqdn:
-                # Find the specific ESXi host by its FQDN
+                # Locate the ESXi host using its FQDN.
                 host = self.get_obj([vim.HostSystem], host_fqdn)
                 if not host:
                     self.logger.error(f"Host '{host_fqdn}' not found.")
-                    return None
+                    return False
 
-                # Find the resource pool under the specified host
+                # Search for the specified parent resource pool under the host.
                 parent_rp = None
                 for rp in host.parent.resourcePool.resourcePool:
                     if rp.name == parent_resource_pool:
@@ -59,23 +72,24 @@ class ResourcePoolManager(VCenter):
 
                 if not parent_rp:
                     self.logger.error(f"Resource pool '{parent_resource_pool}' not found on host '{host_fqdn}'.")
-                    return None
+                    return False
             else:
-                # If no host FQDN is specified, search across all resource pools
+                # Retrieve the parent resource pool globally if no host is specified.
                 parent_rp = self.get_obj([vim.ResourcePool], parent_resource_pool)
                 if not parent_rp:
                     self.logger.error(f"Parent Resource pool '{parent_resource_pool}' not found.")
-                    return None
+                    return False
 
-            # Check if the resource pool already exists
+            # Check if the resource pool already exists under the parent.
             for rp in parent_rp.resourcePool:
                 if rp.name == rp_name:
-                    self.logger.warning(f"Resource pool '{rp_name}' already exists. Skipping.")
-                    return rp
+                    self.logger.warning(f"Resource pool '{rp_name}' already exists. Skipping creation.")
+                    return True
 
+            # Configure resource allocation specifications.
             resource_config_spec = vim.ResourceConfigSpec()
 
-            # CPU Allocation
+            # CPU Allocation Configuration
             cpu_alloc = vim.ResourceAllocationInfo()
             cpu_alloc.limit = cpu_allocation['limit']
             cpu_alloc.reservation = cpu_allocation['reservation']
@@ -83,7 +97,7 @@ class ResourcePoolManager(VCenter):
             cpu_alloc.shares = vim.SharesInfo(level=vim.SharesInfo.Level.normal, shares=cpu_allocation['shares'])
             resource_config_spec.cpuAllocation = cpu_alloc
 
-            # Memory Allocation
+            # Memory Allocation Configuration
             memory_alloc = vim.ResourceAllocationInfo()
             memory_alloc.limit = memory_allocation['limit']
             memory_alloc.reservation = memory_allocation['reservation']
@@ -91,15 +105,14 @@ class ResourcePoolManager(VCenter):
             memory_alloc.shares = vim.SharesInfo(level=vim.SharesInfo.Level.normal, shares=memory_allocation['shares'])
             resource_config_spec.memoryAllocation = memory_alloc
 
-            # Create the resource pool under the parent resource pool
-            resource_pool = parent_rp.CreateResourcePool(name=rp_name, spec=resource_config_spec)
-
+            # Create the resource pool under the parent with the defined specification.
+            parent_rp.CreateResourcePool(name=rp_name, spec=resource_config_spec)
             self.logger.debug(f"Resource pool '{rp_name}' created successfully under {parent_rp.name}.")
-            return resource_pool
+            return True
 
         except Exception as e:
             self.logger.error(f"Failed to create resource pool: {self.extract_error_message(e)}")
-            return None
+            return False
 
     def delete_resource_pool(self, rp_name):
         """Deletes the specified resource pool and all its child components,
@@ -155,13 +168,19 @@ class ResourcePoolManager(VCenter):
             return False
         
     def assign_role_to_resource_pool(self, resource_pool_name, user_name, role_name, propagate=True):
-        """Assigns a specified role to a user on a given resource pool.
+        """
+        Assigns a specified role to a user on a given resource pool.
+        
+        Returns True if the role is assigned successfully (or already assigned) 
+        and False if any error occurs during the assignment.
 
         :param resource_pool_name: The name of the resource pool.
         :param user_name: The identifier of the user (e.g., "DOMAIN\\User").
         :param role_name: The name of the role to assign.
+        :param propagate: Boolean indicating whether the permission should propagate to child objects.
+        :return: bool
         """
-        # Find the role by name
+        # Find the role by name.
         role_id = None
         for role in self.connection.content.authorizationManager.roleList:
             if role.name == role_name:
@@ -170,37 +189,40 @@ class ResourcePoolManager(VCenter):
 
         if role_id is None:
             self.logger.error(f"Role '{role_name}' not found.")
-            return
+            return False
 
-        # Find the resource pool by name
+        # Retrieve the resource pool object by its name.
         resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
         if resource_pool is None:
             self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
-            return
-        
-        # Retrieve current permissions of the folder
-        current_permissions = self.connection.content.authorizationManager.RetrieveEntityPermissions(entity=resource_pool, inherited=False)
+            return False
 
-        # Check if the user already has the specified role assigned
+        # Retrieve current (non-inherited) permissions for the resource pool.
+        current_permissions = self.connection.content.authorizationManager.RetrieveEntityPermissions(
+            entity=resource_pool, inherited=False)
+
+        # Check if the user already has the specified role with the same propagation setting.
         for perm in current_permissions:
             if perm.principal == user_name and perm.roleId == role_id and perm.propagate == propagate:
                 self.logger.debug(f"User '{user_name}' already has role '{role_name}' on resource pool '{resource_pool_name}' with identical propagation setting.")
-                return  # Skip the assignment
+                return True  # Role assignment already exists.
 
-        # Create the permission spec
+        # Create the permission specification.
         permission = vim.AuthorizationManager.Permission(
             principal=user_name,
-            group=False,  # Change to True if assigning permissions to a user group
+            group=False,  # Set to True if assigning permissions to a user group.
             roleId=role_id,
-            propagate=propagate  # Whether or not the permission should propagate to child objects
+            propagate=propagate  # Determines if the permission should propagate to child objects.
         )
 
-        # Set the permission on the resource pool
+        # Attempt to set the permission on the resource pool.
         try:
             self.connection.content.authorizationManager.SetEntityPermissions(entity=resource_pool, permission=[permission])
             self.logger.debug(f"Assigned role '{role_name}' to user '{user_name}' on resource pool '{resource_pool_name}'.")
+            return True
         except Exception as e:
             self.logger.error(f"Failed to assign role to user on resource pool: {self.extract_error_message(e)}")
+            return False
     
     def poweroff_all_vms(self, resource_pool_name):
         """

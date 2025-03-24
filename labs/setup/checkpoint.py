@@ -58,168 +58,165 @@ def update_network_dict(network_dict, pod_number):
     return updated_network_dict
 
 
-def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=False, selected_components=None):
+def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=False, selected_components=None) -> tuple:
+    """
+    Build and configure a control plane pod for a lab environment.
 
-    vm_manager = VmManager(service_instance)
-    folder_manager = FolderManager(service_instance)
-    network_manager = NetworkManager(service_instance)
-    resource_pool_manager = ResourcePoolManager(service_instance)
-    permission_manager = PermissionManager(service_instance)
+    This function performs several sequential steps:
+      1. Create network resources (vSwitches, port groups, roles, and promiscuous mode if needed)
+      2. Create and assign a resource pool
+      3. Create and assign a folder for the pod
+      4. Clone and configure each component's VM (linked or full clone based on the 'full' flag)
+      5. Power on VMs concurrently
 
-    create_resource_pool(resource_pool_manager, pod_config)
+    Each step returns a tuple (success, failed_step, error_message). In case of failure, the function stops 
+    and returns immediately with the step name and error message. On complete success, it returns (True, None, None).
 
-    create_folder(folder_manager, pod_config)
-    # add_permissions_to_datastore(permission_manager, pod_config)
+    Parameters:
+        service_instance : object
+            The vCenter service instance used to initialize managers.
+        pod_config : dict
+            Dictionary with configuration details for the pod (networks, components, course name, etc.).
+        rebuild : bool, optional
+            If True, deletes existing VMs before cloning. Defaults to False.
+        thread : int, optional
+            Maximum number of threads to use when powering on VMs concurrently. Defaults to 4.
+        full : bool, optional
+            If True, performs a full clone; otherwise, a linked clone is performed. Defaults to False.
+        selected_components : list, optional
+            A list of component names to process. If None, all components are processed.
 
-    create_networks(network_manager, pod_config)
-    clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_components)
+    Returns:
+        tuple: A tuple (success, failed_step, error_message) where:
+            - success (bool): True if all steps succeed, otherwise False.
+            - failed_step (str): Name of the step where the failure occurred.
+            - error_message (str): Description of the failure.
+    """
+    # Initialize managers for VM, folder, network, and resource pool operations.
+    vm_mgr = VmManager(service_instance)
+    folder_mgr = FolderManager(service_instance)
+    network_mgr = NetworkManager(service_instance)
+    rp_mgr = ResourcePoolManager(service_instance)
 
-    power_on_components(vm_manager, pod_config, thread, selected_components)
-
-
-def create_resource_pool(resource_pool_manager, pod_config):
-    """Creates a resource pool for the pod."""
-    try:
-        parent_resource_pool = pod_config["vendor_shortcode"] + "-" + pod_config["host_fqdn"].split(".")[0]
-        if "maestro" in pod_config["course_name"]:
-            pod_resource_pool = f'cp-maestro-pod{pod_config["pod_number"]}'
-        else:
-            pod_resource_pool =  f'{pod_config["vendor_shortcode"]}-pod{pod_config["pod_number"]}'
-        user = f"labcp-{pod_config['pod_number']}"
-        domain = "vcenter.rededucation.com"
-        role = "labcp-0-role"
-        resource_pool_manager.logger.info(f'Creating resource pool {pod_resource_pool}')
-        resource_pool_manager.create_resource_pool(parent_resource_pool, pod_resource_pool)
-        resource_pool_manager.assign_role_to_resource_pool(pod_resource_pool, f'{domain}\\{user}', role)
-    except Exception as e:
-        resource_pool_manager.logger.error(f"An error occurred: {e}")
-        sys.exit(1)  
-
-
-def create_folder(folder_manager, pod_config):
-    """Creates a folder for the pod."""
-    try:
-        if "maestro" in pod_config["course_name"]:
-            folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
-        else:
-            folder_name = f'cp-pod{pod_config["pod_number"]}-folder'
-        user = f"labcp-{pod_config['pod_number']}"
-        domain = "vcenter.rededucation.com"
-        role = "labcp-0-role"
-        folder_manager.logger.info(f'Creating folder {folder_name}')
-        folder_manager.create_folder(pod_config["vendor_shortcode"], folder_name)
-        folder_manager.assign_user_to_folder(folder_name, f'{domain}\\{user}', role)
-    except Exception as e:
-        folder_manager.logger.error(f"An error occurred: {e}")
-    
-
-def add_permissions_to_datastore(permission_manager, pod_config):
-    """Adds permissions for a specified user or group to a datastore."""
-    user = f"labcp-{pod_config['pod_number']}"
-    domain = "vcenter.rededucation.com"
+    # Global variables based on pod configuration.
+    pod_number = pod_config["pod_number"]
+    domain_user = f"vcenter.rededucation.com\\labcp-{pod_number}"
     role = "labcp-0-role"
-    permission_manager.add_permissions_to_datastore("checkpoint", f'{domain}\\{user}', role)
 
-def create_networks(network_manager, pod_config):
-    """Creates vSwitches and their associated port groups for the pod."""
-    user = f"labcp-{pod_config['pod_number']}"
-    domain = "vcenter.rededucation.com"
-    role = "labcp-0-role"
-    network_manager.logger.info(f'Creating network')
-    for network in pod_config['networks']:
-        network_manager.create_vswitch(pod_config["host_fqdn"], network['switch_name'])
-        network_manager.create_vm_port_groups(pod_config["host_fqdn"], network["switch_name"], network["port_groups"])
-
-        network_names = [pg["port_group_name"] for pg in network["port_groups"]]
-        network_manager.apply_user_role_to_networks(f'{domain}\\{user}', role, network_names)
-
-        if network['promiscuous_mode']:
-            network_manager.enable_promiscuous_mode(pod_config["host_fqdn"], network['promiscuous_mode'])
-
-
-def clone_and_configure_vms(vm_manager, pod_config, full, rebuild, selected_components=None):
-    """Clones the required VMs, updates their networks, and creates snapshots."""
-    pod = pod_config["pod_number"]
-    components_to_clone = pod_config["components"]
-    if selected_components:
-        # Filter components based on selected_components
-        components_to_clone = [
-            component for component in pod_config["components"]
-            if component["component_name"] in selected_components
-        ]
-
-    for component in components_to_clone:
-        if rebuild:
-            vm_manager.delete_vm(component['clone_name'])
-        clone_vm(vm_manager, pod_config, component, full)
-        configure_vm_network(vm_manager, component, pod)
-        create_vm_snapshot(vm_manager, component)
-        if "maestro" in component["component_name"]:
-            drive_name = "CD/DVD drive 1"
-            iso_type = "Datastore ISO file"
-            if "hotshot" in pod_config["host_fqdn"]:
-                datastore_name = "datastore2-ho"
-            else:
-                datastore_name = "keg2"
-            iso_path = f"podiso/pod-{pod}-a.iso"
-            vm_manager.modify_cd_drive(component["clone_name"], drive_name, iso_type, datastore_name, iso_path, connected=True)
-
-def clone_vm(vm_manager, pod_config, component, full):
-    """Clones a VM based on the component configuration."""
+    # Determine naming convention based on course type.
     if "maestro" in pod_config["course_name"]:
-        group_name = f'cp-maestro-pod{pod_config["pod_number"]}'
-        folder_name = f'cp-maestro-{pod_config["pod_number"]}-folder'
+        folder_name = f"cp-maestro-{pod_number}-folder"
+        group_name = f"cp-maestro-pod{pod_number}"
+        rp_name = f"cp-maestro-pod{pod_number}"
     else:
-        group_name = f'cp-pod{pod_config["pod_number"]}'
-        folder_name = f'cp-pod{pod_config["pod_number"]}-folder'
-    if not full:
-        vm_manager.logger.info(f'Cloning linked component {component["clone_name"]}.')
-        if not vm_manager.snapshot_exists(component["base_vm"], "base"):
-            vm_manager.create_snapshot(component["base_vm"], "base",
-                                       description="Snapshot used for creating linked clones.")
-        vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", 
-                                       group_name, directory_name=folder_name)
-    else:
-        vm_manager.logger.info(f'Cloning component {component["clone_name"]}.')
-        vm_manager.clone_vm(component["base_vm"], component["clone_name"],
-                            group_name, directory_name=folder_name)
+        folder_name = f"cp-pod{pod_number}-folder"
+        group_name = f"cp-pod{pod_number}"
+        rp_name = f"{pod_config['vendor_shortcode']}-pod{pod_number}"
 
+    # ==============================
+    # STEP 1: Create Network Resources
+    # ==============================
+    for net in pod_config["networks"]:
+        # Create a vSwitch on the specified host.
+        if not network_mgr.create_vswitch(pod_config["host_fqdn"], net["switch_name"]):
+            return False, "create_vswitch", f"Failed creating vswitch {net['switch_name']}"
 
-def configure_vm_network(vm_manager, component, pod):
-    """Updates the VM network settings for a cloned component."""
-    vm_manager.logger.info(f'Updating VM networks for {component["clone_name"]}.')
-    vm_network = vm_manager.get_vm_network(component["base_vm"])
-    updated_vm_network = update_network_dict(vm_network, int(pod))
-    vm_manager.update_vm_network(component["clone_name"], updated_vm_network)
+        # Create VM port groups on the newly created vSwitch.
+        if not network_mgr.create_vm_port_groups(pod_config["host_fqdn"], net["switch_name"], net["port_groups"]):
+            return False, "create_vm_port_groups", f"Failed creating port groups on {net['switch_name']}"
 
+        # Extract port group names to apply the user role.
+        pg_names = [pg["port_group_name"] for pg in net["port_groups"]]
+        if not network_mgr.apply_user_role_to_networks(domain_user, role, pg_names):
+            return False, "apply_user_role_to_networks", f"Failed applying role to networks {pg_names}"
 
-def create_vm_snapshot(vm_manager, component):
-    """Creates a snapshot on the cloned VM."""
-    snapshot_name = "base"
-    if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
-        vm_manager.logger.info(f'Creating "base" snapshot on {component["clone_name"]}.')
-        vm_manager.create_snapshot(component["clone_name"], snapshot_name,
-                                   description=f"Snapshot of {component['clone_name']}")
+        # Enable promiscuous mode if it is specified in the network config.
+        if net.get("promiscuous_mode") and not network_mgr.enable_promiscuous_mode(pod_config["host_fqdn"], net["promiscuous_mode"]):
+            return False, "enable_promiscuous_mode", f"Failed enabling promiscuous mode on {net['switch_name']}"
 
+    # ==============================
+    # STEP 2: Create Resource Pool
+    # ==============================
+    parent_rp = f"{pod_config['vendor_shortcode']}-{pod_config['host_fqdn'].split('.')[0]}"
+    if not rp_mgr.create_resource_pool(parent_rp, rp_name):
+        return False, "create_resource_pool", f"Failed creating resource pool {rp_name}"
+    if not rp_mgr.assign_role_to_resource_pool(rp_name, domain_user, role):
+        return False, "assign_role_to_resource_pool", f"Failed assigning role to resource pool {rp_name}"
 
-def power_on_components(vm_manager, pod_config, thread, selected_components=None):
-    """Powers on all components of the pod in parallel using threading."""
-    components_to_clone = pod_config["components"]
+    # ==============================
+    # STEP 3: Create Folder
+    # ==============================
+    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], folder_name):
+        return False, "create_folder", f"Failed creating folder {folder_name}"
+    if not folder_mgr.assign_user_to_folder(folder_name, domain_user, role):
+        return False, "assign_user_to_folder", f"Failed assigning user to folder {folder_name}"
+
+    # ==============================
+    # STEP 4: Clone and Configure Components
+    # ==============================
+    components = pod_config["components"]
+    # Filter components if selected_components is provided.
     if selected_components:
-        # Filter components based on selected_components
-        components_to_clone = [
-            component for component in pod_config["components"]
-            if component["component_name"] in selected_components
-        ]
+        components = [c for c in components if c["component_name"] in selected_components]
+
+    for comp in components:
+        clone = comp["clone_name"]
+        base = comp["base_vm"]
+
+        # If rebuild is True, delete the existing VM.
+        if rebuild and not vm_mgr.delete_vm(clone):
+            return False, "delete_vm", f"Failed deleting existing VM {clone}"
+
+        # Clone operation: perform a linked clone if 'full' is False.
+        if not full:
+            # Create a snapshot if it does not exist.
+            if not vm_mgr.snapshot_exists(base, "base") and not vm_mgr.create_snapshot(base, "base", "Base snapshot"):
+                return False, "create_snapshot", f"Failed creating snapshot on {base}"
+            if not vm_mgr.create_linked_clone(base, clone, "base", group_name, directory_name=folder_name):
+                return False, "create_linked_clone", f"Failed linked cloning {clone}"
+        # Perform a full clone if 'full' is True.
+        else:
+            if not vm_mgr.clone_vm(base, clone, group_name, directory_name=folder_name):
+                return False, "clone_vm", f"Failed full cloning {clone}"
+
+        # Update the network configuration of the cloned VM.
+        updated_network = update_network_dict(vm_mgr.get_vm_network(base), int(pod_number))
+        if not vm_mgr.update_vm_network(clone, updated_network):
+            return False, "update_vm_network", f"Failed updating network on {clone}"
+
+        # Create a base snapshot for the newly cloned VM if it doesn't exist.
+        if not vm_mgr.snapshot_exists(clone, "base") and not vm_mgr.create_snapshot(clone, "base", f"Snapshot of {clone}"):
+            return False, "create_snapshot", f"Failed creating base snapshot on {clone}"
+
+        # For maestro-specific components, modify the CD/DVD drive settings.
+        if "maestro" in comp["component_name"]:
+            # Choose the datastore based on the host FQDN.
+            datastore = "datastore2-ho" if "hotshot" in pod_config["host_fqdn"] else "keg2"
+            if not vm_mgr.modify_cd_drive(
+                clone,
+                "CD/DVD drive 1",
+                "Datastore ISO file",
+                datastore,
+                f"podiso/pod-{pod_number}-a.iso",
+                connected=True
+            ):
+                return False, "modify_cd_drive", f"Failed modifying CD drive for {clone}"
+
+    # ==============================
+    # STEP 5: Power On Components
+    # ==============================
+    from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=thread) as executor:
-        futures = []
-        vm_manager.logger.info(f'Power on all components.')
-        for component in components_to_clone:
-            if component.get("state") == "poweroff":
-                continue
-            poweron_future = executor.submit(vm_manager.poweron_vm, component["clone_name"])
-            futures.append(poweron_future)
-        wait_for_futures(futures)
+        # Submit power-on tasks concurrently for VMs that are not marked as "poweroff".
+        futures = {executor.submit(vm_mgr.poweron_vm, comp["clone_name"]): comp["clone_name"]
+                   for comp in components if comp.get("state") != "poweroff"}
+        for future in futures:
+            if not future.result():
+                return False, "poweron_vm", f"Failed powering on {futures[future]}"
+
+    # If all steps complete successfully, return True.
+    return True, None, None
+
 
 
 def add_to_last_octet(ip_address, number_to_add):
@@ -314,7 +311,6 @@ def perm_only_cp_pod(service_instance, pod_config):
 
     network_manager.logger.info("Applying user role to networks: %s.", network_names)
     network_manager.apply_user_role_to_networks(f'{domain}\\{user}', role, network_names)
-
 
 
 def add_monitor(pod_config, db_client, prtg_server=None):
@@ -464,3 +460,5 @@ def add_monitor(pod_config, db_client, prtg_server=None):
     # If the loop completes without returning, no server was able to add/update the monitor.
     logger.error("Failed to add/update monitor on any available PRTG server.")
     return None
+
+

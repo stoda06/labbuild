@@ -34,58 +34,75 @@ class NetworkManager(VCenter):
     
     def create_vm_port_groups(self, host_name, switch_name, port_groups, pod_number=None):
         """
-        Creates multiple virtual machine port groups on a specified standard switch concurrently for a given host.
+        Creates multiple virtual machine port groups concurrently on a specified standard switch
+        for a given host. Returns True if all port groups are created successfully; otherwise,
+        returns False.
 
-        :param hostname: Name of the host where the standard switch resides.
-        :param switch_name: Name of the standard switch to create the port groups on.
-        :param port_groups: A list of dictionaries, each containing port group properties (e.g., name and VLAN ID).
+        :param host_name: The name of the host where the standard switch resides.
+        :param switch_name: The name of the standard switch on which to create the port groups.
+        :param port_groups: A list of dictionaries, each containing port group properties (e.g., "port_group_name" and "vlan_id").
+        :param pod_number: Optional pod number to adjust VLAN IDs for specific conditions.
+        :return: bool - True if successful, False otherwise.
         """
-        # Use the get_obj method to fetch the host by its name
+        # Retrieve the host object using the provided host_name.
         host = self.get_obj([vim.HostSystem], host_name)
         if not host:
             self.logger.error(f"Failed to retrieve host '{host_name}'.")
-            return
+            return False
 
-        # Access the HostNetworkSystem directly from the retrieved host
+        # Access the HostNetworkSystem from the retrieved host.
         host_network_system = host.configManager.networkSystem
+        all_success = True  # Flag to track overall success.
 
+        # Create port groups concurrently using ThreadPoolExecutor.
         with ThreadPoolExecutor() as executor:
             futures = []
             for pg in port_groups:
+                # Prepare the specification for the port group.
                 port_group_spec = vim.host.PortGroup.Specification()
                 port_group_spec.name = pg["port_group_name"]
-                if "pa" in switch_name and not "pa-vswitch" in switch_name:
-                    port_group_spec.vlanId = pg.get('vlan_id', 0)+pod_number  # Default VLAN ID is 0 if not specified
+
+                # Adjust the VLAN ID for certain switch naming conventions.
+                if "pa" in switch_name and "pa-vswitch" not in switch_name:
+                    port_group_spec.vlanId = pg.get('vlan_id', 0) + (pod_number or 0)
                 else:
-                    port_group_spec.vlanId = pg.get('vlan_id', 0)  # Default VLAN ID is 0 if not specified
+                    port_group_spec.vlanId = pg.get('vlan_id', 0)
+
                 port_group_spec.vswitchName = switch_name
                 port_group_spec.policy = vim.host.NetworkPolicy()
 
-                # Schedule the port group creation task
+                # Schedule the task to create the port group.
                 future = executor.submit(self.create_port_group, host_network_system, switch_name, port_group_spec)
                 futures.append(future)
 
-            # Optionally, wait for all tasks to complete and handle their results
+            # Wait for all tasks to complete and check for errors.
             for future in futures:
                 try:
-                    future.result()  # This will re-raise any exceptions caught in the task
+                    future.result()  # Will raise any exceptions from the task.
                 except Exception as e:
-                    self.logger.error(f"Failed to create one or more port groups: {e}")
-    
+                    self.logger.error(f"Failed to create port group: {e}")
+                    all_success = False
+
+        return all_success
+
     def create_vswitch(self, host_name, vswitch_name, num_ports=128, mtu=1500):
         """
         Creates a new virtual switch on the specified host.
+
+        Returns True if the vSwitch is created successfully (or already exists), 
+        otherwise returns False.
 
         :param host_name: The name of the host where the vSwitch will be created.
         :param vswitch_name: The name for the new virtual switch.
         :param num_ports: The number of ports that the virtual switch will have.
         :param mtu: The MTU size for the virtual switch.
+        :return: bool
         """
         try:
             host = self.get_obj([vim.HostSystem], host_name)
             if not host:
-                self.logger.error(f"Resource pool '{host}' not found.")
-                return
+                self.logger.error(f"Host '{host_name}' not found.")
+                return False
 
             network_system = host.configManager.networkSystem
             
@@ -95,14 +112,19 @@ class NetworkManager(VCenter):
 
             network_system.AddVirtualSwitch(vswitchName=vswitch_name, spec=vswitch_spec)
             self.logger.debug(f"Virtual switch '{vswitch_name}' created successfully on host '{host_name}'.")
+            return True
         except vim.fault.AlreadyExists:
             self.logger.warning(f"Virtual switch '{vswitch_name}' already exists on host '{host_name}'.")
+            return True
         except vim.fault.NotFound:
             self.logger.error(f"Host '{host_name}' not found.")
+            return False
         except vim.fault.ResourceInUse:
             self.logger.error(f"Virtual switch '{vswitch_name}' is in use and cannot be created.")
+            return False
         except Exception as e:
             self.logger.error(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
+            return False
 
     def delete_vswitch(self, host_name, vswitch_name):
         """
@@ -193,43 +215,62 @@ class NetworkManager(VCenter):
     def apply_user_role_to_networks(self, user_domain_name, role_name, network_names):
         """
         Applies a specified user and role to multiple networks concurrently.
+        
+        Returns True if the role assignment is successful for all networks; otherwise, returns False.
 
         :param user_domain_name: The domain and username to whom the role will be assigned.
         :param role_name: The name of the role to assign.
         :param network_names: A list of network names to assign the role to.
+        :return: bool
         """
+        all_success = True  # Flag to track overall success
+
         with ThreadPoolExecutor() as executor:
             futures = []
             for network_name in network_names:
-                network = self.get_obj([vim.Network],network_name)
+                # Retrieve the network object based on its name
+                network = self.get_obj([vim.Network], network_name)
+                # Schedule the task to assign the user role on the network
                 future = executor.submit(self.set_user_role_on_network, user_domain_name, role_name, network)
                 futures.append(future)
             
-            # Processing results
+            # Process the results of all scheduled tasks
             for future in futures:
                 try:
-                    result = future.result()  # This will re-raise any exceptions caught in the task
-                    # Handle successful cloning result
+                    # This will raise any exception caught during the task
+                    result = future.result()
                     self.logger.debug(result)
                 except Exception as e:
-                    # Handle cloning failure
-                    self.logger.error(f"Assigning user and role failed: {e}")
+                    self.logger.error(f"Assigning user and role to network failed: {e}")
+                    all_success = False
+
+        return all_success
     
     def enable_promiscuous_mode(self, host_name, network_names):
         """
-        Enables promiscuous mode for a list of network names on a specified host using ThreadPoolExecutor for parallel execution.
+        Enables promiscuous mode for a list of network (port group) names on a specified host concurrently.
+
+        Returns True if promiscuous mode is enabled successfully on all specified networks; otherwise, returns False.
 
         :param host_name: Name of the host where the networks reside.
         :param network_names: A list of network (port group) names to enable promiscuous mode on.
+        :return: bool
         """
+        # Retrieve the host object using its name.
         host = self.get_obj([vim.HostSystem], host_name)
         if not host:
             self.logger.error(f"Host '{host_name}' not found.")
-            return
+            return False
 
         def task(network_name):
+            """
+            Task to enable promiscuous mode for a single network.
+            Returns True if successful; otherwise, returns False.
+            """
             network_system = host.configManager.networkSystem
             port_group = None
+            
+            # Locate the port group by its name.
             for pg in network_system.networkConfig.portgroup:
                 if pg.spec.name == network_name:
                     port_group = pg
@@ -237,26 +278,43 @@ class NetworkManager(VCenter):
 
             if not port_group:
                 self.logger.warning(f"Port group '{network_name}' not found on host '{host_name}'.")
-                return
+                return False
 
+            # Set up the port group specification with security policy.
             port_group_spec = port_group.spec
             port_group_spec.policy = vim.host.NetworkPolicy()
             port_group_spec.policy.security = vim.host.NetworkPolicy.SecurityPolicy(allowPromiscuous=True)
+            
+            # For specific networks, enable additional security options.
             if "EXT-CCVS" in network_name:
-                port_group_spec.policy.security = vim.host.NetworkPolicy.SecurityPolicy(allowPromiscuous=True,
-                                                                                        macChanges=True, 
-                                                                                        forgedTransmits=True)
+                port_group_spec.policy.security = vim.host.NetworkPolicy.SecurityPolicy(
+                    allowPromiscuous=True, macChanges=True, forgedTransmits=True)
 
             try:
                 network_system.UpdatePortGroup(network_name, port_group_spec)
                 self.logger.debug(f"Promiscuous mode enabled for port group '{network_name}' on host '{host_name}'.")
+                return True
             except vmodl.MethodFault as e:
                 self.logger.error(f"Failed to enable promiscuous mode for port group '{network_name}' on host '{host_name}': {e.msg}")
+                return False
 
-        # Using ThreadPoolExecutor to enable promiscuous mode concurrently on multiple port groups
+        # Use ThreadPoolExecutor to process all networks concurrently.
+        all_success = True
         with ThreadPoolExecutor() as executor:
-            executor.map(task, network_names)
-    
+            futures = [executor.submit(task, network_name) for network_name in network_names]
+
+            # Process the results of each concurrent task.
+            for future in futures:
+                try:
+                    result = future.result()  # Retrieve result from the task.
+                    if not result:
+                        all_success = False
+                except Exception as e:
+                    self.logger.error(f"Exception occurred while enabling promiscuous mode: {e}")
+                    all_success = False
+
+        return all_success
+
     def delete_port_groups(self, host_name, switch_name, port_groups):
         """
         Deletes multiple virtual machine port groups from a specified standard switch on a given host.
