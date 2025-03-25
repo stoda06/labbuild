@@ -892,7 +892,7 @@ class VmManager(VCenter):
 
             task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
             if self.wait_for_task(task):
-                self.logger.info(f"Linked clone '{clone_name}' created successfully on datastore '{datastore.name}'.")
+                self.logger.debug(f"Linked clone '{clone_name}' created successfully on datastore '{datastore.name}'.")
                 return True
             else:
                 self.logger.error(f"Failed to create linked clone '{clone_name}'.")
