@@ -362,7 +362,9 @@ class NetworkManager(VCenter):
     def create_vswitch_portgroups(self, hostname_fqdn, vswitch_name, port_groups):
         """
         Creates port groups with specified VLAN IDs on the given vSwitch for the provided host.
-
+        
+        Returns True if all operations are successful, or False if any error occurs.
+        
         :param hostname_fqdn: Fully qualified domain name of the host.
         :param vswitch_name: Name of the vSwitch where the port groups should be created.
         :param port_groups: List of dictionaries, each containing 'port_group_name' and 'vlan_id'.
@@ -371,7 +373,7 @@ class NetworkManager(VCenter):
         host = self.get_obj([vim.HostSystem], hostname_fqdn)
         if not host:
             self.logger.error(f"Failed to retrieve host '{hostname_fqdn}'.")
-            return
+            return False
 
         # Directly fetch the HostNetworkSystem object
         host_network_system = host.configManager.networkSystem
@@ -380,7 +382,7 @@ class NetworkManager(VCenter):
         vswitch_exists = next((vs for vs in host_network_system.networkConfig.vswitch if vs.name == vswitch_name), None)
         if not vswitch_exists:
             self.logger.error(f"vSwitch '{vswitch_name}' does not exist on the host '{hostname_fqdn}'.")
-            return
+            return False
 
         # Retrieve the list of port groups for the specific vSwitch only
         existing_port_groups = [
@@ -388,9 +390,11 @@ class NetworkManager(VCenter):
             if pg.spec.vswitchName == vswitch_name
         ]
 
+        overall_success = True
+
         for pg in port_groups:
             port_group_name = pg["port_group_name"]
-            vlan_id = pg['vlan_id']
+            vlan_id = pg["vlan_id"]
 
             # Check if the port group already exists on the specific vSwitch
             if port_group_name in existing_port_groups:
@@ -411,6 +415,9 @@ class NetworkManager(VCenter):
                 self.logger.warning(f"Port group '{port_group_name}' already exists.")
             except vim.fault.NotFound as e:
                 self.logger.error(f"Error: {e.msg}. The vSwitch '{vswitch_name}' might not exist.")
+                overall_success = False
             except Exception as e:
                 self.logger.error(f"An unexpected error occurred while creating port group '{port_group_name}': {e}")
+                overall_success = False
 
+        return overall_success

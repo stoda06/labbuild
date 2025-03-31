@@ -421,8 +421,13 @@ def vendor_setup(service_instance, host_details, args, course_config, selected_c
         class_config["class_number"] = args.class_number
         class_config["class_name"] = f"f5-class{args.class_number}"
         logger.debug("Building F5 class '%s'.", class_config["class_name"])
-        f5.build_class(service_instance, class_config, rebuild=args.re_build, full=args.full,
-                      selected_components=selected_components)
+        result_class = f5.build_class(service_instance, class_config, rebuild=args.re_build, full=args.full,
+                                    selected_components=selected_components)
+        if not result_class[0]:
+            logger.error("F5 class build failed: %s", result_class[2])
+        else:
+            # Update monitor and database immediately after successful F5 class build.
+            on_success_update(result_class, class_config, args, data, extra_details={"class_number": args.class_number})
 
         # Then build each pod synchronously
         for pod in range(int(args.start_pod), int(args.end_pod) + 1):
@@ -432,14 +437,14 @@ def vendor_setup(service_instance, host_details, args, course_config, selected_c
             pod_config["class_number"] = args.class_number
             pod_config["pod_number"] = str(pod)
             try:
-                f5.build_pod(service_instance, pod_config, mem=args.memory, rebuild=args.re_build,
-                             full=args.full, selected_components=selected_components)
+                result_pod = f5.build_pod(service_instance, pod_config, mem=args.memory, rebuild=args.re_build,
+                                        full=args.full, selected_components=selected_components)
                 logger.debug("F5 pod %s built successfully.", pod)
             except Exception as e:
                 logger.error("F5 build for pod %s failed: %s", pod, e, exc_info=True)
                 continue
-            # Update monitor and database immediately after synchronous build
-            update_monitor_and_database(pod_config, args, data, extra_details={"class_number": args.class_number})
+            # Update monitor and database immediately after synchronous pod build.
+            on_success_update(result_pod, pod_config, args, data, extra_details={"class_number": args.class_number})
     else:
         # For vendors other than F5, build pods asynchronously
         futures = []

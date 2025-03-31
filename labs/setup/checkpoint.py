@@ -4,7 +4,7 @@ from managers.network_manager import NetworkManager
 from managers.folder_manager import FolderManager
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.permission_manager import PermissionManager
-import sys
+from tqdm import tqdm
 import re
 from monitor.prtg import PRTGManager
 from logger.log_config import setup_logger
@@ -58,10 +58,6 @@ def update_network_dict(network_dict, pod_number):
 
     return updated_network_dict
 
-
-
-from concurrent.futures import ThreadPoolExecutor
-from tqdm import tqdm
 
 def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=False, selected_components=None) -> tuple:
     vm_mgr = VmManager(service_instance)

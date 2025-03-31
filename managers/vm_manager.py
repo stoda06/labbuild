@@ -285,11 +285,12 @@ class VmManager(VCenter):
         Deletes a virtual machine (VM) by its name.
 
         :param vm_name: The name of the VM to be deleted.
+        :return: True if deletion was successful, False otherwise.
         """
         vm = self.get_obj([vim.VirtualMachine], vm_name)
         if not vm:
             self.logger.error(f"VM '{vm_name}' not found.")
-            return
+            return True
 
         # Check if the VM is powered on. If so, power it off first.
         if vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn:
@@ -298,13 +299,16 @@ class VmManager(VCenter):
             self.wait_for_task(power_off_task)
             self.logger.debug(f"VM '{vm_name}' powered off successfully.")
 
-        # Proceed to delete the VM
+        # Proceed to delete the VM.
         try:
             delete_task = vm.Destroy_Task()
             self.wait_for_task(delete_task)
             self.logger.debug(f"VM '{vm_name}' deleted successfully.")
+            return True
         except Exception as e:
             self.logger.error(f"Failed to delete VM '{vm_name}': {e}")
+            return False
+
 
     def get_vm_max_resources(self, vm_name):
         """
@@ -1332,3 +1336,121 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"Error reconfiguring VM '{vm_name}': {e}")
             return False
+    
+    def execute_command_in_guest(self, vm_name: str, username: str, password: str,
+                                  command: str, timeout: int = 120) -> dict:
+        """
+        Executes a Palo Alto CLI command inside the PAVM using VMware Guest Operations API.
+        The command is wrapped in a bash login shell to load the proper environment.
+        
+        :param vm_name: Name of the VM (the PAVM)
+        :param username: Guest OS username (e.g. "admin")
+        :param password: Guest OS password
+        :param command: The full CLI command you wish to run (e.g. "cli show system info")
+        :param timeout: Timeout in seconds to wait for process completion
+        :return: A dict with keys: pid, exit_code, stdout, stderr; or None on error.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return None
+
+        # Wait until VMware Tools reports readiness
+        start = time.time()
+        while vm.guest.toolsStatus != vim.vm.GuestInfo.ToolsStatus.toolsOk:
+            if time.time() - start > timeout:
+                self.logger.error(f"VMware Tools not ready on VM '{vm_name}'.")
+                return None
+            time.sleep(5)
+            vm.Reload()
+
+        creds = vim.vm.guest.NamePasswordAuthentication(username=username, password=password)
+        gom = self.connection.content.guestOperationsManager
+        proc_mgr = gom.processManager
+        file_mgr = gom.fileManager
+
+        # We redirect output into temporary files.
+        stdout_path, stderr_path = "/tmp/out.txt", "/tmp/err.txt"
+        # Wrap the Palo Alto CLI command inside a bash login shell.
+        bash_args = f'-lc "{command} > {stdout_path} 2> {stderr_path}"'
+        spec = vim.vm.guest.ProcessManager.ProgramSpec(
+            programPath="/bin/bash",
+            arguments=bash_args
+        )
+
+        try:
+            pid = proc_mgr.StartProgramInGuest(vm, creds, spec)
+            self.logger.debug(f"Started PID {pid} in guest '{vm_name}'")
+
+            # Wait for process completion (with timeout)
+            deadline = time.time() + timeout
+            exit_code = None
+            while time.time() < deadline:
+                time.sleep(2)
+                procs = proc_mgr.ListProcessesInGuest(vm, creds, [pid])
+                if procs and procs[0].endTime:
+                    exit_code = procs[0].exitCode
+                    break
+            else:
+                self.logger.error(f"Process {pid} on VM '{vm_name}' timed out after {timeout}s")
+                return {"pid": pid, "exit_code": None, "stdout": "", "stderr": "Process timed out"}
+
+            # Give guest a moment to flush files
+            time.sleep(1)
+
+            def fetch(path):
+                try:
+                    tf = file_mgr.InitiateFileTransferFromGuest(vm, creds, path)
+                    resp = requests.get(tf.url,
+                                        cookies={'vmware_soap_session': self.connection._stub.cookie.split('=', 1)[1]},
+                                        verify=False)
+                    return resp.text
+                except vim.fault.FileNotFound:
+                    self.logger.warning(f"File {path} not found in guest.")
+                    return ""
+                except Exception as e:
+                    self.logger.error(f"Fetch error for {path}: {e}")
+                    return ""
+
+            stdout = fetch(stdout_path)
+            stderr = fetch(stderr_path)
+
+            # Cleanup temporary files (optional)
+            for path in (stdout_path, stderr_path):
+                try:
+                    file_mgr.DeleteFileInGuest(vm, creds, path)
+                except Exception:
+                    pass
+
+            return {"pid": pid, "exit_code": exit_code, "stdout": stdout.strip(), "stderr": stderr.strip()}
+
+        except vim.fault.InvalidGuestLogin:
+            self.logger.error("Invalid guest credentials.")
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to execute command in guest: {e}")
+            return None
+    
+
+    def get_guest_ips(self, vm_name: str) -> list[str]:
+        """
+        Returns a list of all IP addresses reported by VMware Tools for the given VM.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found.")
+            return []
+
+        if not vm.guest.toolsRunningStatus == vim.vm.GuestInfo.ToolsStatus.toolsOk:
+            self.logger.warning(f"VMware Tools not ready on VM '{vm_name}'. IPs may be incomplete.")
+        
+        ips = []
+        for nic in getattr(vm.guest, "net", []):
+            for addr in getattr(nic, "ipAddress", []) or []:
+                # Skip link‑local IPv6 addresses
+                if addr and not addr.startswith(("fe80", "::")):
+                    ips.append(addr)
+
+        if not ips:
+            self.logger.warning(f"No IP addresses reported for VM '{vm_name}'.")
+        return ips

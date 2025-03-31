@@ -51,25 +51,33 @@ def build_class(service_instance, class_config, rebuild=False, full=False, selec
     nm = NetworkManager(service_instance)
     vmm = VmManager(service_instance)
 
+    # STEP 1: Setup networks.
     for network in class_config["networks"]:
         switch_name = network['switch']
-        nm.create_vswitch(class_config["host_fqdn"], switch_name)
+        if not nm.create_vswitch(class_config["host_fqdn"], switch_name):
+            return False, "create_vswitch", f"Failed creating vswitch {switch_name} on host {class_config['host_fqdn']}"
         nm.logger.info(f"Created vswitch {switch_name}.")
-        nm.create_vswitch_portgroups(class_config["host_fqdn"], network["switch"], network["port_groups"])
+        if not nm.create_vswitch_portgroups(class_config["host_fqdn"], network["switch"], network["port_groups"]):
+            return False, "create_vswitch_portgroups", f"Failed creating portgroups on vswitch {switch_name}"
         nm.logger.info(f"Created portgroups on vswitch {switch_name}.")
 
+    # STEP 2: Create class resource pool.
     class_pool = f'f5-class{class_config["class_number"]}'
-    rpm.create_resource_pool(f'f5-{class_config["host_fqdn"][0:2]}', class_pool)
+    if not rpm.create_resource_pool(f'f5-{class_config["host_fqdn"][0:2]}', class_pool):
+        return False, "create_resource_pool", f"Failed creating class resource pool {class_pool}"
     rpm.logger.info(f'Created class resource pool {class_pool}.')
+
+    # STEP 3: Process each group.
     for group in class_config["groups"]:
         group_pool = f'{class_pool}-{group["group_name"]}'
-        rpm.create_resource_pool(class_pool, group_pool)
+        if not rpm.create_resource_pool(class_pool, group_pool):
+            return False, "create_resource_pool", f"Failed creating group resource pool {group_pool}"
         rpm.logger.info(f'Created group resource pool {group_pool}.')
-        if "srv" in group_pool:
 
+        # Process only groups with "srv" in group_pool.
+        if "srv" in group_pool:
             components_to_clone = group["component"]
             if selected_components:
-                # Filter components based on selected_components
                 components_to_clone = [
                     component for component in group["component"]
                     if component["component_name"] in selected_components
@@ -77,103 +85,145 @@ def build_class(service_instance, class_config, rebuild=False, full=False, selec
 
             for component in components_to_clone:
                 clone_name = component["clone_vm"]
+                # STEP 3a: Rebuild deletion.
                 if rebuild:
-                    vmm.delete_vm(clone_name)
+                    if not vmm.delete_vm(clone_name):
+                        return False, "delete_vm", f"Failed deleting VM {clone_name}"
                     vmm.logger.info(f"Deleted VM {clone_name}.")
+
+                # STEP 3b: Clone operation.
                 if not full:
                     if not vmm.snapshot_exists(component["base_vm"], "base"):
-                        vmm.create_snapshot(component["base_vm"], "base", 
-                                            description="Snapshot used for creating linked clones.")
-                    vmm.create_linked_clone(component["base_vm"], clone_name, 
-                                            "base", group_pool)
+                        if not vmm.create_snapshot(component["base_vm"], "base", 
+                                                   description="Snapshot used for creating linked clones."):
+                            return False, "create_snapshot", f"Failed creating snapshot on base VM {component['base_vm']}"
+                    if not vmm.create_linked_clone(component["base_vm"], clone_name, "base", group_pool):
+                        return False, "create_linked_clone", f"Failed creating linked clone {clone_name}"
                     vmm.logger.info(f'Created linked clone {clone_name}.')
                 else:
-                    vmm.clone_vm(component["base_vm"], clone_name, group_pool)
+                    if not vmm.clone_vm(component["base_vm"], clone_name, group_pool):
+                        return False, "clone_vm", f"Failed cloning VM {clone_name}"
                     vmm.logger.info(f'Created direct clone {clone_name}.')
-                
+
+                # STEP 3c: Update VM network.
                 vm_network = vmm.get_vm_network(component["base_vm"])
                 updated_vm_network = update_network_dict(clone_name, vm_network, int(class_config["class_number"]), int(class_config["class_number"]))
-                vmm.update_vm_network(clone_name, updated_vm_network)
-                vmm.connect_networks_to_vm(clone_name, updated_vm_network)
+                if not vmm.update_vm_network(clone_name, updated_vm_network):
+                    return False, "update_vm_network", f"Failed updating network for {clone_name}"
+                if not vmm.connect_networks_to_vm(clone_name, updated_vm_network):
+                    return False, "connect_networks_to_vm", f"Failed connecting networks for {clone_name}"
                 vmm.logger.info(f'Updated VM {clone_name} networks.')
+
+                # STEP 3d: Update serial port if applicable.
                 if "bigip" in component["clone_vm"]:
-                    vmm.update_serial_port_pipe_name(clone_name, "Serial port 1",r"\\.\pipe\com_"+str(class_config["class_number"]))
+                    if not vmm.update_serial_port_pipe_name(clone_name, "Serial port 1", r"\\.\pipe\com_" + str(class_config["class_number"])):
+                        return False, "update_serial_port_pipe", f"Failed updating serial port pipe on {clone_name}"
                     vmm.logger.info(f'Updated serial port pipe name on {clone_name}.')
-                # Create a snapshot of all the cloned VMs to save base config.
+
+                # STEP 3e: Create snapshot on the cloned VM.
                 if not vmm.snapshot_exists(clone_name, "base"):
-                    vmm.create_snapshot(clone_name, "base", 
-                                        description=f"Snapshot of {clone_name}")
-                
+                    if not vmm.create_snapshot(clone_name, "base", description=f"Snapshot of {clone_name}"):
+                        return False, "create_snapshot", f"Failed creating snapshot on {clone_name}"
+
+                # STEP 3f: Power on VM if needed.
                 if component.get("state") != "poweroff":
-                    vmm.poweron_vm(component["clone_vm"])
+                    if not vmm.poweron_vm(component["clone_vm"]):
+                        return False, "poweron_vm", f"Failed powering on {component['clone_vm']}"
+
+    return True, None, None
 
 
 def build_pod(service_instance, pod_config, mem=None, rebuild=False, full=False, selected_components=None):
     vmm = VmManager(service_instance)
     snapshot_name = 'base'
+
+    # Process each group in the pod configuration.
     for group in pod_config["groups"]:
         pod_number = pod_config["pod_number"]
         class_number = pod_config["class_number"]
         pod_pool = f'f5-class{class_number}-{group["group_name"]}'
+
+        # Only process groups that do NOT contain "srv" in the group name.
         if "srv" not in group["group_name"]:
             components_to_clone = group["component"]
             if selected_components:
-                # Filter components based on selected_components
                 components_to_clone = [
                     component for component in group["component"]
                     if component["component_name"] in selected_components
                 ]
-            # Step-3.1: Clone components.
+
+            # STEP 3.1: Clone components.
             for component in components_to_clone:
                 clone_name = component["clone_vm"]
                 if rebuild:
-                    vmm.delete_vm(clone_name)
+                    if not vmm.delete_vm(clone_name):
+                        return False, "delete_vm", f"Failed deleting VM {clone_name}"
                     vmm.logger.info(f'Deleted VM {clone_name}.')
+
                 if not full:
                     if not vmm.snapshot_exists(component["base_vm"], "base"):
-                        vmm.create_snapshot(component["base_vm"], "base", 
-                                            description="Snapshot used for creating linked clones.")
-                    vmm.create_linked_clone(component["base_vm"], clone_name, 
-                                            "base", pod_pool)
+                        if not vmm.create_snapshot(component["base_vm"], "base", 
+                                                   description="Snapshot used for creating linked clones."):
+                            return False, "create_snapshot", f"Failed creating snapshot on base VM {component['base_vm']}"
+                    if not vmm.create_linked_clone(component["base_vm"], clone_name, "base", pod_pool):
+                        return False, "create_linked_clone", f"Failed creating linked clone {clone_name}"
                     vmm.logger.info(f'Created linked clone {clone_name}.')
                 else:
-                    vmm.clone_vm(component["base_vm"], clone_name, pod_pool)
+                    if not vmm.clone_vm(component["base_vm"], clone_name, pod_pool):
+                        return False, "clone_vm", f"Failed cloning VM {clone_name}"
                     vmm.logger.info(f'Created direct clone {clone_name}.')
 
-                # Step-3.2: Update VR Mac adderess and VM networks.
+                # STEP 3.2: Update VM network.
                 vm_network = vmm.get_vm_network(component["base_vm"])
-                update_vm_network = update_network_dict(clone_name, vm_network, int(class_number), int(pod_number))
-                vmm.update_vm_network(clone_name,update_vm_network)
+                updated_vm_network = update_network_dict(clone_name, vm_network, int(class_number), int(pod_number))
+                if not vmm.update_vm_network(clone_name, updated_vm_network):
+                    return False, "update_vm_network", f"Failed updating network for {clone_name}"
                 vmm.logger.info(f'Updated VM {clone_name} networks.')
+
+                # STEP 3.3: Update serial port and modify CD drive if applicable.
                 if "bigip" in clone_name or "w10" in clone_name:
-                    vmm.update_serial_port_pipe_name(clone_name, "Serial port 1",r"\\.\pipe\com_"+pod_number)
+                    if not vmm.update_serial_port_pipe_name(clone_name, "Serial port 1", r"\\.\pipe\com_" + str(pod_number)):
+                        return False, "update_serial_port_pipe", f"Failed updating serial port pipe on {clone_name}"
                     vmm.logger.info(f'Updated serial port pipe name on {clone_name}.')
                     if "w10" in clone_name:
                         drive_name = "CD/DVD drive 1"
                         iso_type = "Datastore ISO file"
+                        # Check for datastore object; assume vmm.get_obj returns a truthy value if found.
                         if vmm.get_obj([vim.Datastore], "keg2"):
                             datastore_name = "keg2" 
                         else:
                             datastore_name = "datastore2-ho"
-                        iso_path = "podiso/pod-"+pod_number+"-a.iso"
-                        vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True)
+                        iso_path = "podiso/pod-" + pod_number + "-a.iso"
+                        if not vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True):
+                            return False, "modify_cd_drive", f"Failed modifying CD drive for {clone_name}"
+                # STEP 3.4: Reconfigure VM resources and update VM UUID if needed.
                 if 'bigip' in clone_name:
                     if mem:
-                        vmm.reconfigure_vm_resources(clone_name, new_memory_size_mb=mem)
+                        if not vmm.reconfigure_vm_resources(clone_name, new_memory_size_mb=mem):
+                            return False, "reconfigure_vm_resources", f"Failed reconfiguring memory for {clone_name}"
                         vmm.logger.info(f'Updated {clone_name} with memory {mem} MB.')
                     hex_pod_number = format(int(pod_number), '02x')
                     uuid = component["uuid"].replace('XX', str(hex_pod_number))
-                    vmm.download_vmx_file(clone_name,f"/tmp/{clone_name}.vmx")
-                    vmm.update_vm_uuid(f"/tmp/{clone_name}.vmx", uuid)
-                    vmm.upload_vmx_file(clone_name, f"/tmp/{clone_name}.vmx")
-                    vmm.verify_uuid(clone_name, uuid)
-                # Create a snapshot of all the cloned VMs to save base config.
+                    if not vmm.download_vmx_file(clone_name, f"/tmp/{clone_name}.vmx"):
+                        return False, "download_vmx_file", f"Failed downloading vmx file for {clone_name}"
+                    if not vmm.update_vm_uuid(f"/tmp/{clone_name}.vmx", uuid):
+                        return False, "update_vm_uuid", f"Failed updating UUID for {clone_name}"
+                    if not vmm.upload_vmx_file(clone_name, f"/tmp/{clone_name}.vmx"):
+                        return False, "upload_vmx_file", f"Failed uploading vmx file for {clone_name}"
+                    if not vmm.verify_uuid(clone_name, uuid):
+                        return False, "verify_uuid", f"UUID verification failed for {clone_name}"
+
+                # STEP 3.5: Create snapshot on the cloned VM.
                 if not vmm.snapshot_exists(clone_name, snapshot_name):
-                    vmm.create_snapshot(clone_name, snapshot_name, 
-                                        description=f"Snapshot of {clone_name}")
-                
+                    if not vmm.create_snapshot(clone_name, snapshot_name, description=f"Snapshot of {clone_name}"):
+                        return False, "create_snapshot", f"Failed creating snapshot on {clone_name}"
+
+                # STEP 3.6: Power on the VM if not marked as poweroff.
                 if component.get("state") != "poweroff":
-                    vmm.poweron_vm(component["clone_vm"])
+                    if not vmm.poweron_vm(component["clone_vm"]):
+                        return False, "poweron_vm", f"Failed powering on {component['clone_vm']}"
+
+    return True, None, None
 
 
 def teardown_class(service_instance, course_config):
