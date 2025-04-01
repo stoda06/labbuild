@@ -1072,13 +1072,14 @@ class VmManager(VCenter):
         :param vm_name: Name of the virtual machine.
         :param serial_port_label: Label of the serial port (e.g., "Serial port 1").
         :param new_pipe_name: New pipe name to be set (e.g., "\\.\pipe\com_21").
+        :return: True if successful, False otherwise.
         """
         try:
             # Get the VM object
             vm = self.get_obj([vim.VirtualMachine], vm_name)
             if not vm:
                 self.logger.error(f"VM {vm_name} not found.")
-                return
+                return False
 
             # Find the serial port by its label
             serial_port = None
@@ -1089,7 +1090,7 @@ class VmManager(VCenter):
 
             if not serial_port:
                 self.logger.error(f"Serial port with label '{serial_port_label}' not found.")
-                return
+                return False
 
             # Update the pipe name
             serial_port.backing.pipeName = new_pipe_name
@@ -1110,11 +1111,15 @@ class VmManager(VCenter):
 
             if task.info.state == 'success':
                 self.logger.debug("Reconfiguration completed successfully.")
+                return True
             else:
                 self.logger.error(f"Reconfiguration task finished with state: {task.info.state}")
+                return False
 
         except Exception as e:
             self.logger.error(f"Error updating serial port pipe name: {e}")
+            return False
+        
     
     def get_cd_drive(self, vm_name):
         """

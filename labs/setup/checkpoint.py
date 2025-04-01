@@ -80,10 +80,15 @@ def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
 
     # STEP 1: Network resources (with progress bar)
     for net in tqdm(pod_config["networks"], desc=f"Pod {pod_number} → network setup", unit="net"):
-        if not network_mgr.create_vswitch(pod_config["host_fqdn"], net["switch_name"]):
+        vswitch_result = network_mgr.create_vswitch(pod_config["host_fqdn"], net["switch_name"])
+        if vswitch_result is False:
             return False, "create_vswitch", f"Failed creating vswitch {net['switch_name']}"
-        if not network_mgr.create_vm_port_groups(pod_config["host_fqdn"], net["switch_name"], net["port_groups"]):
-            return False, "create_vm_port_groups", f"Failed creating port groups on {net['switch_name']}"
+        elif vswitch_result == "RESOURCE_LIMIT":
+            if not network_mgr.create_vswitch_portgroups(pod_config["host_fqdn"], net["switch_name"], net["port_groups"], resource_limit=vswitch_result):
+                return False, "create_vswitch_portgroups", f"Failed creating port groups"
+        if vswitch_result is True:
+            if not network_mgr.create_vswitch_portgroups(pod_config["host_fqdn"], net["switch_name"], net["port_groups"]):
+                return False, "create_vswitch_portgroups", f"Failed creating port groups on {net['switch_name']}"
         pg_names = [pg["port_group_name"] for pg in net["port_groups"]]
         if not network_mgr.apply_user_role_to_networks(domain_user, role, pg_names):
             return False, "apply_user_role_to_networks", f"Failed applying role to networks {pg_names}"

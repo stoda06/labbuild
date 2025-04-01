@@ -1,6 +1,7 @@
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 class NetworkManager(VCenter):
 
@@ -120,8 +121,27 @@ class NetworkManager(VCenter):
             self.logger.error(f"Host '{host_name}' not found.")
             return False
         except vim.fault.ResourceInUse:
-            self.logger.error(f"Virtual switch '{vswitch_name}' is in use and cannot be created.")
-            return False
+            self.logger.error(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}' \
+                              due to resource limitation. Please find an alternate vswitch.")
+            return "RESOURCE_LIMIT"
+        except vim.fault.PlatformConfigFault as e:
+            resource_limit_detected = False
+            # Inspect the faultMessage attribute if available
+            if hasattr(e, "faultMessage") and e.faultMessage:
+                for fm in e.faultMessage:
+                    if hasattr(fm, "message") and ("Out of resources" in fm.message or "VSI_NODE_net_create" in fm.message):
+                        resource_limit_detected = True
+                        break
+            # Fallback to checking e.msg if faultMessage is not available
+            elif "Out of resources" in e.msg or "VSI_NODE_net_create" in e.msg:
+                resource_limit_detected = True
+
+            if resource_limit_detected:
+                self.logger.error(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}' due to resource limitation. Please find an alternate vswitch.")
+                return "RESOURCE_LIMIT"
+            else:
+                self.logger.error(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
+                return False
         except Exception as e:
             self.logger.error(f"Failed to create virtual switch '{vswitch_name}' on host '{host_name}': {e}")
             return False
@@ -359,15 +379,23 @@ class NetworkManager(VCenter):
             self.logger.error(f"Failed to delete port group '{port_group_name}' from switch '{switch_name}': {e}")
             return False
     
-    def create_vswitch_portgroups(self, hostname_fqdn, vswitch_name, port_groups):
+
+    def create_vswitch_portgroups(self, hostname_fqdn, vswitch_name, port_groups, resource_limit=None):
         """
         Creates port groups with specified VLAN IDs on the given vSwitch for the provided host.
+        
+        If resource_limit is set to "RESOURCE_LIMIT", then it will search for an alternate vswitch 
+        (based on substrings extracted from vswitch_name) and check that none of the VLAN IDs in 
+        the provided port_groups are already in use on that vswitch. If a candidate is found, it 
+        proceeds with port group creation on that vswitch. If all candidate vswitches are exhausted 
+        (i.e., for each candidate, at least one VLAN ID is already in use), then the operation is deemed failed.
         
         Returns True if all operations are successful, or False if any error occurs.
         
         :param hostname_fqdn: Fully qualified domain name of the host.
         :param vswitch_name: Name of the vSwitch where the port groups should be created.
         :param port_groups: List of dictionaries, each containing 'port_group_name' and 'vlan_id'.
+        :param resource_limit: Optional flag. If set to "RESOURCE_LIMIT", alternate vswitches will be searched.
         """
         # Fetch the host object using its fully qualified domain name
         host = self.get_obj([vim.HostSystem], hostname_fqdn)
@@ -378,46 +406,129 @@ class NetworkManager(VCenter):
         # Directly fetch the HostNetworkSystem object
         host_network_system = host.configManager.networkSystem
 
-        # Check if the vSwitch exists before proceeding
-        vswitch_exists = next((vs for vs in host_network_system.networkConfig.vswitch if vs.name == vswitch_name), None)
-        if not vswitch_exists:
-            self.logger.error(f"vSwitch '{vswitch_name}' does not exist on the host '{hostname_fqdn}'.")
+        if resource_limit == "RESOURCE_LIMIT":
+            # Use regex to split the vswitch_name into substrings.
+            # For example, "vs10-cp" -> ["vs", "-cp"]
+            substrings = [s for s in re.split(r'\d+', vswitch_name) if s]
+            self.logger.debug(f"Extracted substrings from '{vswitch_name}': {substrings}")
+
+            # Find candidate vswitches that contain all the substrings in their names.
+            candidate_vswitches = [
+                vs for vs in host_network_system.networkConfig.vswitch
+                if all(sub in vs.name for sub in substrings)
+            ]
+            if not candidate_vswitches:
+                self.logger.error("No candidate vswitch found for alternate port groups creation.")
+                return False
+
+            # Iterate over candidate vswitches
+            for candidate in candidate_vswitches:
+                candidate_name = candidate.name
+                if "vs0" in candidate_name:
+                    continue
+                self.logger.debug(f"Evaluating candidate vswitch '{candidate_name}'.")
+                # Retrieve all portgroups on the candidate vswitch
+                candidate_portgroups = [
+                    pg.spec for pg in host_network_system.networkConfig.portgroup
+                    if pg.spec.vswitchName == candidate_name
+                ]
+                # Build a set of VLAN IDs already in use on the candidate vswitch
+                candidate_vlan_ids = {pg.vlanId for pg in candidate_portgroups}
+                self.logger.debug(f"Candidate vswitch '{candidate_name}' has VLAN IDs: {candidate_vlan_ids}")
+
+                # Check if any of the requested VLAN IDs are already in use
+                conflict = False
+                for pg in port_groups:
+                    new_vlan_id = pg["vlan_id"]+100
+                    if new_vlan_id in candidate_vlan_ids:
+                        conflict = True
+                        self.logger.info(f"Candidate vswitch '{candidate_name}' already has VLAN id {new_vlan_id} in use.")
+                        break
+
+                # If there is a conflict, try the next candidate vswitch
+                if conflict:
+                    continue
+
+                # If candidate is valid, attempt to create the port groups on this candidate vswitch
+                overall_success = True
+                for pg in port_groups:
+                    port_group_name = pg["port_group_name"]
+                    vlan_id = pg["vlan_id"] + 100
+                    print(f"{port_group_name} vlandId: {vlan_id}")
+
+                    # Check if the port group already exists on the candidate vswitch
+                    existing_pg_names = [
+                        pg_obj.spec.name for pg_obj in host_network_system.networkConfig.portgroup
+                        if pg_obj.spec.vswitchName == candidate_name
+                    ]
+                    if port_group_name in existing_pg_names:
+                        self.logger.warning(f"Port group '{port_group_name}' already exists on switch '{candidate_name}'. Skipping.")
+                        continue
+
+                    port_group_spec = vim.host.PortGroup.Specification()
+                    port_group_spec.name = port_group_name
+                    port_group_spec.vlanId = vlan_id
+                    port_group_spec.vswitchName = candidate_name
+                    port_group_spec.policy = vim.host.NetworkPolicy()
+
+                    try:
+                        host_network_system.AddPortGroup(portgrp=port_group_spec)
+                        self.logger.info(f"Port group '{port_group_name}' created successfully on switch '{candidate_name}'.")
+                    except vim.fault.AlreadyExists:
+                        self.logger.warning(f"Port group '{port_group_name}' already exists on '{candidate_name}'.")
+                    except vim.fault.NotFound as e:
+                        self.logger.error(f"Error: {e.msg}. The vSwitch '{candidate_name}' might not exist.")
+                        overall_success = False
+                    except Exception as e:
+                        self.logger.error(f"An unexpected error occurred while creating port group '{port_group_name}' on switch '{candidate_name}': {e}")
+                        overall_success = False
+
+                if overall_success:
+                    return True
+
+            # If we have exhausted all candidate vswitches without success, return False.
+            self.logger.error("All candidate vswitches are exhausted. Failed to create port groups due to resource limitations.")
             return False
 
-        # Retrieve the list of port groups for the specific vSwitch only
-        existing_port_groups = [
-            pg.spec.name for pg in host_network_system.networkConfig.portgroup
-            if pg.spec.vswitchName == vswitch_name
-        ]
+        else:
+            # Standard logic if resource_limit is not provided.
+            vswitch_exists = next((vs for vs in host_network_system.networkConfig.vswitch if vs.name == vswitch_name), None)
+            if not vswitch_exists:
+                self.logger.error(f"vSwitch '{vswitch_name}' does not exist on the host '{hostname_fqdn}'.")
+                return False
 
-        overall_success = True
+            # Retrieve the list of port groups for the specific vSwitch only
+            existing_port_groups = [
+                pg.spec.name for pg in host_network_system.networkConfig.portgroup
+                if pg.spec.vswitchName == vswitch_name
+            ]
 
-        for pg in port_groups:
-            port_group_name = pg["port_group_name"]
-            vlan_id = pg["vlan_id"]
+            overall_success = True
 
-            # Check if the port group already exists on the specific vSwitch
-            if port_group_name in existing_port_groups:
-                self.logger.warning(f"Port group '{port_group_name}' already exists on switch '{vswitch_name}'. Skipping.")
-                continue
+            for pg in port_groups:
+                port_group_name = pg["port_group_name"]
+                vlan_id = pg["vlan_id"]
 
-            port_group_spec = vim.host.PortGroup.Specification()
-            port_group_spec.name = port_group_name
-            port_group_spec.vlanId = vlan_id
-            port_group_spec.vswitchName = vswitch_name
-            port_group_spec.policy = vim.host.NetworkPolicy()
+                if port_group_name in existing_port_groups:
+                    self.logger.warning(f"Port group '{port_group_name}' already exists on switch '{vswitch_name}'. Skipping.")
+                    continue
 
-            try:
-                # Directly create the port group on the specific vSwitch
-                host_network_system.AddPortGroup(portgrp=port_group_spec)
-                self.logger.info(f"Port group '{port_group_name}' created successfully on switch '{vswitch_name}'.")
-            except vim.fault.AlreadyExists:
-                self.logger.warning(f"Port group '{port_group_name}' already exists.")
-            except vim.fault.NotFound as e:
-                self.logger.error(f"Error: {e.msg}. The vSwitch '{vswitch_name}' might not exist.")
-                overall_success = False
-            except Exception as e:
-                self.logger.error(f"An unexpected error occurred while creating port group '{port_group_name}': {e}")
-                overall_success = False
+                port_group_spec = vim.host.PortGroup.Specification()
+                port_group_spec.name = port_group_name
+                port_group_spec.vlanId = vlan_id
+                port_group_spec.vswitchName = vswitch_name
+                port_group_spec.policy = vim.host.NetworkPolicy()
 
-        return overall_success
+                try:
+                    host_network_system.AddPortGroup(portgrp=port_group_spec)
+                    self.logger.info(f"Port group '{port_group_name}' created successfully on switch '{vswitch_name}'.")
+                except vim.fault.AlreadyExists:
+                    self.logger.warning(f"Port group '{port_group_name}' already exists.")
+                except vim.fault.NotFound as e:
+                    self.logger.error(f"Error: {e.msg}. The vSwitch '{vswitch_name}' might not exist.")
+                    overall_success = False
+                except Exception as e:
+                    self.logger.error(f"An unexpected error occurred while creating port group '{port_group_name}': {e}")
+                    overall_success = False
+
+            return overall_success

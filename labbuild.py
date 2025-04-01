@@ -384,12 +384,13 @@ def wait_for_futures(futures: list):
 # -----------------------------------------------------------------------------
 # Callback for Successful Build
 # -----------------------------------------------------------------------------
-def on_success_update(future, pod_config, args, data, extra_details=None):
-    """
-    Callback invoked when a build finishes.
-    Unpacks build_cp_pod’s (success, step, error) return value.
-    """
-    success, failed_step, error = future.result()
+def on_success_update(task, pod_config, args, data, extra_details=None):
+    # If task has a 'result' method, it is a future; otherwise, it's the result tuple
+    if hasattr(task, "result"):
+        success, failed_step, error = task.result()
+    else:
+        success, failed_step, error = task
+
     pod_number = pod_config["pod_number"]
 
     if success:
@@ -834,6 +835,7 @@ def manage_environment(args):
             futures.append(future)
             power_status = "True" if args.operation == "start" else "False"
             pod_details = {"pod_number": pod, "pod_host": args.host, "poweron": power_status}
+            # Add a pause function if the VM is powered off
             data["pod_details"].append(pod_details)
             update_database(data)
         wait_for_futures(futures)
@@ -982,8 +984,13 @@ def main():
 
 
 if __name__ == "__main__":
-    start_time = time.perf_counter()
-    main()
-    end_time = time.perf_counter()
-    duration_minutes = (end_time - start_time) / 60
-    logger.info("Program completed in %.2f minutes.", duration_minutes)
+    try:
+        start_time = time.perf_counter()
+        main()
+        end_time = time.perf_counter()
+        duration_minutes = (end_time - start_time) / 60
+        logger.info("Program completed in %.2f minutes.", duration_minutes)
+    except KeyboardInterrupt:
+        print("\nProgram terminated by user.")
+        logger.info("Program terminated by user via Ctrl+C.")
+        sys.exit(0)
