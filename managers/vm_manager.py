@@ -67,7 +67,7 @@ class VmManager(VCenter):
             existing_vm = self.get_obj([vim.VirtualMachine], clone_name)
             if existing_vm:
                 self.logger.warning(f"VM '{clone_name}' already exists.")
-                return
+                return True
             
             base_vm = self.get_obj([vim.VirtualMachine], base_name)
             # If the base VM is not found, check all hosts in the datacenter
@@ -88,19 +88,19 @@ class VmManager(VCenter):
                             break
                 if not base_vm:
                     self.logger.error(f"Base VM '{base_name}' not found on any host in the datacenter.")
-                    return
+                    return False
 
             resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
             if not resource_pool:
                 self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
-                return
+                return False
 
             vm_folder = None
             if directory_name:
                 vm_folder = self.get_obj([vim.Folder], directory_name)
                 if not vm_folder:
                     self.logger.error(f"VM Folder '{directory_name}' not found.")
-                    return
+                    return False
             else:
                 datacenter = self.get_obj([vim.Datacenter], "Red Education")
                 vm_folder = datacenter.vmFolder
@@ -109,7 +109,7 @@ class VmManager(VCenter):
                 datastore = self.get_obj([vim.Datastore], datastore_name)
                 if not datastore:
                     self.logger.error(f"Datastore '{datastore_name}' not found.")
-                    return
+                    return False
             else:
                 datastore = base_vm.datastore[0]
 
@@ -140,10 +140,13 @@ class VmManager(VCenter):
             self.logger.debug(f"Datastore overutilized, proceeding with cloning VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
             if self.wait_for_task(task):
                 self.logger.info(f"VM '{clone_name}' cloned successfully from base VM '{base_name}' on datastore '{datastore.name}'.")
+                return True
             else:
                 self.logger.error(f"Failed to clone VM '{clone_name}' from base VM '{base_name}' into folder '{directory_name}'.")
+                return False
         except Exception as e:
             self.logger.error(f"Failed to clone VM '{clone_name}': {e}")
+            return False
 
     def find_vm_folder_by_name(self, folder_name, starting_folder=None):
         """
