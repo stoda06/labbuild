@@ -311,6 +311,8 @@ def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, se
     for network in tqdm(pod_config["networks"], desc=f"Pod {pod} → Network setup", unit="net"):
         solved_port_groups = solve_vlan_id(network["port_groups"])
         if rebuild:
+            if not vm_manager.delete_vm(component["clone_name"]):
+                return False, "delete_vm", f"Failed deleting VM {component['clone_name']}"
             if not network_manager.delete_port_groups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
                 return False, "delete_port_groups", f"Failed deleting port groups on {network['switch_name']}"
         if not network_manager.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
@@ -331,10 +333,6 @@ def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, se
             resource_pool = component["component_name"] + "-un"
         else:
             resource_pool = component["component_name"]
-        
-        if rebuild:
-            if not vm_manager.delete_vm(component["clone_name"]):
-                return False, "delete_vm", f"Failed deleting VM {component['clone_name']}"
         
         if not full:
             if not vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool):
