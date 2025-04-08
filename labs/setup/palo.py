@@ -254,6 +254,8 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             if not vmm.delete_vm(component["clone_name"]):
                 return False, "delete_vm", f"Failed deleting VM {component['clone_name']}"
         if not full:
+            if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", "Base snapshot"):
+                return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
             vmm.logger.info(f'Creating linked clone for {component["clone_name"]}.')
             if not vmm.create_linked_clone(component["base_vm"], component["clone_name"], "base", group_name):
                 return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
@@ -335,6 +337,8 @@ def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, se
             resource_pool = component["component_name"]
         
         if not full:
+            if not vm_manager.snapshot_exists(component["base_vm"], "base") and not vm_manager.create_snapshot(component["base_vm"], "base", "Base snapshot"):
+                return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
             if not vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool):
                 return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
         else:
