@@ -167,6 +167,29 @@ def build_ipo_pod(service_instance, pod_config, rebuild=False, selected_componen
             futures.append(poweron_future)
         wait_for_task(futures)
         futures.clear()
+
+def build_aep_pod(service_instance, pod_config, selected_components=None):
+    
+    vm_manager = VmManager(service_instance)
+
+    if selected_components:
+        # Filter components based on selected_components
+        components_to_clone = [
+            component for component in pod_config["components"]
+            if component["component_name"] in selected_components
+        ]
+
+    for component in components_to_clone:
+        vm_manager.poweroff_vm(component["clone_name"])
+        if pod_config["type"] == "common":
+            if "Student" not in component["component_name"]:
+                vm_manager.revert_to_snapshot(component["clone_name"],component["snapshot"])
+                vm_manager.poweron_vm(component["clone_name"])
+        if pod_config["type"] == "student":
+            if "Student" in component["component_name"]:
+                vm_manager.revert_to_snapshot(component["clone_name"],component["snapshot"])
+                vm_manager.poweron_vm(component["clone_name"])
+        
     
 def teardown_ipo(service_instance, pod_config):
     vm_manager = VmManager(service_instance)
