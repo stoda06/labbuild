@@ -12,10 +12,13 @@ from dotenv import load_dotenv
 import datetime
 import pytz # For timezone support
 from bson import ObjectId
+import json
 import logging
 from urllib.parse import quote_plus # Ensure quote_plus is imported
 import re
 import math
+
+from flask.json.provider import DefaultJSONProvider
 
 # --- APScheduler Setup ---
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -33,6 +36,22 @@ load_dotenv(os.path.join(project_root, '.env'))
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", "change_this_in_production") # CHANGE THIS!
 app.logger.setLevel(logging.INFO) # Set Flask logger level
+
+# --- Custom JSON Provider to handle BSON types ---
+class BsonJSONProvider(DefaultJSONProvider):
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj) # Convert ObjectId to string
+        if isinstance(obj, datetime.datetime):
+            # Ensure datetime is handled correctly (e.g., ISO format)
+            # Your format_datetime helper should handle this, but as a fallback:
+            return obj.isoformat()
+        # Let the default method handle others
+        return super().default(obj)
+
+# Assign the custom provider to the app
+app.json = BsonJSONProvider(app)
+# --- End Custom JSON Provider Setup ---
 
 # --- MongoDB Connection ---
 MONGO_USER = os.getenv("MONGO_USER", "labbuild_user")
