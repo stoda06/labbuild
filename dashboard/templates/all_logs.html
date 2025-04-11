@@ -1,0 +1,136 @@
+{% extends 'base.html' %}
+
+{% block title %}All Operation Logs{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+     <h1>All Operation Logs</h1>
+     <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+  </div>
+
+  {# --- Filter Form --- #}
+  <div class="card mb-4">
+    <div class="card-header">Filter Logs</div>
+    <div class="card-body">
+      {# Form submits using GET to update URL query parameters #}
+      <form action="{{ url_for('all_logs') }}" method="GET" class="row g-3">
+        <div class="col-md-3">
+          <label for="filter_run_id" class="form-label">Run ID (contains)</label>
+          <input type="text" class="form-control form-control-sm" id="filter_run_id" name="filter_run_id" value="{{ current_filters.get('filter_run_id', '') }}">
+        </div>
+        <div class="col-md-3">
+          <label for="filter_command" class="form-label">Command (contains)</label>
+          <input type="text" class="form-control form-control-sm" id="filter_command" name="filter_command" value="{{ current_filters.get('filter_command', '') }}">
+        </div>
+         <div class="col-md-3">
+          <label for="filter_vendor" class="form-label">Vendor (exact)</label>
+          <input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}">
+        </div>
+         <div class="col-md-3">
+          <label for="filter_host" class="form-label">Host (exact)</label>
+          <input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}">
+        </div>
+        <div class="col-md-3">
+          <label for="filter_status" class="form-label">Overall Status (contains)</label>
+          <input type="text" class="form-control form-control-sm" id="filter_status" name="filter_status" value="{{ current_filters.get('filter_status', '') }}">
+        </div>
+        <div class="col-md-3">
+          <label for="filter_start_after" class="form-label">Started After</label>
+          <input type="date" class="form-control form-control-sm" id="filter_start_after" name="filter_start_after" value="{{ current_filters.get('filter_start_after', '') }}">
+        </div>
+        <div class="col-md-3">
+          <label for="filter_start_before" class="form-label">Started Before</label>
+          <input type="date" class="form-control form-control-sm" id="filter_start_before" name="filter_start_before" value="{{ current_filters.get('filter_start_before', '') }}">
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+          <a href="{{ url_for('all_logs') }}" class="btn btn-secondary btn-sm">Clear Filters</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {# --- Log Table --- #}
+  <div class="card">
+    <div class="card-header">Log Entries ({{ total_logs }} total)</div>
+    <div class="card-body">
+      {% if logs %}
+        <div class="table-responsive">
+          <table class="table table-sm table-striped table-hover">
+            <thead>
+              <tr>
+                <th>Run ID</th>
+                <th>Command</th>
+                <th>Vendor</th> {# Added Vendor #}
+                <th>Host</th>   {# Added Host #}
+                <th>Start Time</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th>Success</th>
+                <th>Failed</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for run in logs %}
+              <tr>
+                <td><small>{{ run.run_id }}</small></td>
+                <td>{{ run.command }}</td>
+                <td>{{ run.args.get('vendor', 'N/A') }}</td> {# Extract from args #}
+                <td>{{ run.args.get('host', 'N/A') }}</td>   {# Extract from args #}
+                <td><span class="local-datetime" data-timestamp="{{ run.start_time_iso }}"></span></td>
+                <td>{{ ('%.2f'|format(run.duration_seconds)) if run.duration_seconds is not none else '...' }}s</td>
+                <td class="status-{{ run.overall_status|lower|replace(' ', '_') }}">
+                    {{ run.overall_status }}
+                     {% if run.overall_status == 'running' %}
+                         <span class="spinner-border spinner-border-sm text-primary ms-1" role="status" aria-hidden="true"></span>
+                     {% endif %}
+                </td>
+                <td>{{ run.summary.success_count if run.summary else '?' }}</td>
+                <td>{{ run.summary.failure_count if run.summary else '?'}}</td>
+                <td><a href="{{ url_for('log_detail', run_id=run.run_id) }}" class="btn btn-secondary btn-sm">View Details</a></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {# --- Pagination --- #}
+        {% if total_pages > 1 %}
+        <nav aria-label="Log pagination">
+          <ul class="pagination pagination-sm justify-content-center">
+            {# Previous Page Link #}
+            <li class="page-item {{ 'disabled' if current_page == 1 else '' }}">
+              {# Preserve filter args in pagination links #}
+              <a class="page-link" href="{{ url_for('all_logs', page=current_page-1, **pagination_args) }}">Previous</a>
+            </li>
+
+            {# Page Number Links (Optional: Add logic for ellipsis for many pages) #}
+            {% for page_num in range(1, total_pages + 1) %}
+              <li class="page-item {{ 'active' if page_num == current_page else '' }}">
+                <a class="page-link" href="{{ url_for('all_logs', page=page_num, **pagination_args) }}">{{ page_num }}</a>
+              </li>
+            {% endfor %}
+
+            {# Next Page Link #}
+            <li class="page-item {{ 'disabled' if current_page == total_pages else '' }}">
+              <a class="page-link" href="{{ url_for('all_logs', page=current_page+1, **pagination_args) }}">Next</a>
+            </li>
+          </ul>
+        </nav>
+        {% endif %}
+        {# --- End Pagination --- #}
+
+      {% else %}
+        <p>No logs found matching the criteria.</p>
+      {% endif %}
+    </div> {# End card-body #}
+  </div> {# End card #}
+
+{% endblock %}
+
+{# --- Page Specific Scripts --- #}
+{% block scripts %}
+{{ super() }} {# Includes dark mode and base timezone JS #}
+{# Add any JS specific to this page if needed #}
+{% endblock %}

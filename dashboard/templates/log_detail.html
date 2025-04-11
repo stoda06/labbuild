@@ -1,0 +1,96 @@
+{% extends 'base.html' %}
+
+{% block title %}Run Log: {{ log.run_id or run_id }}{% endblock %}
+
+{% block content %}
+
+{# --- Operation Summary Card --- #}
+<div class="card run-summary-card mb-4"> {# Added mb-4 #}
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Run Details</span>
+    <small class="text-muted">{{ log.run_id or run_id }}</small>
+  </div>
+  <div class="card-body">
+      {% if log %}
+          <div class="row">
+            <div class="col-md-6 mb-3 mb-md-0">
+              <p><strong>Command:</strong> {{ log.command }}</p>
+              <p><strong>Status:</strong> <span class="status-{{ log.overall_status|lower|replace(' ', '_') }}">{{ log.overall_status }}</span></p>
+              <p><strong>Start Time:</strong> <span class="local-datetime" data-timestamp="{{ log.start_time_iso }}"></span></p>
+              <p><strong>End Time:</strong> <span class="local-datetime" data-timestamp="{{ log.end_time_iso }}"></span></p>
+              <p><strong>Duration:</strong> {{ ('%.2f'|format(log.duration_seconds)) if log.duration_seconds is not none else 'N/A' }} seconds</p>
+              <p><strong>Success Count:</strong> {{ log.summary.success_count }}</p>
+              <p><strong>Failure Count:</strong> {{ log.summary.failure_count }}</p>
+            </div>
+            <div class="col-md-6">
+              <strong>Arguments:</strong>
+              <pre class="p-2 rounded border" style="font-size: 0.8rem; max-height: 250px; overflow-y: auto;"><code>{{ log.args | tojson(indent=2) }}</code></pre>
+            </div>
+          </div>
+      {% else %}
+        <p class="text-warning">Operation summary log not found (run might have failed early or is still running).</p>
+      {% endif %}
+   </div>{# End card-body #}
+</div> {# End card #}
+
+{# --- Pod/Class Statuses Card --- #}
+{% if log and log.pod_statuses %}
+<div class="card pod-status-card mb-4"> {# Added mb-4 #}
+    <div class="card-header">Pod/Class Statuses</div>
+    <div class="card-body">
+         <div class="table-responsive">
+            <table class="table table-sm table-bordered pod-status-table">
+              <thead class="table-light"> {# Optional header background #}
+                <tr><th>Timestamp</th><th>Identifier</th><th>Class ID</th><th>Status</th><th>Failed Step</th><th>Error Message</th></tr>
+              </thead>
+              <tbody>
+                {% for pod_log in log.pod_statuses %}
+                <tr class="{{ 'table-danger' if pod_log.status == 'failed' else 'table-success' if pod_log.status == 'success' else 'table-secondary' if pod_log.status == 'skipped' else '' }}">
+                  <td><small><span class="local-datetime" data-timestamp="{{ pod_log.timestamp_iso }}"></span></small></td>
+                  <td>{{ pod_log.identifier }}</td>
+                  <td>{{ pod_log.class_identifier or 'N/A' }}</td>
+                  <td class="status-{{ pod_log.status|lower }}">{{ pod_log.status }}</td>
+                  <td><small>{{ pod_log.failed_step or '-' }}</small></td>
+                  <td><small>{{ pod_log.error_message or '-' }}</small></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+    </div> {# End card-body #}
+</div> {# End card #}
+{% endif %}
+
+
+{# --- DEBUG: Standard Logs Section --- #}
+<div class="card std-logs-card mb-4">
+    <div class="card-header">Standard Output Logs (DEBUG)</div>
+    <div class="card-body">
+        <p>Found {{ std_logs | length }} standard log entries for this run.</p>
+        {% if std_logs %}
+            <pre style="max-height: 400px; overflow-y: auto; font-size: 0.8rem; padding: 10px; border-radius: 4px;" class="border"><code>
+                {# Print the first few raw documents #}
+                Raw Data (First 5):
+                {{ std_logs[:5] | tojson(indent=2) }}
+
+                --- Formatted Attempt ---
+                {% for line in std_logs -%}
+                {{ line.get('timestamp_iso', 'NO_TS') }} - {{ line.get('logger_name', 'NO_LOGGER') }} - {{ line.get('level', 'NO_LVL') }} - {{ line.get('message', 'NO_MSG') }}
+                {% endfor %}
+            </code></pre>
+        {% else %}
+            <p>No standard logs found in the passed 'std_logs' variable.</p>
+        {% endif %}
+    </div>
+</div>
+{# --- End DEBUG Section --- #}
+
+<a href="{{ url_for('index') }}" class="btn btn-secondary mt-3 mb-4">Back to Dashboard</a>
+
+{% endblock %}
+
+{# --- Add page-specific JS to the scripts block in base.html --- #}
+{% block scripts %}
+{{ super() }} {# Includes dark mode and base timezone JS #}
+{# No additional JS needed specifically for this detail page #}
+{% endblock %}

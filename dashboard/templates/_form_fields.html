@@ -1,0 +1,114 @@
+{# Reusable form fields - include this in runForm and scheduleForm #}
+{# Use Bootstrap margin bottom class mb-3 on columns for spacing #}
+<div class="col-md-4 mb-3">
+  <label for="command" class="form-label">Command</label>
+  <select class="form-select" id="command" name="command" required>
+    <option value="" disabled selected>Select Command...</option> {# Add placeholder #}
+    <option value="setup">Setup</option>
+    <option value="teardown">Teardown</option>
+    <option value="manage">Manage</option>
+  </select>
+</div>
+{# --- Vendor Dropdown --- #}
+<div class="col-md-4 mb-3">
+  <label for="vendor" class="form-label">Vendor</label>
+  <select class="form-select" id="vendor" name="vendor" required>
+    <option value="" disabled selected>Select Vendor...</option>
+    {# Loop through vendors passed from Flask #}
+    {% for v in vendors %}
+      <option value="{{ v }}">{{ v|upper }}</option> {# Display uppercase #}
+    {% endfor %}
+  </select>
+</div>
+
+{# --- Course Autocomplete --- #}
+<div class="col-md-4 mb-3">
+  <label for="course" class="form-label">Course</label>
+  {# Add list attribute pointing to datalist id #}
+  <input type="text" class="form-control" id="course" name="course" placeholder="Start typing course..." required list="course-suggestions">
+  {# Datalist to hold suggestions #}
+  <datalist id="course-suggestions">
+      {# Options will be populated by JavaScript #}
+  </datalist>
+</div>
+
+{# --- Host Dropdown --- #}
+<div class="col-md-4 mb-3">
+  <label for="host" class="form-label">Host</label>
+  <select class="form-select" id="host" name="host">
+      <option value="">Select Host</option>
+       {# Loop through hosts passed from Flask #}
+      {% for h in hosts %}
+        <option value="{{ h }}">{{ h }}</option>
+      {% endfor %}
+  </select>
+  <div class="form-text">Required for most operations</div>
+</div>
+<div class="col-md-2 mb-3">
+  <label for="start_pod" class="form-label">Start Pod</label>
+  <input type="number" class="form-control" id="start_pod" name="start_pod" min="0">
+</div>
+<div class="col-md-2 mb-3">
+  <label for="end_pod" class="form-label">End Pod</label>
+  <input type="number" class="form-control" id="end_pod" name="end_pod" min="0">
+</div>
+<div class="col-md-4 mb-3">
+  <label for="class_number" class="form-label">F5 Class #</label>
+  <input type="number" class="form-control" id="class_number" name="class_number" min="0">
+  <div class="form-text">Required for F5</div>
+</div>
+<div class="col-md-4 mb-3">
+  <label for="tag" class="form-label">Tag</label>
+  <input type="text" class="form-control" id="tag" name="tag" value="dashboard">
+</div>
+<div class="col-md-4 mb-3">
+    <label for="operation" class="form-label">Manage Operation</label>
+    <select class="form-select" id="operation" name="operation">
+      <option value="">N/A</option>
+      <option value="start">Start</option>
+      <option value="stop">Stop</option>
+      <option value="reboot">Reboot</option>
+    </select>
+     <div class="form-text">Required for Manage</div>
+</div>
+<div class="col-md-4 mb-3">
+    <label for="component" class="form-label">Component(s)</label>
+    <input type="text" class="form-control" id="component" name="component" placeholder="Optional, comma-separated">
+</div>
+
+{# Options Section #}
+<div class="col-12 mb-3">
+    <label class="form-label d-block mb-2">Options:</label> {# Use d-block for spacing #}
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" id="re_build" name="re_build" value="on"> {# Add value="on" #}
+      <label class="form-check-label" for="re_build">Rebuild</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" id="full" name="full" value="on">
+      <label class="form-check-label" for="full">Full Clone</label>
+    </div>
+     <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" id="monitor_only" name="monitor_only" value="on">
+      <label class="form-check-label" for="monitor_only">Monitor Only</label>
+    </div>
+     <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" id="db_only" name="db_only" value="on">
+      <label class="form-check-label" for="db_only">DB Only</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" id="perm" name="perm" value="on">
+      <label class="form-check-label" for="perm">Perm Only (CP)</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" id="verbose" name="verbose" value="on">
+      <label class="form-check-label" for="verbose">Verbose Logging</label>
+    </div>
+     <div class="col-md-4 mb-3 d-inline-block align-top"> {# Example other fields #}
+        <label for="memory" class="form-label">F5 Memory (MB)</label>
+        <input type="number" class="form-control form-control-sm" id="memory" name="memory" min="0">
+     </div>
+      <div class="col-md-4 mb-3 d-inline-block align-top">
+        <label for="prtg_server" class="form-label">PRTG Server</label>
+        <input type="text" class="form-control form-control-sm" id="prtg_server" name="prtg_server" placeholder="Optional PRTG server name">
+     </div>
+</div>
