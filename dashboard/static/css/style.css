@@ -42,6 +42,15 @@
     --table-striped-bg-dark: rgba(255, 255, 255, 0.05);
     --table-hover-bg-dark: rgba(255, 255, 255, 0.075);
 
+    /* Add specific dark text colors */
+    --text-color-dark: #e0e0e0; /* Main text */
+    --text-muted-dark: #adb5bd; /* Muted text */
+    --table-color-dark: var(--text-color-dark);
+    --table-striped-color-dark: var(--text-color-dark);
+    --table-hover-color-dark: var(--text-color-dark);
+    --link-color-dark: #69a6f3; /* Lighter blue for links */
+    --link-hover-color-dark: #8cbaff;
+
     --status-running: #fd7e14;
     --status-completed: #198754;
     --status-completed_with_errors: #ffc107;

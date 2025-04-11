@@ -1,0 +1,143 @@
+{% extends 'base.html' %}
+
+{% block title %}Current Allocations{% endblock %}
+
+{% block content %}
+<style>
+    /* Optional: Minimal styling for better readability */
+    .allocation-table th, .allocation-table td {
+        font-size: 0.9rem;
+        vertical-align: middle;
+    }
+    .action-forms form {
+        margin-bottom: 0; /* Prevent extra space between forms */
+    }
+     .delete-btn { /* Keep icon button style */
+        color: var(--bs-danger); background: none; border: none;
+        padding: 0.1rem 0.4rem; line-height: 1; font-size: 1rem;
+        opacity: 0.65; transition: opacity 0.2s ease; vertical-align: middle;
+        cursor: pointer;
+    }
+    .delete-btn:hover { color: var(--bs-danger); opacity: 1; }
+    html.dark-mode .delete-btn { color: #ff8a80; }
+    html.dark-mode .delete-btn:hover { color: #ff5252; }
+     .prtg-link { vertical-align: middle; }
+
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+   <h1>Current Allocations</h1>
+   <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+</div>
+
+{# --- Filter Form (Keep as before) --- #}
+<div class="card mb-4">
+  <div class="card-header">Filter Allocations</div>
+  <div class="card-body">
+    <form action="{{ url_for('view_allocations') }}" method="GET" class="row g-3">
+      <div class="col-md-3"><label for="filter_tag" class="form-label">Tag (exact)</label><input type="text" class="form-control form-control-sm" id="filter_tag" name="filter_tag" value="{{ current_filters.get('filter_tag', '') }}"></div>
+      <div class="col-md-2"><label for="filter_vendor" class="form-label">Vendor (exact)</label><input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}"></div>
+      <div class="col-md-3"><label for="filter_course" class="form-label">Course (contains)</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
+      <div class="col-md-2"><label for="filter_host" class="form-label">Host (contains)</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
+      <div class="col-md-2"><label for="filter_number" class="form-label">Pod/Class # (exact)</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
+      <div class="col-12"><button type="submit" class="btn btn-primary btn-sm">Filter</button> <a href="{{ url_for('view_allocations') }}" class="btn btn-secondary btn-sm">Clear Filters</a></div>
+    </form>
+  </div>
+</div>
+
+{# --- Allocation Table --- #}
+<div class="card">
+  <div class="card-header">Allocation List ({{ total_logs }} total matching)</div>
+  <div class="card-body p-0"> {# Use p-0 if table is directly inside #}
+    {% if allocations %}
+      <div class="table-responsive">
+        <table class="table table-sm table-striped table-hover mb-0 allocation-table">
+          <thead class="table-light">
+            <tr>
+              <th>Host</th>
+              <th>Tag</th>
+              <th>Vendor</th>
+              <th>Course</th>
+              <th>Type</th>
+              <th>Number</th>
+              <th>PRTG</th>
+              <th class="text-end">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in allocations %}
+              <tr>
+                <td>{{ item.host }}</td>
+                <td>{{ item.tag }}</td>
+                <td>{{ item.vendor|upper }}</td>
+                <td>{{ item.course }}</td>
+                <td><span class="badge bg-secondary me-1">{{ item.id_type }}</span></td>
+                <td>
+                    {{ item.number }}
+                    {% if item.class_number %} {# F5 Pod - show class context #}
+                        <small class="d-block text-muted">(Class {{ item.class_number }})</small>
+                    {% endif %}
+                </td>
+                <td> {# PRTG Col #}
+                    {% if item.prtg_url %}
+                        <a href="{{ item.prtg_url }}" target="_blank" class="btn btn-outline-info btn-sm p-0 px-2 prtg-link" title="View PRTG"><i class="fas fa-chart-line fa-xs"></i></a>
+                    {% else %}
+                        <span class="text-muted">N/A</span>
+                    {% endif %}
+                </td>
+                <td class="text-end action-forms"> {# Actions Col #}
+                     {# Teardown Button #}
+                     <form action="{{ url_for('teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown {{ item.id_type }} {{ item.number }}?')">
+                         <input type="hidden" name="delete_level" value="{{ 'class' if item.is_f5_class else 'pod' }}">
+                         <input type="hidden" name="tag" value="{{ item.tag }}">
+                         <input type="hidden" name="host" value="{{ item.host }}">
+                         <input type="hidden" name="vendor" value="{{ item.vendor }}">
+                         <input type="hidden" name="course" value="{{ item.course }}">
+                         {% if item.id_type == 'Pod' %} <input type="hidden" name="pod_number" value="{{ item.number }}"> {% endif %}
+                         {% if item.is_f5_class or item.class_number %} <input type="hidden" name="class_number" value="{{ item.class_number if item.class_number else item.number }}"> {% endif %}
+                         <button type="submit" class="delete-btn text-danger" title="Teardown {{ item.id_type }} {{ item.number }}">
+                             <i class="fas fa-trash-alt"></i> {# Trash Icon for Teardown #}
+                         </button>
+                     </form>
+                     {# DB Delete Button (for Pod/Class) #}
+                     <form action="{{ url_for('teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry for {{ item.id_type }} {{ item.number }}?')">
+                         <input type="hidden" name="delete_level" value="{{ 'class_db' if item.is_f5_class else 'pod_db' }}">
+                         <input type="hidden" name="tag" value="{{ item.tag }}"><input type="hidden" name="course" value="{{ item.course }}">
+                         {% if item.id_type == 'Pod' %} <input type="hidden" name="pod_number" value="{{ item.number }}"> {% endif %}
+                         {% if item.is_f5_class or item.class_number %} <input type="hidden" name="class_number" value="{{ item.class_number if item.class_number else item.number }}"> {% endif %}
+                         <button type="submit" class="delete-btn text-warning" title="Delete DB Entry Only for {{ item.id_type }} {{ item.number }}">
+                             <i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i> {# DB + X Icon for DB Delete #}
+                         </button>
+                     </form>
+                     {# Add Tag/Course DB Delete buttons here if desired per-row, but might be messy #}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {# --- Pagination (Unchanged) --- #}
+      {% if total_pages > 1 %}
+        <nav aria-label="Log pagination" class="p-3">
+          <ul class="pagination pagination-sm justify-content-center">
+            <li class="page-item {{ 'disabled' if current_page == 1 else '' }}"><a class="page-link" href="{{ url_for('view_allocations', page=current_page-1, **pagination_args) }}">Previous</a></li>
+            {% for page_num in range(1, total_pages + 1) %}
+              <li class="page-item {{ 'active' if page_num == current_page else '' }}"><a class="page-link" href="{{ url_for('view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a></li>
+            {% endfor %}
+            <li class="page-item {{ 'disabled' if current_page == total_pages else '' }}"><a class="page-link" href="{{ url_for('view_allocations', page=current_page+1, **pagination_args) }}">Next</a></li>
+          </ul>
+        </nav>
+      {% endif %}
+
+    {% else %}
+      <p class="p-3">No allocations found matching filters.</p>
+    {% endif %}
+  </div> {# End card-body #}
+</div> {# End card #}
+
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }} {# Include base scripts #}
+{% endblock %}

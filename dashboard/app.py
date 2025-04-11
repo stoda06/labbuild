@@ -2,7 +2,8 @@
 
 import os
 import sys
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, make_response
+from flask import (Flask, render_template, request, redirect, url_for,
+                   flash, jsonify, make_response, Response, stream_with_context)
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, PyMongoError
 import subprocess
@@ -17,6 +18,7 @@ import logging
 from urllib.parse import quote_plus # Ensure quote_plus is imported
 import re
 import math
+from collections import defaultdict
 
 from flask.json.provider import DefaultJSONProvider
 
@@ -29,7 +31,26 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 # --- Configuration ---
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+
+# --- Add project root to sys.path BEFORE importing local modules ---
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    print(f"--- DEBUG: Added {project_root} to sys.path ---") # Debug
+else:
+    print(f"--- DEBUG: {project_root} already in sys.path ---") # Debug
+print(f"--- DEBUG: sys.path = {sys.path} ---") # Debug
+
+# --- NOW Import local modules ---
+try:
+    from constants import * # Import constants
+    from db_utils import delete_from_database # Import DB utils AFTER path insert
+    from config_utils import fetch_and_prepare_course_config, extract_components, get_host_by_name
+    from vcenter_utils import get_vcenter_instance
+    # operation_logger might not be needed directly in app.py
+except ImportError as e:
+    print(f"--- CRITICAL: Failed to import local modules after path modification. Error: {e} ---", file=sys.stderr)
+    print(f"--- CRITICAL: Check if files exist in '{project_root}' and structure is correct. ---", file=sys.stderr)
+    sys.exit(1)
 load_dotenv(os.path.join(project_root, '.env'))
 
 # --- Flask App Initialization ---
@@ -64,6 +85,7 @@ SCHEDULE_COLLECTION = "scheduled_jobs"
 # --- Add constants for config collections ---
 COURSE_CONFIG_COLLECTION = "courseconfig"
 HOST_COLLECTION = "host"
+ALLOCATION_COLLECTION = "currentallocation"
 
 if not MONGO_HOST:
     app.logger.critical("MONGO_HOST environment variable not set. Exiting.")
@@ -80,6 +102,7 @@ try:
     std_logs_collection = db[STD_LOG_COLLECTION]
     course_config_collection = db[COURSE_CONFIG_COLLECTION]
     host_collection = db[HOST_COLLECTION]
+    alloc_collection = db[ALLOCATION_COLLECTION]
     app.logger.info("Successfully connected App MongoDB client.")
 
     # Separate client specifically for the scheduler job store
@@ -353,6 +376,215 @@ def api_courses():
 
     return jsonify(suggestions)
 
+@app.route('/allocations')
+def view_allocations():
+    """Displays current allocations from the database, sorted and paginated."""
+    current_theme = request.cookies.get('theme', 'light')
+    page = request.args.get('page', 1, type=int)
+    per_page = 50 # Number of logs per page
+    allocation_list = [] # Flattened list of allocation items
+
+    # --- Get filter parameters from query string ---
+    current_filters = {k: v for k, v in request.args.items() if k != 'page'}
+
+    # --- Build MongoDB filter based on request args ---
+    mongo_filter = {}
+    tag_filter = request.args.get('filter_tag', '').strip()
+    if tag_filter: mongo_filter['tag'] = {'$regex': f'^{re.escape(tag_filter)}$', '$options': 'i'}
+    vendor_filter = request.args.get('filter_vendor', '').strip()
+    if vendor_filter: mongo_filter['courses.vendor'] = {'$regex': f'^{re.escape(vendor_filter)}$', '$options': 'i'}
+    course_filter = request.args.get('filter_course', '').strip()
+    if course_filter: mongo_filter['courses.course_name'] = {'$regex': re.escape(course_filter), '$options': 'i'}
+    host_filter = request.args.get('filter_host', '').strip() # Applied after fetch
+    number_filter_str = request.args.get('filter_number', '').strip()
+    number_filter_int = None
+    if number_filter_str:
+        try: number_filter_int = int(number_filter_str)
+        except ValueError: flash("Invalid number for filtering.", "warning")
+
+    app.logger.debug(f"Initial allocation query filter: {mongo_filter}")
+    docs_to_process = []
+    try:
+        alloc_cursor = alloc_collection.find(mongo_filter)
+        docs_to_process = list(alloc_cursor)
+    except PyMongoError as e:
+        app.logger.error(f"Error fetching allocations: {e}")
+        flash("Error fetching current allocations from database.", "danger")
+
+    # --- Flatten and Apply Post-Filters (Host, Number) ---
+    for tag_doc in docs_to_process:
+        tag = tag_doc.get("tag", "Unknown Tag")
+        for course in tag_doc.get("courses", []):
+            if not isinstance(course, dict): continue
+            course_name = course.get("course_name", "Unknown")
+            vendor = course.get("vendor"); vendor_str = str(vendor) if vendor else "N/A"
+
+            # Apply post-filters if needed (redundant check if already in mongo_filter, but safe)
+            if vendor_filter and vendor_str.lower() != vendor_filter.lower(): continue
+            if course_filter and course_filter.lower() not in course_name.lower(): continue
+
+            is_f5_vendor = vendor_str.lower() == 'f5'
+
+            for pod_detail in course.get("pod_details", []):
+                if not isinstance(pod_detail, dict): continue
+                host = pod_detail.get("host", pod_detail.get("pod_host", "Unknown Host"))
+                pod_num = pod_detail.get("pod_number"); class_num = pod_detail.get("class_number")
+                prtg_url = pod_detail.get("prtg_url")
+
+                # Apply post-filter: host
+                if host_filter and host_filter.lower() not in host.lower(): continue
+
+                # Function to check number filter
+                def matches_number(item_num):
+                    return number_filter_int is None or item_num == number_filter_int
+
+                if is_f5_vendor and class_num is not None:
+                    if matches_number(class_num): # Check class number
+                         allocation_list.append({ "tag": tag, "course": course_name, "vendor": vendor_str, "host": host, "id_type": "Class", "number": class_num, "prtg_url": prtg_url, "is_f5_class": True, "class_number_sort": class_num, "pod_number_sort": -1 })
+                    for nested_pod in pod_detail.get("pods", []):
+                        if isinstance(nested_pod, dict):
+                            nested_pod_num = nested_pod.get("pod_number"); nested_host = nested_pod.get("host", host); nested_prtg = nested_pod.get("prtg_url")
+                            if nested_pod_num is not None and matches_number(nested_pod_num):
+                                if host_filter and host_filter.lower() not in nested_host.lower(): continue # Filter nested pod host
+                                allocation_list.append({ "tag": tag, "course": course_name, "vendor": vendor_str, "host": nested_host, "id_type": "Pod", "number": nested_pod_num, "prtg_url": nested_prtg, "class_number": class_num, "is_f5_class": False, "class_number_sort": class_num, "pod_number_sort": nested_pod_num })
+                elif pod_num is not None:
+                    if matches_number(pod_num): # Check pod number
+                         allocation_list.append({ "tag": tag, "course": course_name, "vendor": vendor_str, "host": host, "id_type": "Pod", "number": pod_num, "prtg_url": prtg_url, "is_f5_class": False, "class_number_sort": -1, "pod_number_sort": pod_num })
+
+    # --- Sort and Paginate the final filtered list ---
+    allocation_list.sort(key=lambda x: (x['host'], x['tag'], x['vendor'], x['course'], x.get('class_number_sort', -1), x.get('pod_number_sort', -1)))
+    total_logs = len(allocation_list) # Total after filtering
+    total_pages = math.ceil(total_logs / per_page) if per_page > 0 else 1
+    start_index = (page - 1) * per_page
+    end_index = start_index + per_page
+    paginated_allocations = allocation_list[start_index:end_index]
+
+    pagination_args = current_filters.copy()
+
+    return render_template(
+        'allocations.html', # Point back to allocations.html
+        allocations=paginated_allocations, # Pass the flat, sorted, paginated list
+        current_page=page,
+        total_pages=total_pages,
+        total_logs=total_logs,
+        pagination_args=pagination_args,
+        current_filters=current_filters, # For repopulating filter form
+        current_theme=current_theme
+    )
+
+# --- NEW Route for Handling Teardown ---
+@app.route('/teardown-item', methods=['POST'])
+def teardown_item():
+    """
+    Triggers teardown OR direct DB deletion based on delete_level.
+    """
+    try:
+        # Extract common identifiers
+        tag = request.form.get('tag')
+        host = request.form.get('host')
+        vendor = request.form.get('vendor')
+        course = request.form.get('course')
+        # Extract specific identifiers
+        pod_num_str = request.form.get('pod_number')
+        class_num_str = request.form.get('class_number')
+        # Determine deletion level
+        delete_level = request.form.get('delete_level') # 'tag', 'course', 'class', 'pod', 'tag_db', 'course_db', 'class_db', 'pod_db'
+
+        if not delete_level or not tag:
+             flash("Missing required information (level or tag) for action.", "danger")
+             return redirect(url_for('view_allocations'))
+
+        # Convert numbers if present
+        pod_num = int(pod_num_str) if pod_num_str else None
+        class_num = int(class_num_str) if class_num_str else None
+
+        # --- Handle DB Deletion Actions ---
+        if delete_level.endswith('_db'):
+            app.logger.info(f"Processing direct DB delete request: Level='{delete_level}', Tag='{tag}', Course='{course}', Pod='{pod_num}', Class='{class_num}'")
+            success = False
+            item_desc = ""
+            if delete_level == 'tag_db':
+                success = delete_from_database(tag=tag)
+                item_desc = f"Tag '{tag}'"
+            elif delete_level == 'course_db':
+                if not course: flash("Course name required for course DB deletion.", "warning"); return redirect(url_for('view_allocations'))
+                success = delete_from_database(tag=tag, course_name=course)
+                item_desc = f"Course '{course}' (Tag: {tag})"
+            elif delete_level == 'class_db':
+                if not course or class_num is None: flash("Course & Class# required for class DB deletion.", "warning"); return redirect(url_for('view_allocations'))
+                success = delete_from_database(tag=tag, course_name=course, class_number=class_num)
+                item_desc = f"Class {class_num} (Course: {course}, Tag: {tag})"
+            elif delete_level == 'pod_db':
+                if not course or pod_num is None: flash("Course & Pod# required for pod DB deletion.", "warning"); return redirect(url_for('view_allocations'))
+                success = delete_from_database(tag=tag, course_name=course, pod_number=pod_num, class_number=class_num) # Pass class_num for F5 context
+                item_desc = f"Pod {pod_num}" + (f" (Class {class_num})" if class_num is not None else "") + f" (Course: {course}, Tag: {tag})"
+
+            if success:
+                flash(f"Removed DB entry for {item_desc}.", 'success')
+            else:
+                flash(f"Failed to remove DB entry for {item_desc}. Check logs.", 'danger')
+            return redirect(url_for('view_allocations'))
+
+        # --- Handle Full Teardown Actions (Run labbuild.py) ---
+        elif delete_level in ['tag', 'course', 'class', 'pod']:
+            args_list = []
+            item_desc = ""
+            if not all([vendor, course, host]): # Check required args for labbuild call
+                flash("Vendor, Course, and Host are required for teardown command.", "danger")
+                return redirect(url_for('view_allocations'))
+
+            if delete_level == 'tag':
+                # As noted before, labbuild doesn't directly support tag teardown.
+                # Reverting to DB delete for now. Change this if labbuild is updated.
+                app.logger.info(f"Attempting direct DB deletion for Tag '{tag}'")
+                delete_from_database(tag=tag)
+                flash(f"Removed Tag '{tag}' directly from database. Associated VMs/Monitors may still exist.", 'success')
+                return redirect(url_for('view_allocations'))
+                # Original placeholder command:
+                # args_list = ['-v', vendor, 'teardown', '-g', course, '--host', host, '-t', tag]
+                # item_desc = f"Tag '{tag}' (Note: May affect multiple courses)"
+
+            elif delete_level == 'course':
+                # Similar limitation for course-level teardown via command line
+                app.logger.info(f"Attempting direct DB deletion for Course '{course}' Tag '{tag}'")
+                delete_from_database(tag=tag, course_name=course)
+                flash(f"Removed Course '{course}' (Tag: {tag}) directly from database. Associated VMs/Monitors may still exist.", 'success')
+                return redirect(url_for('view_allocations'))
+                # Original placeholder command:
+                # args_list = ['-v', vendor, 'teardown', '-g', course, '--host', host, '-t', tag]
+                # item_desc = f"Course '{course}' (Tag: {tag})"
+
+            elif delete_level == 'class' and vendor.lower() == 'f5' and class_num is not None:
+                args_list = ['-v', vendor, 'teardown', '-g', course, '--host', host, '-t', tag, '-cn', str(class_num)]
+                item_desc = f"F5 Class {class_num}"
+
+            elif delete_level == 'pod' and pod_num is not None:
+                args_list = ['-v', vendor, 'teardown', '-g', course, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
+                item_desc = f"Pod {pod_num}"
+                if vendor.lower() == 'f5' and class_num is not None:
+                    args_list.extend(['-cn', str(class_num)])
+                    item_desc += f" (Class {class_num})"
+            else:
+                 flash("Invalid teardown level or missing identifiers.", "danger")
+                 return redirect(url_for('view_allocations'))
+
+            # Execute in background thread
+            if args_list:
+                thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True)
+                thread.start()
+                flash(f"Submitted teardown for {item_desc}. Check operation logs for status.", 'info')
+            else:
+                 flash("Failed to build teardown command.", "danger")
+
+        else: # Unknown delete_level
+            flash("Invalid delete action specified.", "danger")
+
+    except Exception as e:
+        app.logger.error(f"Error processing teardown request: {e}", exc_info=True)
+        flash(f"Error submitting teardown: {e}", 'danger')
+
+    return redirect(url_for('view_allocations'))
+
 @app.route('/run', methods=['POST'])
 def run_now():
     """Handle immediate run request."""
@@ -515,6 +747,101 @@ def all_logs():
         current_filters=current_filters, # Pass filters to repopulate form
         current_theme=current_theme
     )
+
+@app.route('/terminal')
+def terminal():
+    """Renders the pseudo-terminal page."""
+    current_theme = request.cookies.get('theme', 'light')
+    # You could pass history or other data if needed
+    return render_template('terminal.html', current_theme=current_theme)
+
+# --- NEW: SSE Route to Stream Command Output ---
+def stream_labbuild_process(full_command_list):
+    """
+    Generator function to run labbuild.py and yield its stdout/stderr lines.
+    """
+    app.logger.info(f"Streaming command: {' '.join(shlex.quote(arg) for arg in full_command_list)}")
+    try:
+        # Use Popen for real-time reading of stdout/stderr
+        process = subprocess.Popen(
+            full_command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, # Combine stderr into stdout
+            text=True, # Decode output as text
+            encoding='utf-8', # Specify encoding
+            errors='replace', # Handle potential decoding errors
+            cwd=project_root, # Run from project root
+            bufsize=1 # Line-buffered
+        )
+
+        # Stream output line by line
+        if process.stdout:
+            for line in iter(process.stdout.readline, ''):
+                # Format for SSE: data: <line>\n\n
+                # Replace newlines within the line itself to avoid breaking SSE format
+                formatted_line = line.replace('\n', '\\n')
+                yield f"data: {formatted_line}\n\n"
+                # time.sleep(0.01) # Optional small delay if needed
+
+        process.stdout.close() # Close the pipe
+        return_code = process.wait() # Wait for the process to finish
+        app.logger.info(f"Command finished with return code: {return_code}")
+        yield f"event: close\ndata: Process finished with exit code {return_code}\n\n"
+
+    except FileNotFoundError:
+         err_msg = f"Error: '{full_command_list[1]}' not found."
+         app.logger.error(err_msg)
+         yield f"event: error\ndata: {err_msg}\n\n"
+         yield f"event: close\ndata: Process failed\n\n"
+    except Exception as e:
+        err_msg = f"Subprocess execution error: {e}"
+        app.logger.error(f"Failed run labbuild subprocess stream: {e}", exc_info=True)
+        yield f"event: error\ndata: {err_msg}\n\n"
+        yield f"event: close\ndata: Process failed\n\n"
+
+
+@app.route('/stream-command', methods=['POST'])
+def stream_command():
+    """
+    Handles the command submission from the terminal form
+    and returns an SSE stream.
+    """
+    command_line = request.form.get('command', '')
+    if not command_line:
+        # Should ideally return an error response, but SSE makes this tricky.
+        # The client-side JS should prevent empty submissions.
+        return Response("data: error: Empty command received\n\n", mimetype="text/event-stream")
+
+    # Basic validation: ensure it starts with 'labbuild' or 'python labbuild.py'
+    # This is NOT a security measure, just a basic sanity check.
+    # Real security requires sandboxing or more robust validation.
+    if not command_line.strip().startswith(('labbuild ', 'python labbuild.py ')):
+         return Response("event: error\ndata: Invalid command. Only labbuild commands allowed.\n\nevent: close\ndata: Invalid command\n\n", mimetype="text/event-stream")
+
+    # Split the command line safely
+    try:
+        if command_line.strip().startswith('python '):
+            # Handle `python labbuild.py ...` case
+             parts = shlex.split(command_line, posix=True) # Use posix=False on Windows if needed
+             if len(parts) < 2 or not parts[1].endswith('labbuild.py'):
+                 raise ValueError("Invalid python command format.")
+             # Rebuild command list for subprocess
+             labbuild_script_path = os.path.join(project_root, parts[1]) # Construct full path
+             full_command_list = [sys.executable, labbuild_script_path] + parts[2:]
+        elif command_line.strip().startswith('labbuild '):
+             # Handle `labbuild ...` case
+             parts = shlex.split(command_line, posix=True)
+             labbuild_script_path = os.path.join(project_root, 'labbuild.py') # Assume script name
+             full_command_list = [sys.executable, labbuild_script_path] + parts[1:]
+        else:
+              raise ValueError("Command must start with 'labbuild ' or 'python labbuild.py '")
+
+    except ValueError as e:
+        return Response(f"event: error\ndata: Error parsing command: {e}\n\nevent: close\ndata: Invalid command format\n\n", mimetype="text/event-stream")
+
+    # Return the streaming response
+    # stream_with_context ensures the generator runs within the app context if needed
+    return Response(stream_with_context(stream_labbuild_process(full_command_list)), mimetype='text/event-stream')
 
 # --- Cleanup Scheduler on Exit ---
 def shutdown_scheduler():
