@@ -1,96 +1,112 @@
+{# dashboard/templates/log_detail.html #}
 {% extends 'base.html' %}
 
 {% block title %}Run Log: {{ log.run_id or run_id }}{% endblock %}
 
 {% block content %}
 
-{# --- Operation Summary Card --- #}
-<div class="card run-summary-card mb-4"> {# Added mb-4 #}
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <span>Run Details</span>
-    <small class="text-muted">{{ log.run_id or run_id }}</small>
-  </div>
-  <div class="card-body">
-      {% if log %}
-          <div class="row">
-            <div class="col-md-6 mb-3 mb-md-0">
-              <p><strong>Command:</strong> {{ log.command }}</p>
-              <p><strong>Status:</strong> <span class="status-{{ log.overall_status|lower|replace(' ', '_') }}">{{ log.overall_status }}</span></p>
-              <p><strong>Start Time:</strong> <span class="local-datetime" data-timestamp="{{ log.start_time_iso }}"></span></p>
-              <p><strong>End Time:</strong> <span class="local-datetime" data-timestamp="{{ log.end_time_iso }}"></span></p>
-              <p><strong>Duration:</strong> {{ ('%.2f'|format(log.duration_seconds)) if log.duration_seconds is not none else 'N/A' }} seconds</p>
-              <p><strong>Success Count:</strong> {{ log.summary.success_count }}</p>
-              <p><strong>Failure Count:</strong> {{ log.summary.failure_count }}</p>
-            </div>
-            <div class="col-md-6">
-              <strong>Arguments:</strong>
-              <pre class="p-2 rounded border" style="font-size: 0.8rem; max-height: 250px; overflow-y: auto;"><code>{{ log.args | tojson(indent=2) }}</code></pre>
-            </div>
-          </div>
-      {% else %}
-        <p class="text-warning">Operation summary log not found (run might have failed early or is still running).</p>
-      {% endif %}
-   </div>{# End card-body #}
-</div> {# End card #}
-
-{# --- Pod/Class Statuses Card --- #}
-{% if log and log.pod_statuses %}
-<div class="card pod-status-card mb-4"> {# Added mb-4 #}
-    <div class="card-header">Pod/Class Statuses</div>
+{# --- Operation Summary Card (Unchanged) --- #}
+<div class="card run-summary-card mb-4">
+    {# ... Card content ... #}
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Run Details</span> <small class="text-muted">{{ log.run_id or run_id }}</small>
+    </div>
     <div class="card-body">
-         <div class="table-responsive">
-            <table class="table table-sm table-bordered pod-status-table">
-              <thead class="table-light"> {# Optional header background #}
-                <tr><th>Timestamp</th><th>Identifier</th><th>Class ID</th><th>Status</th><th>Failed Step</th><th>Error Message</th></tr>
-              </thead>
-              <tbody>
-                {% for pod_log in log.pod_statuses %}
-                <tr class="{{ 'table-danger' if pod_log.status == 'failed' else 'table-success' if pod_log.status == 'success' else 'table-secondary' if pod_log.status == 'skipped' else '' }}">
-                  <td><small><span class="local-datetime" data-timestamp="{{ pod_log.timestamp_iso }}"></span></small></td>
-                  <td>{{ pod_log.identifier }}</td>
-                  <td>{{ pod_log.class_identifier or 'N/A' }}</td>
-                  <td class="status-{{ pod_log.status|lower }}">{{ pod_log.status }}</td>
-                  <td><small>{{ pod_log.failed_step or '-' }}</small></td>
-                  <td><small>{{ pod_log.error_message or '-' }}</small></td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-    </div> {# End card-body #}
-</div> {# End card #}
-{% endif %}
-
-
-{# --- DEBUG: Standard Logs Section --- #}
-<div class="card std-logs-card mb-4">
-    <div class="card-header">Standard Output Logs (DEBUG)</div>
-    <div class="card-body">
-        <p>Found {{ std_logs | length }} standard log entries for this run.</p>
-        {% if std_logs %}
-            <pre style="max-height: 400px; overflow-y: auto; font-size: 0.8rem; padding: 10px; border-radius: 4px;" class="border"><code>
-                {# Print the first few raw documents #}
-                Raw Data (First 5):
-                {{ std_logs[:5] | tojson(indent=2) }}
-
-                --- Formatted Attempt ---
-                {% for line in std_logs -%}
-                {{ line.get('timestamp_iso', 'NO_TS') }} - {{ line.get('logger_name', 'NO_LOGGER') }} - {{ line.get('level', 'NO_LVL') }} - {{ line.get('message', 'NO_MSG') }}
-                {% endfor %}
-            </code></pre>
-        {% else %}
-            <p>No standard logs found in the passed 'std_logs' variable.</p>
-        {% endif %}
+        {% if log %}
+            <div class="row">
+                <div class="col-md-6 mb-3 mb-md-0">
+                    <p><strong>Command:</strong> {{ log.command }}</p>
+                    <p><strong>Status:</strong> <span class="status-{{ log.overall_status|lower|replace(' ', '_') }}">{{ log.overall_status }}</span></p>
+                    <p><strong>Start Time:</strong> <span class="local-datetime" data-timestamp="{{ log.start_time_iso }}"></span></p>
+                    <p><strong>End Time:</strong> <span class="local-datetime" data-timestamp="{{ log.end_time_iso }}"></span></p>
+                    <p><strong>Duration:</strong> {{ ('%.2f'|format(log.duration_seconds)) if log.duration_seconds is not none else 'N/A' }} seconds</p>
+                    <p><strong>Success Count:</strong> {{ log.summary.success_count }}</p>
+                    <p><strong>Failure Count:</strong> {{ log.summary.failure_count }}</p>
+                </div>
+                <div class="col-md-6">
+                    <strong>Arguments:</strong>
+                    <pre class="p-2 rounded border" style="font-size: 0.8rem; max-height: 250px; overflow-y: auto;"><code>{{ log.args | tojson(indent=2) }}</code></pre>
+                </div>
+            </div>
+        {% else %} <p class="text-warning">Operation summary log not found.</p> {% endif %}
     </div>
 </div>
-{# --- End DEBUG Section --- #}
 
+{# --- Pod/Class Statuses Card (Unchanged) --- #}
+{% if log and log.pod_statuses %}
+<div class="card pod-status-card mb-4">
+    {# ... Card content ... #}
+     <div class="card-header">Pod/Class Statuses</div>
+    <div class="card-body"> <div class="table-responsive"> <table class="table table-sm table-bordered pod-status-table"> <thead class="table-light"> <tr><th>Timestamp</th><th>Identifier</th><th>Class ID</th><th>Status</th><th>Failed Step</th><th>Error Message</th></tr> </thead> <tbody> {% for pod_log in log.pod_statuses %} <tr class="{{ 'table-danger' if pod_log.status == 'failed' else 'table-success' if pod_log.status == 'success' else 'table-secondary' if pod_log.status == 'skipped' else '' }}"> <td><small><span class="local-datetime" data-timestamp="{{ pod_log.timestamp_iso }}"></span></small></td> <td>{{ pod_log.identifier }}</td> <td>{{ pod_log.class_identifier or 'N/A' }}</td> <td class="status-{{ pod_log.status|lower }}">{{ pod_log.status }}</td> <td><small>{{ pod_log.failed_step or '-' }}</small></td> <td><small>{{ pod_log.error_message or '-' }}</small></td> </tr> {% endfor %} </tbody> </table> </div> </div>
+</div>
+{% endif %}
+
+{# --- Standard Logs Section - Static Render --- #}
+<div class="card std-logs-card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Detailed Log Messages</span>
+        <span class="badge bg-info">Total: {{ std_log_count }}</span>
+    </div>
+    <div class="card-body">
+        <pre id="detailed-log-output" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; padding: 10px; border-radius: 4px;" class="border bg-light text-dark"><code>{# Loop through the messages array passed from Flask #}
+{%- if detailed_log_messages -%}
+{%-   for msg in detailed_log_messages -%}
+{#-     Safely handle timestamp -#}
+{%-     set timestamp_iso_str = msg.timestamp_iso if msg.timestamp_iso else "" -%} {# Use empty string if None for data-attribute #}
+{%-     set timestamp_display_str = msg.timestamp_iso if msg.timestamp_iso else "No Timestamp" -%} {# Text to display initially #}
+{%-     set level = msg.level or 'UNKNOWN' -%}
+{%-     set logger_name = msg.logger_name or 'unknown' -%}
+{%-     set message = msg.message or '' -%}
+<div class="log-line log-level-{{ level | lower }}{{ ' log-error' if level in ['ERROR', 'CRITICAL'] else ' log-warning' if level == 'WARNING' else '' }}">
+    <span class="local-datetime" data-timestamp="{{ timestamp_iso_str }}">{{ timestamp_display_str }}</span> [{{ level }}] {{ logger_name }}: {{ message }}
+</div>
+{%-   endfor -%}
+{%- else -%}
+<div>No detailed log messages found for this run.</div>
+{%- endif -%}
+</code></pre>
+        {# Styles (Unchanged) #}
+        <style>
+            body.dark-mode #detailed-log-output { background-color: #212529; border-color: #495057; color: #e9ecef; }
+            #detailed-log-output .log-line { margin-bottom: 2px; white-space: pre-wrap; word-wrap: break-word; }
+            #detailed-log-output .log-error { color: #dc3545; font-weight: bold; }
+            #detailed-log-output .log-warning { color: #ffc107; }
+            body.dark-mode #detailed-log-output .log-error { color: #f88; }
+            body.dark-mode #detailed-log-output .log-warning { color: #fdcb6e; }
+        </style>
+    </div>
+</div>
+{# --- End Standard Logs Section --- #}
+
+<a href="{{ url_for('all_logs') }}" class="btn btn-secondary mt-3 mb-4">Back to All Logs</a>
 <a href="{{ url_for('index') }}" class="btn btn-secondary mt-3 mb-4">Back to Dashboard</a>
 
 {% endblock %}
 
-{# --- Add page-specific JS to the scripts block in base.html --- #}
+{# --- Keep Simplified Javascript Block for Time Formatting --- #}
 {% block scripts %}
-{{ super() }} {# Includes dark mode and base timezone JS #}
-{# No additional JS needed specifically for this detail page #}
+{{ super() }}
+<script>
+    // Ensure base formatLocalDateTime function exists
+     if (typeof formatLocalDateTime !== 'function') { console.warn("formatLocalDateTime not found!"); window.formatLocalDateTime = (iso) => iso || 'N/A'; }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        // Format initially rendered timestamps
+        document.querySelectorAll('.local-datetime').forEach(span => {
+             const isoTimestamp = span.dataset.timestamp;
+             // Check if timestamp is a non-empty string before formatting
+             if (isoTimestamp && typeof isoTimestamp === 'string') {
+                 try {
+                      span.textContent = formatLocalDateTime(isoTimestamp);
+                 } catch (e) {
+                      console.error("Error formatting timestamp:", isoTimestamp, e);
+                      span.textContent = 'Invalid Date'; // Show error if formatting fails
+                 }
+                 span.classList.add('js-formatted-time');
+             } else if (!span.textContent) { // Set placeholder if no text content from Jinja
+                  span.textContent = 'No Timestamp';
+             }
+        });
+    }); // End of DOMContentLoaded listener
+</script>
 {% endblock %}

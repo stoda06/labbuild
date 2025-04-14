@@ -19,6 +19,9 @@ from urllib.parse import quote_plus # Ensure quote_plus is imported
 import re
 import math
 from collections import defaultdict
+import pymongo
+import time
+from bson import json_util
 
 from flask.json.provider import DefaultJSONProvider
 
@@ -664,34 +667,101 @@ def get_run_status(run_id):
     except PyMongoError as e: app.logger.error(f"Error fetch status run {run_id}: {e}"); return jsonify({'status': 'error', 'message': 'DB error.'}), 500
     except Exception as e: app.logger.error(f"Unexpected error fetch status run {run_id}: {e}", exc_info=True); return jsonify({'status': 'error', 'message': 'Server error.'}), 500
 
-
+# Modify the existing log_detail route slightly if needed
 @app.route('/logs/<run_id>')
 def log_detail(run_id):
-    """Display details and standard logs. Reads theme cookie."""
-    # --- Read theme cookie ---
-    current_theme = request.cookies.get('theme', 'light') # Default to light
+    """Display details and ALL logs from the consolidated document."""
+    current_theme = request.cookies.get('theme', 'light')
+    operation_log_data = None
+    detailed_log_messages = [] # This will hold the array of messages
+    std_log_count = 0
 
-    operation_log_data = None; std_logs = []
-    try: # Fetch Op Log
+    # --- Fetch Op Log Summary (Error handling included) ---
+    try:
         operation_log_data = op_logs_collection.find_one({'run_id': run_id})
         if operation_log_data:
+            # Format timestamps for display
             operation_log_data['start_time_iso'] = format_datetime(operation_log_data.get('start_time'))
             operation_log_data['end_time_iso'] = format_datetime(operation_log_data.get('end_time'))
             if 'pod_statuses' in operation_log_data:
                 for pod_log in operation_log_data['pod_statuses']:
-                     pod_log['timestamp_iso'] = format_datetime(pod_log.get('timestamp'))
-    except PyMongoError as e: app.logger.error(f"Error fetch op log {run_id}: {e}"); flash(f"DB error fetch op log {run_id}.", "danger")
+                    # Safely format pod status timestamp
+                    pod_ts = pod_log.get('timestamp')
+                    pod_log['timestamp_iso'] = format_datetime(pod_ts) if isinstance(pod_ts, datetime.datetime) else "N/A"
+    except PyMongoError as e:
+        app.logger.error(f"Error fetch op log {run_id}: {e}")
+        flash(f"DB error fetch op log {run_id}.", "danger")
+    except Exception as e:
+        app.logger.error(f"Unexpected error fetching Op Log {run_id}: {e}", exc_info=True)
+        flash(f"Server error fetching Op Log {run_id}.", "danger")
 
-    try: # Fetch Standard Logs
-        std_logs_cursor = std_logs_collection.find({'run_id': run_id}).sort('timestamp', 1)
-        for log in std_logs_cursor:
-            log['timestamp_iso'] = format_datetime(log.get('timestamp'))
-            std_logs.append(log)
-        if not operation_log_data and not std_logs: flash(f"No logs for run_id {run_id}.", 'warning'); return redirect(url_for('index'))
-    except PyMongoError as e: app.logger.error(f"Error fetch std logs {run_id}: {e}"); flash(f"DB error fetch std logs {run_id}.", "danger")
 
-    # Pass current_theme to template
-    return render_template('log_detail.html', log=operation_log_data, std_logs=std_logs, current_theme=current_theme)
+    # --- Fetch Detailed Logs (Consolidated Document) ---
+    try:
+        single_log_doc = std_logs_collection.find_one({'run_id': run_id})
+
+        if single_log_doc:
+            raw_messages = single_log_doc.get('messages', [])
+            std_log_count = len(raw_messages)
+
+            # Process messages safely, ensuring required fields and formatting timestamp
+            for msg_data in raw_messages:
+                if not isinstance(msg_data, dict):
+                     app.logger.warning(f"Skipping non-dict item in messages array for run {run_id}: {msg_data}")
+                     continue # Skip malformed entries
+
+                # Prepare a clean dictionary for the template
+                processed_msg = {
+                    'level': msg_data.get('level', 'UNKNOWN'), # Provide default
+                    'logger_name': msg_data.get('logger_name', 'unknown'), # Provide default
+                    'message': msg_data.get('message', '') # Provide default
+                    # Add other fields if needed, e.g., 'exc_text'
+                    # 'exc_text': msg_data.get('exc_text')
+                }
+
+                # Format timestamp safely
+                ts = msg_data.get('timestamp')
+                if isinstance(ts, datetime.datetime):
+                    processed_msg['timestamp_iso'] = format_datetime(ts)
+                else:
+                    # Log if timestamp is missing or wrong type, provide default for template
+                    if ts is not None:
+                         app.logger.warning(f"Invalid timestamp type ({type(ts)}) found in log message for run {run_id}")
+                    processed_msg['timestamp_iso'] = None # Let Jinja handle None
+
+                detailed_log_messages.append(processed_msg)
+
+        else:
+            # Only flash warning if the Operation Log *was* found (meaning run started)
+            # but the detailed log doc is missing (meaning it likely failed before first flush)
+            if operation_log_data and operation_log_data.get('overall_status') != 'running':
+                 flash(f"Detailed logs document not found for completed/failed run {run_id}. The run might have failed before logging details.", "warning")
+            elif not operation_log_data:
+                 flash(f"No logs found at all for run_id {run_id}.", 'warning')
+                 # Maybe redirect if *nothing* is found
+                 # return redirect(url_for('all_logs'))
+
+
+    except PyMongoError as e:
+        app.logger.error(f"Error fetch detailed logs doc for run {run_id}: {e}")
+        flash(f"DB error fetch detailed logs {run_id}.", "danger")
+        detailed_log_messages = [] # Ensure it's an empty list on error
+        std_log_count = 0
+    except Exception as e:
+         app.logger.error(f"Unexpected error processing detailed logs {run_id}: {e}", exc_info=True)
+         flash(f"Server error processing logs {run_id}.", "danger")
+         detailed_log_messages = []
+         std_log_count = 0
+
+
+    return render_template(
+        'log_detail.html',
+        log=operation_log_data,           # Operation summary
+        detailed_log_messages=detailed_log_messages, # Array of processed messages
+        std_log_count=std_log_count,      # Count
+        run_id=run_id,
+        current_theme=current_theme
+    )
 
 @app.route('/jobs/delete/<job_id>', methods=['POST'])
 def delete_job(job_id):

@@ -37,8 +37,27 @@ def setup_environment(args: argparse.Namespace, operation_logger: OperationLogge
          return [{"identifier": "config_fetch", "status": "failed", "error_message": str(e)}]
 
     if getattr(args, 'component', None) == "?":
-        if not course_config: logger.error("Cannot list components: Config not loaded."); return [{"identifier": "component_list", "status": "failed", "error_message": "Config not loaded"}]
-        comps = extract_components(course_config); print(f"\nComponents for '{args.course}':"); [print(f"  - {c}") for c in comps]; sys.exit(0)
+        if not course_config:
+            # Log error and finalize before exiting
+            logger.error("Cannot list components: Config not loaded.")
+            operation_logger.log_pod_status(pod_id="component_list", status="failed", step="config_not_loaded", error="Config not loaded")
+            operation_logger.finalize("failed", 0, 1)
+            sys.exit(1) # Exit with error code
+
+        try:
+            comps = extract_components(course_config)
+            print(f"\nComponents for '{args.course}':")
+            for c in comps: print(f"  - {c}")
+            # Log success for this specific action before exiting
+            operation_logger.log_pod_status(pod_id="component_list", status="success", step="list_components")
+            # Finalize as successful for the listing action ONLY
+            operation_logger.finalize("completed", 1, 0) # 1 success (listing), 0 failures
+            sys.exit(0) # Exit cleanly after successful listing
+        except Exception as e_extract:
+            logger.error(f"Error extracting components for '{args.course}': {e_extract}", exc_info=True)
+            operation_logger.log_pod_status(pod_id="component_list", status="failed", step="extract_components_error", error=str(e_extract))
+            operation_logger.finalize("failed", 0, 1)
+            sys.exit(1)
 
     selected_components = None
     if args.component:
