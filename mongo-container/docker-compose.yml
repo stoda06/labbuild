@@ -14,7 +14,19 @@ services:
     volumes:
       - mongodb_data:/data/db
       - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js  # Custom init script to create the user for the new database
+    
+  redis:
+    image: redis:alpine # Use the lightweight alpine variant
+    container_name: redis_cache # Or just 'redis'
+    restart: always
+    ports:
+      - "${REDIS_PORT:-6379}:6379" # Use env var for host port or default
+    volumes:
+      - redis_data:/data # Persist Redis data (optional for pub/sub, but good practice)
+    # No specific environment variables needed for basic Redis pub/sub
 
 volumes:
   mongodb_data:
+    driver: local
+  redis_data: # Define the named volume for Redis data
     driver: local

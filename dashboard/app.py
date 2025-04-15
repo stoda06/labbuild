@@ -33,6 +33,7 @@ from apscheduler.jobstores.mongodb import MongoDBJobStore
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+import redis
 
 
 # --- Configuration ---
@@ -74,6 +75,12 @@ app.config['SECRET_KEY'] = os.getenv(
     "FLASK_SECRET_KEY", "default-secret-key-please-change"
 )
 app.logger.setLevel(logging.INFO)
+# --- Add Redis URL config for Flask app ---
+app.config["REDIS_URL"] = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+if not app.config["REDIS_URL"]:
+    app.logger.warning(
+        "REDIS_URL not set, real-time log streaming will be disabled."
+    )
 
 # --- Custom JSON Provider for BSON types ---
 class BsonJSONProvider(DefaultJSONProvider):
@@ -938,6 +945,55 @@ def terminal():
     current_theme = request.cookies.get('theme', 'light')
     return render_template('terminal.html', current_theme=current_theme)
 
+# --- NEW SSE Endpoint for log streaming ---
+@app.route("/log-stream/<run_id>")
+def log_stream(run_id):
+    """SSE endpoint to stream logs for a specific run_id via Redis."""
+    if not app.config.get("REDIS_URL"):
+        msg = json.dumps({"error": "Real-time streaming not configured."})
+        return Response(f"event: error\ndata: {msg}\n\n",
+                        mimetype="text/event-stream")
+
+    def generate_log_stream(run_id_local):
+        redis_client = None
+        pubsub = None
+        channel = f"log_stream::{run_id_local}"
+        try:
+            redis_client = redis.Redis.from_url(
+                app.config["REDIS_URL"], decode_responses=True
+            )
+            pubsub = redis_client.pubsub()
+            pubsub.subscribe(channel)
+            app.logger.info(f"SSE client subscribed to Redis channel: {channel}")
+            yield f"event: connected\ndata: Subscribed to {run_id_local}\n\n"
+
+            for message in pubsub.listen():
+                if message['type'] == 'message':
+                    log_data_json = message['data']
+                    yield f"data: {log_data_json}\n\n"
+                elif message['type'] == 'subscribe':
+                    continue # Ignore confirmation
+
+        except redis.exceptions.ConnectionError as e:
+            app.logger.error(f"SSE Redis connection error {run_id_local}: {e}")
+            yield f"event: error\ndata: Redis connection error\n\n"
+        except Exception as e:
+            app.logger.error(f"SSE generator error {run_id_local}: {e}",
+                             exc_info=True)
+            yield f"event: error\ndata: Internal stream error\n\n"
+        finally:
+            # Ensure resources are cleaned up
+            if pubsub:
+                try: pubsub.unsubscribe(channel); pubsub.close()
+                except Exception as e_close: app.logger.error(f"Error closing pubsub {run_id_local}: {e_close}")
+            if redis_client:
+                try: redis_client.close()
+                except Exception as e_close: app.logger.error(f"Error closing Redis {run_id_local}: {e_close}")
+            app.logger.info(f"SSE stream closed for {run_id_local}")
+
+    # Use stream_with_context to ensure Flask context is available if needed
+    return Response(stream_with_context(generate_log_stream(run_id)),
+                    mimetype="text/event-stream")
 
 # --- SSE Route for Streaming ---
 def stream_labbuild_process(full_command_list):

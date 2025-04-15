@@ -1,112 +1,140 @@
 {# dashboard/templates/log_detail.html #}
 {% extends 'base.html' %}
 
-{% block title %}Run Log: {{ log.run_id or run_id }}{% endblock %}
+{% block title %}Run Log: {{ run_id }}{% endblock %}
 
 {% block content %}
 
-{# --- Operation Summary Card (Unchanged) --- #}
-<div class="card run-summary-card mb-4">
-    {# ... Card content ... #}
+  {# --- Operation Summary Card --- #}
+  {# Add data attributes to pass info to JS #}
+  <div class="card run-summary-card mb-4"
+       id="runSummaryCard"
+       data-run-id="{{ run_id }}"
+       data-sse-enabled="{{ sse_enabled | tojson }}"> {# Pass boolean as string/json #}
     <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Run Details</span> <small class="text-muted">{{ log.run_id or run_id }}</small>
+      <span>Run Details</span>
+      <small class="text-muted">{{ run_id }}</small>
     </div>
     <div class="card-body">
-        {% if log %}
-            <div class="row">
-                <div class="col-md-6 mb-3 mb-md-0">
-                    <p><strong>Command:</strong> {{ log.command }}</p>
-                    <p><strong>Status:</strong> <span class="status-{{ log.overall_status|lower|replace(' ', '_') }}">{{ log.overall_status }}</span></p>
-                    <p><strong>Start Time:</strong> <span class="local-datetime" data-timestamp="{{ log.start_time_iso }}"></span></p>
-                    <p><strong>End Time:</strong> <span class="local-datetime" data-timestamp="{{ log.end_time_iso }}"></span></p>
-                    <p><strong>Duration:</strong> {{ ('%.2f'|format(log.duration_seconds)) if log.duration_seconds is not none else 'N/A' }} seconds</p>
-                    <p><strong>Success Count:</strong> {{ log.summary.success_count }}</p>
-                    <p><strong>Failure Count:</strong> {{ log.summary.failure_count }}</p>
-                </div>
-                <div class="col-md-6">
-                    <strong>Arguments:</strong>
-                    <pre class="p-2 rounded border" style="font-size: 0.8rem; max-height: 250px; overflow-y: auto;"><code>{{ log.args | tojson(indent=2) }}</code></pre>
-                </div>
-            </div>
-        {% else %} <p class="text-warning">Operation summary log not found.</p> {% endif %}
+      {% if log %}
+        <div class="row">
+          <div class="col-md-6 mb-3 mb-md-0">
+            <p><strong>Command:</strong> {{ log.command }}</p>
+            <p><strong>Status:</strong>
+              <span id="summary-status" class="status-{{ log.overall_status|lower|replace(' ', '_') }}">
+                {{ log.overall_status }}
+              </span>
+            </p>
+            <p><strong>Start Time:</strong>
+              {# Timestamps will be formatted by JS #}
+              <span class="local-datetime" data-timestamp="{{ log.start_time_iso }}">
+                {{ log.start_time_iso if log.start_time_iso else 'N/A' }}
+              </span>
+            </p>
+            <p><strong>End Time:</strong>
+              <span id="summary-end-time" class="local-datetime" data-timestamp="{{ log.end_time_iso }}">
+                {{ log.end_time_iso if log.end_time_iso else 'N/A' }}
+              </span>
+            </p>
+            <p><strong>Duration:</strong>
+              <span id="summary-duration">
+                {{ ('%.2f'|format(log.duration_seconds)) if log.duration_seconds is not none else 'N/A' }}
+              </span> seconds
+            </p>
+            <p><strong>Success Count:</strong> <span id="summary-success">{{ log.summary.success_count }}</span></p>
+            <p><strong>Failure Count:</strong> <span id="summary-failure">{{ log.summary.failure_count }}</span></p>
+          </div>
+          <div class="col-md-6">
+            <strong>Arguments:</strong>
+            <pre class="p-2 rounded border" style="font-size: 0.8rem; max-height: 250px; overflow-y: auto;"><code>{{ log.args_display | tojson(indent=2) }}</code></pre>
+          </div>
+        </div>
+      {% else %}
+        <p class="text-warning">Operation summary log not found or still loading.</p>
+      {% endif %}
     </div>
-</div>
+  </div>{# /run-summary-card #}
 
-{# --- Pod/Class Statuses Card (Unchanged) --- #}
-{% if log and log.pod_statuses %}
-<div class="card pod-status-card mb-4">
-    {# ... Card content ... #}
-     <div class="card-header">Pod/Class Statuses</div>
-    <div class="card-body"> <div class="table-responsive"> <table class="table table-sm table-bordered pod-status-table"> <thead class="table-light"> <tr><th>Timestamp</th><th>Identifier</th><th>Class ID</th><th>Status</th><th>Failed Step</th><th>Error Message</th></tr> </thead> <tbody> {% for pod_log in log.pod_statuses %} <tr class="{{ 'table-danger' if pod_log.status == 'failed' else 'table-success' if pod_log.status == 'success' else 'table-secondary' if pod_log.status == 'skipped' else '' }}"> <td><small><span class="local-datetime" data-timestamp="{{ pod_log.timestamp_iso }}"></span></small></td> <td>{{ pod_log.identifier }}</td> <td>{{ pod_log.class_identifier or 'N/A' }}</td> <td class="status-{{ pod_log.status|lower }}">{{ pod_log.status }}</td> <td><small>{{ pod_log.failed_step or '-' }}</small></td> <td><small>{{ pod_log.error_message or '-' }}</small></td> </tr> {% endfor %} </tbody> </table> </div> </div>
-</div>
-{% endif %}
+  {# --- Pod/Class Statuses Card (Structure unchanged) --- #}
+  {% if log and log.pod_statuses %}
+    <div class="card pod-status-card mb-4">
+      <div class="card-header">Pod/Class Statuses</div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered pod-status-table">
+            <thead class="table-light">
+              <tr>
+                <th>Timestamp</th><th>Identifier</th><th>Class ID</th>
+                <th>Status</th><th>Failed Step</th><th>Error Message</th>
+              </tr>
+            </thead>
+            <tbody id="pod-status-tbody">
+              {% for pod_log in log.pod_statuses %}
+                {% set row_class = 'table-danger' if pod_log.status == 'failed' else 'table-success' if pod_log.status == 'success' else 'table-secondary' if pod_log.status == 'skipped' else '' %}
+                <tr class="{{ row_class }}">
+                  <td><small><span class="local-datetime" data-timestamp="{{ pod_log.timestamp_iso }}">{{ pod_log.timestamp_iso if pod_log.timestamp_iso else 'N/A' }}</span></small></td>
+                  <td>{{ pod_log.identifier }}</td>
+                  <td>{{ pod_log.class_identifier or 'N/A' }}</td>
+                  <td class="status-{{ pod_log.status|lower }}">{{ pod_log.status }}</td>
+                  <td><small>{{ pod_log.failed_step or '-' }}</small></td>
+                  <td><small>{{ pod_log.error_message or '-' }}</small></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>{# /table-responsive #}
+      </div>{# /card-body #}
+    </div>{# /pod-status-card #}
+  {% endif %}
 
-{# --- Standard Logs Section - Static Render --- #}
-<div class="card std-logs-card mb-4">
+  {# --- Standard Logs Section --- #}
+  <div class="card std-logs-card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Detailed Log Messages</span>
-        <span class="badge bg-info">Total: {{ std_log_count }}</span>
+      <span>Detailed Log Messages</span>
+      <span class="badge bg-info" id="logCountBadge">Total: {{ std_log_count }}</span>
     </div>
     <div class="card-body">
-        <pre id="detailed-log-output" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; padding: 10px; border-radius: 4px;" class="border bg-light text-dark"><code>{# Loop through the messages array passed from Flask #}
-{%- if detailed_log_messages -%}
-{%-   for msg in detailed_log_messages -%}
-{#-     Safely handle timestamp -#}
-{%-     set timestamp_iso_str = msg.timestamp_iso if msg.timestamp_iso else "" -%} {# Use empty string if None for data-attribute #}
-{%-     set timestamp_display_str = msg.timestamp_iso if msg.timestamp_iso else "No Timestamp" -%} {# Text to display initially #}
+      {# Add data attribute for initial count #}
+      <pre id="detailed-log-output" class="border bg-light text-dark"
+           data-initial-log-count="{{ std_log_count }}"
+           style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; padding: 10px; border-radius: 4px;"><code>{# Render HISTORICAL logs initially #}
+{%- if historical_log_messages -%}
+{%-   for msg in historical_log_messages -%}
+{%-     set timestamp_iso_str = msg.timestamp_iso if msg.timestamp_iso else "" -%}
+{%-     set timestamp_display_str = msg.timestamp_iso if msg.timestamp_iso else "No Timestamp" -%}
 {%-     set level = msg.level or 'UNKNOWN' -%}
 {%-     set logger_name = msg.logger_name or 'unknown' -%}
 {%-     set message = msg.message or '' -%}
 <div class="log-line log-level-{{ level | lower }}{{ ' log-error' if level in ['ERROR', 'CRITICAL'] else ' log-warning' if level == 'WARNING' else '' }}">
-    <span class="local-datetime" data-timestamp="{{ timestamp_iso_str }}">{{ timestamp_display_str }}</span> [{{ level }}] {{ logger_name }}: {{ message }}
+    {# JS will format this span #}
+    <span class="local-datetime" data-timestamp="{{ timestamp_iso_str }}">{{ timestamp_display_str }}</span> [{{ level }}] {{ logger_name }}: {{ message | escape }}
 </div>
 {%-   endfor -%}
 {%- else -%}
-<div>No detailed log messages found for this run.</div>
+<div id="no-logs-placeholder">Waiting for logs...</div>
 {%- endif -%}
 </code></pre>
-        {# Styles (Unchanged) #}
-        <style>
-            body.dark-mode #detailed-log-output { background-color: #212529; border-color: #495057; color: #e9ecef; }
-            #detailed-log-output .log-line { margin-bottom: 2px; white-space: pre-wrap; word-wrap: break-word; }
-            #detailed-log-output .log-error { color: #dc3545; font-weight: bold; }
-            #detailed-log-output .log-warning { color: #ffc107; }
-            body.dark-mode #detailed-log-output .log-error { color: #f88; }
-            body.dark-mode #detailed-log-output .log-warning { color: #fdcb6e; }
-        </style>
-    </div>
-</div>
-{# --- End Standard Logs Section --- #}
+      <div id="sse-status" class="mt-2 text-muted small"></div>
+      {# Styles #}
+      <style>
+        body.dark-mode #detailed-log-output { background-color: #212529; border-color: #495057; color: #e9ecef; }
+        #detailed-log-output .log-line { margin-bottom: 2px; white-space: pre-wrap; word-wrap: break-word; }
+        #detailed-log-output .log-error { color: #dc3545; font-weight: bold; }
+        #detailed-log-output .log-warning { color: #ffc107; }
+        body.dark-mode #detailed-log-output .log-error { color: #f88; }
+        body.dark-mode #detailed-log-output .log-warning { color: #fdcb6e; }
+      </style>
+    </div>{# /card-body #}
+  </div>{# /std-logs-card #}
 
-<a href="{{ url_for('all_logs') }}" class="btn btn-secondary mt-3 mb-4">Back to All Logs</a>
-<a href="{{ url_for('index') }}" class="btn btn-secondary mt-3 mb-4">Back to Dashboard</a>
+  <a href="{{ url_for('all_logs') }}" class="btn btn-secondary mt-3 mb-4">Back to All Logs</a>
+  <a href="{{ url_for('index') }}" class="btn btn-secondary mt-3 mb-4">Back to Dashboard</a>
 
 {% endblock %}
 
-{# --- Keep Simplified Javascript Block for Time Formatting --- #}
+{# --- JavaScript Section --- #}
 {% block scripts %}
-{{ super() }}
-<script>
-    // Ensure base formatLocalDateTime function exists
-     if (typeof formatLocalDateTime !== 'function') { console.warn("formatLocalDateTime not found!"); window.formatLocalDateTime = (iso) => iso || 'N/A'; }
-
-    document.addEventListener('DOMContentLoaded', () => {
-        // Format initially rendered timestamps
-        document.querySelectorAll('.local-datetime').forEach(span => {
-             const isoTimestamp = span.dataset.timestamp;
-             // Check if timestamp is a non-empty string before formatting
-             if (isoTimestamp && typeof isoTimestamp === 'string') {
-                 try {
-                      span.textContent = formatLocalDateTime(isoTimestamp);
-                 } catch (e) {
-                      console.error("Error formatting timestamp:", isoTimestamp, e);
-                      span.textContent = 'Invalid Date'; // Show error if formatting fails
-                 }
-                 span.classList.add('js-formatted-time');
-             } else if (!span.textContent) { // Set placeholder if no text content from Jinja
-                  span.textContent = 'No Timestamp';
-             }
-        });
-    }); // End of DOMContentLoaded listener
-</script>
+  {{ super() }}
+  {# Load the external JavaScript file - DEFER ensures it runs after DOM parsing #}
+  <script src="{{ url_for('static', filename='js/log_detail.js') }}" defer></script>
 {% endblock %}
