@@ -3,7 +3,9 @@ from managers.network_manager import NetworkManager
 from managers.resource_pool_manager import ResourcePoolManager
 from pyVmomi import vim
 from monitor.prtg import PRTGManager
-from logger.log_config import setup_logger
+
+import logging
+logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
 
 def update_network_dict(vm_name, network_dict, class_number, pod_number):
     def replace_mac_octet(mac_address, pod_num):
@@ -289,7 +291,6 @@ def add_monitor(pod_config, db_client, prtg_server=None):
         str or None: The URL of the added or updated PRTG monitor if successful, or None if the operation fails.
     """
     # Set up logging for the monitor addition process.
-    logger = setup_logger()
 
     # Extract the short host name from the fully qualified domain name.
     host = pod_config["host_fqdn"].split(".")[0]

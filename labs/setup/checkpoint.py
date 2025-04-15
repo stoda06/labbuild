@@ -7,9 +7,10 @@ from managers.permission_manager import PermissionManager
 from tqdm import tqdm
 import re
 from monitor.prtg import PRTGManager
-from logger.log_config import setup_logger
 from tqdm import tqdm
 
+import logging
+logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
 
 def wait_for_futures(futures):
     # Optionally, wait for all cloning tasks to complete and handle their results
@@ -262,7 +263,6 @@ def add_monitor(pod_config, db_client, prtg_server=None):
     Returns:
         str or None: The URL of the created PRTG monitor, or None on failure.
     """
-    logger = setup_logger() # Get configured logger
 
     # --- 1. Extract Monitor Details & Calculate IP ---
     try:

@@ -9,6 +9,7 @@ import os
 
 # --- Configuration ---
 REDIS_URL_HANDLER = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+print(f"--- DEBUG [RedisHandler]: Using REDIS_URL: {REDIS_URL_HANDLER} ---") 
 
 # --- Setup Logger for this Handler ---
 handler_logger = logging.getLogger('labbuild.redis_handler')

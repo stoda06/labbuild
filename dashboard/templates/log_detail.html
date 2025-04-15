@@ -5,68 +5,45 @@
 
 {% block content %}
 
-  {# --- Operation Summary Card --- #}
-  {# Add data attributes to pass info to JS #}
-  <div class="card run-summary-card mb-4"
-       id="runSummaryCard"
-       data-run-id="{{ run_id }}"
-       data-sse-enabled="{{ sse_enabled | tojson }}"> {# Pass boolean as string/json #}
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <span>Run Details</span>
-      <small class="text-muted">{{ run_id }}</small>
+  {# --- Operation Summary Card (Unchanged) --- #}
+  <div class="card run-summary-card mb-4" id="runSummaryCard" data-run-id="{{ run_id }}" data-sse-enabled="{{ sse_enabled | tojson }}">
+    {# ... card content ... #}
+     <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Run Details</span> <small class="text-muted">{{ run_id }}</small>
     </div>
     <div class="card-body">
-      {% if log %}
-        <div class="row">
-          <div class="col-md-6 mb-3 mb-md-0">
-            <p><strong>Command:</strong> {{ log.command }}</p>
-            <p><strong>Status:</strong>
-              <span id="summary-status" class="status-{{ log.overall_status|lower|replace(' ', '_') }}">
-                {{ log.overall_status }}
-              </span>
-            </p>
-            <p><strong>Start Time:</strong>
-              {# Timestamps will be formatted by JS #}
-              <span class="local-datetime" data-timestamp="{{ log.start_time_iso }}">
-                {{ log.start_time_iso if log.start_time_iso else 'N/A' }}
-              </span>
-            </p>
-            <p><strong>End Time:</strong>
-              <span id="summary-end-time" class="local-datetime" data-timestamp="{{ log.end_time_iso }}">
-                {{ log.end_time_iso if log.end_time_iso else 'N/A' }}
-              </span>
-            </p>
-            <p><strong>Duration:</strong>
-              <span id="summary-duration">
-                {{ ('%.2f'|format(log.duration_seconds)) if log.duration_seconds is not none else 'N/A' }}
-              </span> seconds
-            </p>
-            <p><strong>Success Count:</strong> <span id="summary-success">{{ log.summary.success_count }}</span></p>
-            <p><strong>Failure Count:</strong> <span id="summary-failure">{{ log.summary.failure_count }}</span></p>
-          </div>
-          <div class="col-md-6">
-            <strong>Arguments:</strong>
-            <pre class="p-2 rounded border" style="font-size: 0.8rem; max-height: 250px; overflow-y: auto;"><code>{{ log.args_display | tojson(indent=2) }}</code></pre>
-          </div>
-        </div>
-      {% else %}
-        <p class="text-warning">Operation summary log not found or still loading.</p>
-      {% endif %}
+        {% if log %}
+             <div class="row">
+                <div class="col-md-6 mb-3 mb-md-0">
+                    <p><strong>Command:</strong> {{ log.command }}</p>
+                    <p><strong>Status:</strong> <span id="summary-status" class="status-{{ log.overall_status|lower|replace(' ', '_') }}">{{ log.overall_status }}</span></p>
+                    <p><strong>Start Time:</strong> <span class="local-datetime" data-timestamp="{{ log.start_time_iso }}">{{ log.start_time_iso if log.start_time_iso else 'N/A' }}</span></p>
+                    <p><strong>End Time:</strong> <span id="summary-end-time" class="local-datetime" data-timestamp="{{ log.end_time_iso }}">{{ log.end_time_iso if log.end_time_iso else 'N/A' }}</span></p>
+                    <p><strong>Duration:</strong> <span id="summary-duration">{{ ('%.2f'|format(log.duration_seconds)) if log.duration_seconds is not none else 'N/A' }}</span> seconds</p>
+                    <p><strong>Success Count:</strong> <span id="summary-success">{{ log.summary.success_count }}</span></p>
+                    <p><strong>Failure Count:</strong> <span id="summary-failure">{{ log.summary.failure_count }}</span></p>
+                </div>
+                <div class="col-md-6">
+                    <strong>Arguments:</strong>
+                    <pre class="p-2 rounded border" style="font-size: 0.8rem; max-height: 250px; overflow-y: auto;"><code>{{ log.args_display | tojson(indent=2) }}</code></pre>
+                </div>
+            </div>
+        {% else %}
+            <p class="text-warning">Operation summary log not found or still loading.</p>
+        {% endif %}
     </div>
   </div>{# /run-summary-card #}
 
-  {# --- Pod/Class Statuses Card (Structure unchanged) --- #}
+  {# --- Pod/Class Statuses Card (Unchanged) --- #}
   {% if log and log.pod_statuses %}
-    <div class="card pod-status-card mb-4">
+    {# ... pod status table ... #}
+     <div class="card pod-status-card mb-4">
       <div class="card-header">Pod/Class Statuses</div>
       <div class="card-body">
         <div class="table-responsive">
           <table class="table table-sm table-bordered pod-status-table">
             <thead class="table-light">
-              <tr>
-                <th>Timestamp</th><th>Identifier</th><th>Class ID</th>
-                <th>Status</th><th>Failed Step</th><th>Error Message</th>
-              </tr>
+              <tr><th>Timestamp</th><th>Identifier</th><th>Class ID</th><th>Status</th><th>Failed Step</th><th>Error Message</th></tr>
             </thead>
             <tbody id="pod-status-tbody">
               {% for pod_log in log.pod_statuses %}
@@ -94,10 +71,10 @@
       <span class="badge bg-info" id="logCountBadge">Total: {{ std_log_count }}</span>
     </div>
     <div class="card-body">
-      {# Add data attribute for initial count #}
+      {# NOTE: Removed the outer <code> element for simpler styling #}
       <pre id="detailed-log-output" class="border bg-light text-dark"
            data-initial-log-count="{{ std_log_count }}"
-           style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; padding: 10px; border-radius: 4px;"><code>{# Render HISTORICAL logs initially #}
+           style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; padding: 10px; border-radius: 4px; line-height: 1.4;">{# Render HISTORICAL logs initially with new structure #}
 {%- if historical_log_messages -%}
 {%-   for msg in historical_log_messages -%}
 {%-     set timestamp_iso_str = msg.timestamp_iso if msg.timestamp_iso else "" -%}
@@ -106,27 +83,93 @@
 {%-     set logger_name = msg.logger_name or 'unknown' -%}
 {%-     set message = msg.message or '' -%}
 <div class="log-line log-level-{{ level | lower }}{{ ' log-error' if level in ['ERROR', 'CRITICAL'] else ' log-warning' if level == 'WARNING' else '' }}">
-    {# JS will format this span #}
-    <span class="local-datetime" data-timestamp="{{ timestamp_iso_str }}">{{ timestamp_display_str }}</span> [{{ level }}] {{ logger_name }}: {{ message | escape }}
+    <span class="log-timestamp local-datetime" data-timestamp="{{ timestamp_iso_str }}">{{ timestamp_display_str }}</span>
+    <span class="log-level">[{{ level }}]</span>
+    <span class="log-logger">{{ logger_name }}:</span>
+    <span class="log-message">{{ message | escape }}</span> {# Render message safely #}
 </div>
 {%-   endfor -%}
 {%- else -%}
+{# Show placeholder ONLY if NO historical logs AND run might still be running #}
+{% if not log or log.overall_status == 'running' %}
 <div id="no-logs-placeholder">Waiting for logs...</div>
+{% else %}
+<div id="no-logs-placeholder">No detailed logs found for this run.</div>
+{% endif %}
 {%- endif -%}
-</code></pre>
+</pre> {# End of detailed-log-output #}
       <div id="sse-status" class="mt-2 text-muted small"></div>
-      {# Styles #}
+
+      {# --- NEW CSS for Log Formatting --- #}
       <style>
+        #detailed-log-output {
+            font-family: monospace; /* Ensure monospace for alignment */
+            line-height: 1.4;
+        }
+        .log-line {
+            display: flex;          /* Enable Flexbox */
+            align-items: baseline; /* Align text nicely */
+            margin-bottom: 3px;    /* Space between lines */
+            flex-wrap: nowrap;     /* Prevent wrapping of meta info */
+        }
+        .log-timestamp {
+            flex-shrink: 0;        /* Prevent timestamp from shrinking */
+            min-width: 195px;      /* Fixed width for timestamp alignment (adjust) */
+            margin-right: 10px;    /* Space after timestamp */
+            color: #6c757d;        /* Muted color */
+            font-size: 0.9em;      /* Slightly smaller timestamp */
+            white-space: nowrap;
+        }
+        .log-level {
+            flex-shrink: 0;
+            min-width: 85px;       /* Fixed width for level (adjust) */
+            margin-right: 10px;
+            font-weight: bold;
+            text-align: right;     /* Right-align level */
+            white-space: nowrap;
+        }
+        .log-logger {
+            flex-shrink: 0;
+            min-width: 180px;      /* Adjust width as needed */
+            margin-right: 10px;
+            color: #0d6efd;        /* Example color (Bootstrap primary) */
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;      /* Hide overflow */
+            text-overflow: ellipsis; /* Add ellipsis (...) for long names */
+        }
+        .log-message {
+            flex-grow: 1;          /* Allow message to take remaining space */
+            white-space: pre-wrap; /* Allow wrapping within the message */
+            word-break: break-all; /* Break long words if necessary */
+        }
+
+        /* Level Specific Colors */
+        .log-level-debug    { color: #6c757d; } /* Muted */
+        .log-level-info     { color: #0dcaf0; } /* Cyan */
+        .log-level-warning,
+        .log-warning        { color: #ffc107; } /* Yellow */
+        .log-level-error,
+        .log-error          { color: #dc3545; font-weight: bold; } /* Red */
+        .log-level-critical { color: #dc3545; font-weight: bold; background-color: rgba(220, 53, 69, 0.1); } /* Red bg */
+
+        /* Dark Mode Overrides */
         body.dark-mode #detailed-log-output { background-color: #212529; border-color: #495057; color: #e9ecef; }
-        #detailed-log-output .log-line { margin-bottom: 2px; white-space: pre-wrap; word-wrap: break-word; }
-        #detailed-log-output .log-error { color: #dc3545; font-weight: bold; }
-        #detailed-log-output .log-warning { color: #ffc107; }
-        body.dark-mode #detailed-log-output .log-error { color: #f88; }
-        body.dark-mode #detailed-log-output .log-warning { color: #fdcb6e; }
+        body.dark-mode .log-timestamp { color: #adb5bd; }
+        body.dark-mode .log-logger { color: #69a6f3; } /* Lighter blue */
+        body.dark-mode .log-level-debug { color: #8d96a0; }
+        body.dark-mode .log-level-info { color: #66d9ef; }
+        body.dark-mode .log-level-warning,
+        body.dark-mode .log-warning { color: #fdcb6e; }
+        body.dark-mode .log-level-error,
+        body.dark-mode .log-error { color: #f88; }
+        body.dark-mode .log-level-critical { color: #f88; background-color: rgba(255, 136, 136, 0.15); }
+
       </style>
     </div>{# /card-body #}
   </div>{# /std-logs-card #}
 
+  {# Buttons remain the same #}
   <a href="{{ url_for('all_logs') }}" class="btn btn-secondary mt-3 mb-4">Back to All Logs</a>
   <a href="{{ url_for('index') }}" class="btn btn-secondary mt-3 mb-4">Back to Dashboard</a>
 
@@ -135,6 +178,6 @@
 {# --- JavaScript Section --- #}
 {% block scripts %}
   {{ super() }}
-  {# Load the external JavaScript file - DEFER ensures it runs after DOM parsing #}
+  {# Load the external JavaScript file #}
   <script src="{{ url_for('static', filename='js/log_detail.js') }}" defer></script>
 {% endblock %}

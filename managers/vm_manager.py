@@ -3,7 +3,6 @@ import requests
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from storage.check_utilization import is_overutilized
 import time
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

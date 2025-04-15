@@ -76,6 +76,7 @@ app.config['SECRET_KEY'] = os.getenv(
 )
 app.logger.setLevel(logging.INFO)
 # --- Add Redis URL config for Flask app ---
+print(f"--- DEBUG [Flask]: REDIS_URL from .env: {os.getenv('REDIS_URL')} ---") # Add this
 app.config["REDIS_URL"] = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 if not app.config["REDIS_URL"]:
     app.logger.warning(
@@ -804,16 +805,22 @@ def get_run_status(run_id):
 @app.route('/logs/<run_id>')
 def log_detail(run_id):
     """Display details and logs for a specific run."""
+
+    redis_url_in_route = app.config.get("REDIS_URL") # Use .get for safety
+    app.logger.info(f"--- DEBUG [/logs/{run_id}]: app.config['REDIS_URL'] = {redis_url_in_route} ---")
+
     current_theme = request.cookies.get('theme', 'light')
     op_log_data = None
-    detailed_logs = []
+    historical_log_messages = []
     std_log_count = 0
+    sse_available = redis_url_in_route is not None # Base decision on logged value
 
     if db is None:
         flash("DB unavailable.", "danger")
         return render_template(
-            'log_detail.html', log=None, detailed_log_messages=[],
-            std_log_count=0, run_id=run_id, current_theme=current_theme
+            'log_detail.html', log=None, historical_log_messages=[],
+            std_log_count=0, run_id=run_id, current_theme=current_theme,
+            sse_enabled=sse_available
         )
 
     # Fetch Op Log Summary
@@ -847,7 +854,7 @@ def log_detail(run_id):
                 std_log_count = len(messages)
                 for msg in messages:
                     if isinstance(msg, dict):
-                        detailed_logs.append({
+                        historical_log_messages.append({
                             'level': msg.get('level', 'N/A'),
                             'logger_name': msg.get('logger_name', 'N/A'),
                             'message': msg.get('message', ''),
@@ -868,10 +875,10 @@ def log_detail(run_id):
         flash("Server error.", "danger")
 
     return render_template(
-        'log_detail.html', log=op_log_data, detailed_log_messages=detailed_logs,
-        std_log_count=std_log_count, run_id=run_id, current_theme=current_theme
+        'log_detail.html', log=op_log_data, historical_log_messages=historical_log_messages,
+        std_log_count=std_log_count, run_id=run_id, current_theme=current_theme,
+        sse_enabled=sse_available
     )
-
 
 @app.route('/jobs/delete/<job_id>', methods=['POST'])
 def delete_job(job_id):

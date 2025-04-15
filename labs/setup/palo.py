@@ -2,9 +2,11 @@ from managers.vm_manager import VmManager
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.network_manager import NetworkManager
 from monitor.prtg import PRTGManager
-from logger.log_config import setup_logger
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
+
+import logging
+logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
 
 def update_network_dict_1110(network_dict, pod_number):
     pod_hex = format(pod_number, '02x')  # Convert pod number to a two-digit hexadecimal string
@@ -431,7 +433,6 @@ def add_monitor(pod_config, db_client, prtg_server=None):
     Returns:
         str or None: The URL of the created PRTG monitor, or None on failure.
     """
-    logger = setup_logger() # Get configured logger
 
     # --- 1. Extract Monitor Details & Calculate IP ---
     try:

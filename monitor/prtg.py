@@ -9,27 +9,8 @@ from urllib.parse import quote_plus, urlparse, parse_qs
 # Disable InsecureRequestWarning if not verifying SSL certificates.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def setup_logger():
-    """
-    Sets up and returns a logger for the PRTGManager class.
-
-    This function configures a logger with a specific format (including timestamp,
-    logger name, level, and message) and sets the logging level to DEBUG. It ensures that
-    multiple handlers are not added if the logger already exists.
-
-    Returns:
-        logging.Logger: A configured logger instance for debugging and status tracking.
-    """
-    logger = logging.getLogger("PRTGManager")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-    return logger
+import logging
+logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
 
 class PRTGManager:
     """
@@ -407,7 +388,6 @@ class PRTGManager:
             str: The URL of the newly created or updated PRTG monitor if successful.
             None: If the device could not be added.
         """
-        logger = setup_logger()
         
         # Retrieve the pod number from the configuration.
         pod = pod_config.get("pod_number")
@@ -528,7 +508,6 @@ class PRTGManager:
         Returns:
             bool: True if the monitor was successfully deleted; False otherwise.
         """
-        logger = setup_logger()
 
         # Parse the monitor URL to extract its components.
         parsed_url = urlparse(prtg_monitor_url)
