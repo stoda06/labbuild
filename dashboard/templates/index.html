@@ -64,46 +64,93 @@
     </div> {# End card-body #}
   </div> {# End card #}
 
+  <!-- NEW: Schedule Batch from File Card -->
+  <div class="card mb-4">
+    <div class="card-header">Schedule Batch from File</div>
+    <div class="card-body">
+      <form action="{{ url_for('schedule_batch') }}" method="POST" enctype="multipart/form-data">
+         <div class="row g-3 align-items-end"> {# Use align-items-end for button alignment #}
+            <div class="col-md-5">
+              <label for="batch_file" class="form-label">Command File</label>
+              <input class="form-control" type="file" id="batch_file" name="batch_file" accept=".txt,text/plain" required>
+              <div class="form-text">One full labbuild command per line (e.g., `/path/to/labbuild.py setup -v ...`).</div>
+            </div>
+            <div class="col-md-4">
+              <label for="batch_start_time" class="form-label">First Job Start Time (Local)</label>
+              <input type="datetime-local" class="form-control" id="batch_start_time" name="start_time" required>
+               <div class="form-text">Time for the first command in the file.</div>
+            </div>
+             <div class="col-md-3">
+              <label for="batch_delay_minutes" class="form-label">Delay Between Jobs (min)</label>
+              <input type="number" class="form-control" id="batch_delay_minutes" name="delay_minutes" value="30" min="1" required>
+              <div class="form-text">Time between subsequent jobs start.</div>
+            </div>
+         </div>
+          <div class="mt-3">
+             <button type="submit" class="btn btn-warning">Schedule Batch</button>
+          </div>
+      </form>
+    </div>
+  </div>
+  <!-- End Batch Schedule Card -->
+
 
   <!-- Scheduled Jobs Card -->
-  <div class="card">
+  <div class="card mb-4"> {# Added mb-4 #}
     <div class="card-header">Scheduled Jobs</div>
     <div class="card-body">
-      {% if jobs %}
-        <div class="table-responsive"> {# Make table scrollable on small screens #}
-            <table class="table table-sm table-striped table-hover">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Next Run</th> {# Changed Header #}
-                  <th>Trigger</th>
-                  <th>Command Args</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for job in jobs %}
-                <tr>
-                  <td><small>{{ job.id }}</small></td>
-                  <td>{{ job.name }}</td>
-                  {# Use span for JS formatting #}
-                  <td><span class="local-datetime" data-timestamp="{{ job.next_run_time_iso }}"></span></td>
-                  <td><small>{{ job.trigger_info }}</small></td>
-                  <td><small>{{ job.args }}</small></td>
-                  <td>
-                    <form action="{{ url_for('delete_job', job_id=job.id) }}" method="POST" style="display:inline;">
-                      <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete job {{ job.id }}?');">Delete</button>
-                    </form>
-                  </td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-        </div>
-      {% else %}
-        <p>No jobs currently scheduled.</p>
-      {% endif %}
+      {# --- NEW: Form for Bulk Delete --- #}
+      <form id="bulkDeleteForm" action="{{ url_for('delete_bulk_jobs') }}" method="POST">
+        {% if jobs %}
+          <div class="table-responsive"> {# Make table scrollable on small screens #}
+              <table class="table table-sm table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th><input type="checkbox" id="selectAllJobs" title="Select/Deselect All"></th> {# Checkbox Header #}
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Next Run</th>
+                    <th>Trigger</th>
+                    <th>Command Args</th>
+                    <th class="text-end">Actions</th> {# Align actions right #}
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for job in jobs %}
+                  <tr>
+                    <td><input type="checkbox" name="job_ids" value="{{ job.id }}" class="job-checkbox"></td> {# Checkbox Cell #}
+                    <td><small>{{ job.id }}</small></td>
+                    <td>{{ job.name }}</td>
+                    <td><span class="local-datetime" data-timestamp="{{ job.next_run_time_iso }}"></span></td>
+                    <td><small>{{ job.trigger_info }}</small></td>
+                    {# --- MODIFIED: Display Formatted Args --- #}
+                    <td><small><code style="white-space: pre-wrap; word-break: break-all;">{{ job.args_display_str | safe }}</code></small></td>
+                    {# --- MODIFIED: Actions Cell with Icons --- #}
+                    <td class="text-end">
+                      {# Edit Button (Placeholder/Disabled) #}
+                      <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit Job (Not Implemented)" disabled>
+                          <i class="fas fa-edit"></i>
+                      </button>
+                      {# Single Delete Form with Icon Button #}
+                      <form action="{{ url_for('delete_job', job_id=job.id) }}" method="POST" style="display:inline;">
+                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete job {{ job.id }}?');" title="Delete Job {{ job.id }}">
+                            <i class="fas fa-trash-alt"></i>
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+          </div>
+          {# --- NEW: Bulk Delete Button (inside form) --- #}
+          <button type="submit" class="btn btn-danger mt-2" onclick="return confirm('Are you sure you want to delete the selected scheduled jobs?');">
+             Delete Selected
+          </button>
+        {% else %}
+          <p>No jobs currently scheduled.</p>
+        {% endif %}
+      </form> {# End Bulk Delete Form #}
     </div> {# End card-body #}
   </div> {# End card #}
 
@@ -364,6 +411,37 @@
      }
     // Start polling when the page loads
     document.addEventListener('DOMContentLoaded', startPollingForRunningJobs);
+
+    // --- NEW: JavaScript for Select All Checkbox ---
+    const selectAllCheckbox = document.getElementById('selectAllJobs');
+    const jobCheckboxes = document.querySelectorAll('.job-checkbox');
+
+    if (selectAllCheckbox) {
+        selectAllCheckbox.addEventListener('change', function() {
+            jobCheckboxes.forEach(checkbox => {
+                checkbox.checked = selectAllCheckbox.checked;
+            });
+        });
+    }
+
+    // Optional: Deselect "Select All" if any individual checkbox is unchecked
+    jobCheckboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', function() {
+            if (!checkbox.checked) {
+                selectAllCheckbox.checked = false;
+            } else {
+                // Check if all are checked now
+                let allChecked = true;
+                jobCheckboxes.forEach(cb => {
+                    if (!cb.checked) {
+                        allChecked = false;
+                    }
+                });
+                selectAllCheckbox.checked = allChecked;
+            }
+        });
+    });
+
 
 </script>
 {% endblock %}

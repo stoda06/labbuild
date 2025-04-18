@@ -17,6 +17,8 @@ import time
 import atexit
 from collections import defaultdict
 from urllib.parse import quote_plus
+from typing import Optional, List
+import io
 
 # Third-party Imports
 from flask import (
@@ -24,7 +26,7 @@ from flask import (
     make_response, Response, stream_with_context
 )
 from flask.json.provider import DefaultJSONProvider
-from pymongo import MongoClient, DESCENDING
+from pymongo import MongoClient, DESCENDING, ASCENDING
 from pymongo.errors import ConnectionFailure, PyMongoError
 from bson import ObjectId, json_util
 from dotenv import load_dotenv
@@ -33,7 +35,9 @@ from apscheduler.jobstores.mongodb import MongoDBJobStore
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+import werkzeug.utils
 import redis
+from salesforce_utils import get_upcoming_courses_data, get_current_courses_data
 
 
 # --- Configuration ---
@@ -82,6 +86,7 @@ if not app.config["REDIS_URL"]:
     app.logger.warning(
         "REDIS_URL not set, real-time log streaming will be disabled."
     )
+
 
 # --- Custom JSON Provider for BSON types ---
 class BsonJSONProvider(DefaultJSONProvider):
@@ -157,6 +162,10 @@ except Exception as e:
     mongo_client_scheduler = None
     sys.exit(1)
 
+SERVER_TIMEZONE_STR = os.getenv('SERVER_TIMEZONE', 'Australia/Sydney') # Default to server's actual TZ
+SERVER_TIMEZONE = pytz.timezone(SERVER_TIMEZONE_STR)
+app.logger.info(f"--- APScheduler configured to use timezone: {SERVER_TIMEZONE_STR} ---")
+
 # --- Scheduler Initialization ---
 jobstores = {
     'default': MongoDBJobStore(
@@ -165,7 +174,7 @@ jobstores = {
         client=mongo_client_scheduler
     )
 }
-scheduler = BackgroundScheduler(jobstores=jobstores, timezone=pytz.utc)
+scheduler = BackgroundScheduler(jobstores=jobstores, timezone=SERVER_TIMEZONE)
 try:
     if mongo_client_scheduler:
         scheduler.start()
@@ -359,6 +368,86 @@ def format_datetime(dt_utc):
         dt_utc = dt_utc.astimezone(pytz.utc)
     return dt_utc.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
+def parse_command_line(line: str) -> Optional[List[str]]:
+    """
+    Parses a full command line string (including script path) into
+    a list of arguments suitable for labbuild.py.
+    Returns None if parsing fails or line is invalid.
+    """
+    line = line.strip()
+    if not line or line.startswith('#'): # Ignore empty lines and comments
+        return None
+
+    try:
+        # Split using shlex for handling quotes etc.
+        parts = shlex.split(line, posix=(os.name != 'nt')) # Use POSIX mode for Unix-like paths
+
+        # Find the index of 'labbuild.py'
+        script_name = 'labbuild.py'
+        script_index = -1
+        for i, part in enumerate(parts):
+            if part.endswith(script_name):
+                script_index = i
+                break
+
+        if script_index == -1:
+            app.logger.warning(f"Could not find '{script_name}' in command line: {line}")
+            return None
+
+        # Extract arguments *after* labbuild.py
+        args = parts[script_index + 1:]
+
+        # Basic validation: Should have at least a command (e.g., 'setup')
+        if not args:
+             app.logger.warning(f"No arguments found after '{script_name}' in line: {line}")
+             return None
+
+        # --- Argument Order Correction (Heuristic) ---
+        # The user provided file might have incorrect order like "--vendor pa setup"
+        # labbuild.py's argparse *should* handle this if args are otherwise correct.
+        # However, if we need to enforce "command first", we can add logic here.
+        # Let's assume argparse handles it for now based on the original requirement.
+        # Example correction (if needed):
+        potential_commands = ['setup', 'teardown', 'manage', '-l', '--list-allocations']
+        command_found = None
+        command_index = -1
+        for i, arg in enumerate(args):
+            if arg in potential_commands:
+                command_found = arg
+                command_index = i
+                break
+        if command_found and command_index > 0:
+            # Move command to the beginning
+            args.pop(command_index)
+            args.insert(0, command_found)
+        elif not command_found and args and args[0] not in potential_commands:
+             # If no command is found, and first arg isn't a command, flag as error?
+             app.logger.warning(f"Could not identify command in arguments: {args}")
+             return None # Or try to proceed assuming first arg is command
+
+        app.logger.debug(f"Parsed arguments from line '{line}': {args}")
+        return args
+
+    except Exception as e:
+        app.logger.error(f"Error parsing command line '{line}': {e}", exc_info=True)
+        return None
+
+def format_job_args(job_args: tuple) -> str:
+    """Formats the job arguments tuple into a readable command string."""
+    if not job_args or not isinstance(job_args, tuple) or not job_args[0]:
+        return "[No Args]"
+    try:
+        # Expecting args to be like ([arg1, arg2, ...],)
+        args_list = job_args[0]
+        if isinstance(args_list, list):
+            # Quote arguments containing spaces for better readability
+            return ' '.join(shlex.quote(str(arg)) for arg in args_list)
+        else:
+            # Fallback if format is unexpected
+            return str(job_args)
+    except Exception as e:
+        app.logger.error(f"Error formatting job args '{job_args}': {e}")
+        return "[Error Formatting Args]"
 
 # --- Flask Routes ---
 @app.route('/')
@@ -432,14 +521,12 @@ def index():
                     trigger_info = f"Cron: {job.trigger}"
                 elif isinstance(job.trigger, IntervalTrigger):
                     trigger_info = f"Every {job.trigger.interval}"
-                args_str = "[]"
-                if job.args:
-                    try:
-                        args_str = str(job.args[0]) if len(job.args)==1 else str(job.args)
-                    except Exception: args_str = "[Error displaying args]"
+                
+                args_display_str = format_job_args(job.args)
+
                 jobs_display.append({
                     'id': job.id, 'name': job.name,
-                    'next_run_time_iso': next_run, 'args_str': args_str,
+                    'next_run_time_iso': next_run, 'args_display_str': args_display_str,
                     'trigger_info': trigger_info
                 })
         else: flash("Scheduler is not running.", "warning")
@@ -750,56 +837,143 @@ def schedule_run():
         flash_msg = ""
 
         if schedule_type == 'date' and schedule_time_str:
+            # --- Timezone Handling for DateTrigger (Convert to UTC) ---
+            # 1. Parse naive datetime string
             naive_dt = datetime.datetime.fromisoformat(schedule_time_str)
-            local_tz_str = os.getenv('SERVER_TIMEZONE', 'UTC')
-            local_tz = pytz.timezone(local_tz_str)
-            local_dt = local_tz.localize(naive_dt)
-            run_date_utc = local_dt.astimezone(pytz.utc)
+            # 2. *Assume* the naive time represents the user's desired wall-clock time
+            #    IN THEIR LOCAL timezone. To convert this to the correct UTC instant,
+            #    we *ideally* need the user's timezone. Since we don't have it,
+            #    we'll use a common workaround: Localize to SERVER timezone, THEN convert to UTC.
+            #    This ensures the UTC instant matches what someone *in the server's timezone*
+            #    would get if they entered that same wall-clock time.
+            #    NOTE: This is still an approximation if the user is NOT in the server timezone.
+            server_local_dt = SERVER_TIMEZONE.localize(naive_dt)
+            run_date_utc = server_local_dt.astimezone(pytz.utc)
+
+            # 3. Pass the UTC datetime to DateTrigger. APScheduler will handle it correctly
+            #    relative to its configured server timezone.
             trigger = DateTrigger(run_date=run_date_utc)
-            flash_msg = f"for {run_date_utc.isoformat()}"
+
+            # Display both UTC and Server Local time for clarity
+            flash_msg = f"for {server_local_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')} (Server Time) / {run_date_utc.strftime('%Y-%m-%d %H:%M:%S %Z')} (UTC)"
+            log_time_str = run_date_utc.isoformat() # Log UTC
+            app.logger.info(f"Scheduling job for UTC instant: {run_date_utc} (derived from server local: {server_local_dt})")
+            # --- End Timezone Handling ---
+
         elif schedule_type == 'cron' and cron_expression:
+            # CronTrigger uses the scheduler's timezone (now SERVER_TIMEZONE) by default
             parts = cron_expression.split()
             if len(parts) != 5: raise ValueError("Invalid cron format.")
-            trigger = CronTrigger.from_crontab(cron_expression, timezone=pytz.utc)
-            flash_msg = f"with cron: '{cron_expression}' UTC"
+            # Explicitly pass the server timezone for clarity, though it's the default now
+            trigger = CronTrigger.from_crontab(cron_expression, timezone=SERVER_TIMEZONE)
+            flash_msg = f"with cron: '{cron_expression}' ({SERVER_TIMEZONE_STR})"
+            app.logger.info(f"Scheduling cron job with server timezone: {cron_expression} ({SERVER_TIMEZONE_STR})")
+
         elif schedule_type == 'interval' and interval_value:
+             # IntervalTrigger doesn't inherently use timezones for its interval,
+             # but the *first* run might be influenced by start_date if set.
+             # For simplicity, we assume interval starts relative to when it's added.
              interval_val_int = int(interval_value)
              kwargs = {interval_unit: interval_val_int}
+             # Optional: Set a start_date in the server's timezone if needed
+             # kwargs['start_date'] = SERVER_TIMEZONE.localize(datetime.datetime.now() + timedelta(seconds=5))
              trigger = IntervalTrigger(**kwargs)
              flash_msg = f"every {interval_val_int} {interval_unit}"
+             app.logger.info(f"Scheduling interval job: every {interval_val_int} {interval_unit}")
         else:
              flash('Invalid schedule details.', 'danger')
              return redirect(url_for('index'))
 
         job = scheduler.add_job(
             run_labbuild_task, trigger=trigger, args=[args_list],
-            name=job_name, misfire_grace_time=3600, replace_existing=True
+            name=job_name, misfire_grace_time=3600, replace_existing=False # Allow multiple jobs
         )
         flash(f"Scheduled job '{job.id}' {flash_msg}", 'success')
+    except ValueError as ve: # Catch specific errors like bad cron/date format
+        app.logger.error(f"Invalid schedule input: {ve}", exc_info=True)
+        flash(f"Invalid schedule input: {ve}", 'danger')
     except Exception as e:
         app.logger.error(f"Failed schedule job: {e}", exc_info=True)
         flash(f"Error scheduling job: {e}", 'danger')
     return redirect(url_for('index'))
 
 
-@app.route('/status/<run_id>')
-def get_run_status(run_id):
-    """API endpoint to get current status of a run."""
-    if db is None or op_logs_collection is None:
-         return jsonify({'status': 'error', 'message': 'DB unavailable'}), 500
+# --- Route for Scheduling Batch (MODIFIED) ---
+@app.route('/schedule-batch', methods=['POST'])
+def schedule_batch():
+    # ... (keep file handling and delay parsing) ...
+    if 'batch_file' not in request.files: flash('No file part.', 'danger'); return redirect(url_for('index'))
+    file = request.files['batch_file']
+    if file.filename == '': flash('No file selected.', 'danger'); return redirect(url_for('index'))
+    start_time_str = request.form.get('start_time')
+    delay_minutes_str = request.form.get('delay_minutes', '30')
+
+    if not start_time_str: flash('Start time required.', 'danger'); return redirect(url_for('index'))
     try:
-        log_data = op_logs_collection.find_one({'run_id': run_id})
-        if not log_data:
-            return jsonify({'status': 'error', 'message': 'Run ID not found'}), 404
-        # BsonJSONProvider handles serialization
-        return jsonify(log_data)
-    except PyMongoError as e:
-        app.logger.error(f"Error fetch status {run_id}: {e}")
-        return jsonify({'status': 'error', 'message': 'DB error'}), 500
+        delay_minutes = int(delay_minutes_str)
+        if delay_minutes < 1: raise ValueError("Delay >= 1 min.")
+    except ValueError: flash('Invalid delay.', 'danger'); return redirect(url_for('index'))
+    if not scheduler.running: flash("Scheduler not running.", "danger"); return redirect(url_for('index'))
+
+    # --- Parse Start Time and Convert to UTC ---
+    try:
+        naive_dt = datetime.datetime.fromisoformat(start_time_str)
+        # Localize to SERVER timezone first
+        first_run_server_local_dt = SERVER_TIMEZONE.localize(naive_dt)
+        # Convert that to the equivalent UTC instant
+        first_run_utc = first_run_server_local_dt.astimezone(pytz.utc)
+        app.logger.info(f"Batch Schedule: First job UTC start: {first_run_utc} (derived from server local: {first_run_server_local_dt})")
+    except ValueError: flash("Invalid start time format.", "danger"); return redirect(url_for('index'))
+    except Exception as e: app.logger.error(f"Err parse batch start: {e}"); flash("Err process time.", "danger"); return redirect(url_for('index'))
+    # --- End Parse Start Time ---
+
+    scheduled_count = 0
+    failed_lines = 0
+    # --- Use the SERVER timezone-aware datetime for scheduling ---
+    # --- Use the UTC datetime for scheduling ---
+    current_run_time_utc = first_run_utc # Start with the first UTC time
+    job_delay = datetime.timedelta(minutes=delay_minutes)
+
+    try:
+        filename = werkzeug.utils.secure_filename(file.filename)
+        app.logger.info(f"Processing batch file: {filename}")
+        stream = io.TextIOWrapper(file.stream, encoding='utf-8')
+        lines = stream.readlines()
+
+        for i, line in enumerate(lines):
+            args_list = parse_command_line(line)
+            if args_list:
+                # Calculate run time for this job (already timezone-aware)
+                run_date_utc = current_run_time_utc
+                job_name = f"batch_{filename}_{i+1}_{args_list[0]}"
+                # --- Use the timezone-aware datetime directly ---
+                trigger = DateTrigger(run_date=run_date_utc)
+
+                try:
+                    job = scheduler.add_job(
+                        run_labbuild_task, trigger=trigger, args=[args_list],
+                        name=job_name, misfire_grace_time=3600, replace_existing=False
+                    )
+                    # Log using the server's local time representation
+                    run_date_server_local = run_date_utc.astimezone(SERVER_TIMEZONE)
+                    log_time_str = f"{run_date_server_local.strftime('%Y-%m-%d %H:%M:%S %Z%z')} (Server) / {run_date_utc.strftime('%Y-%m-%d %H:%M:%S %Z')} (UTC)"
+                    app.logger.info(f"Scheduled batch job {i+1}: ID={job.id}, Name='{job_name}', RunAt={log_time_str}")
+                    scheduled_count += 1
+                    current_run_time_utc += job_delay # Increment for next job
+                except Exception as e_sched:
+                    app.logger.error(f"Fail schedule line {i+1}: {e_sched}", exc_info=True)
+                    failed_lines += 1
+            elif line.strip() and not line.strip().startswith('#'):
+                app.logger.warning(f"Skip invalid line {i+1}: {line.strip()}")
+                failed_lines += 1
+
+        flash(f"Scheduled {scheduled_count} jobs from '{filename}'. {failed_lines} lines failed/skipped.", 'success' if scheduled_count > 0 else 'warning')
+
     except Exception as e:
-        app.logger.error(f"Unexpected error fetch status {run_id}: {e}",
-                         exc_info=True)
-        return jsonify({'status': 'error', 'message': 'Server error'}), 500
+        app.logger.error(f"Error processing batch file '{filename}': {e}", exc_info=True)
+        flash(f"Error processing batch file: {e}", 'danger')
+
+    return redirect(url_for('index'))
 
 
 @app.route('/logs/<run_id>')
@@ -882,7 +1056,7 @@ def log_detail(run_id):
 
 @app.route('/jobs/delete/<job_id>', methods=['POST'])
 def delete_job(job_id):
-    """Delete a scheduled job."""
+    """Delete a single scheduled job."""
     if not scheduler.running:
         flash("Scheduler not running.", "danger")
         return redirect(url_for('index'))
@@ -894,6 +1068,33 @@ def delete_job(job_id):
         flash(f"Error deleting job: {e}", 'danger')
     return redirect(url_for('index'))
 
+@app.route('/jobs/delete-bulk', methods=['POST'])
+def delete_bulk_jobs():
+    """Deletes multiple scheduled jobs based on selected IDs."""
+    if not scheduler.running:
+        flash("Scheduler not running.", "danger")
+        return redirect(url_for('index'))
+
+    job_ids_to_delete = request.form.getlist('job_ids') # Gets list of selected checkbox values
+
+    if not job_ids_to_delete:
+        flash("No jobs selected for deletion.", "warning")
+        return redirect(url_for('index'))
+
+    deleted_count = 0
+    failed_count = 0
+    for job_id in job_ids_to_delete:
+        try:
+            scheduler.remove_job(job_id)
+            deleted_count += 1
+        except Exception as e:
+            app.logger.error(f"Failed delete job {job_id} during bulk operation: {e}", exc_info=True)
+            failed_count += 1
+
+    flash(f"Successfully deleted {deleted_count} job(s). Failed to delete {failed_count} job(s).",
+          'success' if failed_count == 0 else 'warning')
+
+    return redirect(url_for('index'))
 
 @app.route('/logs/all')
 def all_logs():
@@ -1109,6 +1310,176 @@ def stream_command():
         mimetype='text/event-stream'
     )
 
+# --- NEW: Route for Upcoming Courses ---
+@app.route('/upcoming-courses')
+def view_upcoming_courses():
+    """Displays upcoming courses fetched from Salesforce."""
+    current_theme = request.cookies.get('theme', 'light')
+    courses_data = []
+    hosts_list = []       # NEW: For host dropdown
+    course_configs_list = [] # NEW: For course dropdown
+    error_message = None
+
+    # Fetch Hosts from DB
+    if host_collection is not None: # Use 'is not None'
+        try:
+            hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1)
+            hosts_list = [host['host_name'] for host in hosts_cursor if 'host_name' in host]
+        except PyMongoError as e:
+            app.logger.error(f"Error fetching hosts list: {e}")
+            flash("Error fetching hosts.", "warning")
+    else:
+         flash("Host collection unavailable.", "warning") # This case means DB connection likely failed earlier
+
+    # Fetch Course Configs from DB (Name and Vendor only)
+    if course_config_collection is not None: # Use 'is not None'
+        try:
+            configs_cursor = course_config_collection.find(
+                {},
+                {"course_name": 1, "vendor_shortcode": 1, "_id": 0}
+            ).sort([("vendor_shortcode", 1), ("course_name", 1)])
+            course_configs_list = list(configs_cursor)
+        except PyMongoError as e:
+            app.logger.error(f"Error fetching course configs list: {e}")
+            flash("Error fetching lab build course list.", "warning")
+    else:
+        flash("Course config collection unavailable.", "warning") # This case means DB connection likely failed earlier
+
+    try:
+        # Fetch and process data using the utility function
+        courses_data = get_upcoming_courses_data()
+
+        if courses_data is None:
+            # A critical error occurred during fetch/process (already logged)
+            flash("Failed to fetch or process Salesforce data. Check server logs.", "danger")
+            courses_data = [] # Ensure template gets an empty list
+            error_message = "Error retrieving data."
+        elif not courses_data:
+             # Processing finished, but no courses found for the upcoming week
+             flash("No upcoming courses found for the next week.", "info")
+             error_message = "No courses scheduled for the upcoming week."
+
+
+    except Exception as e:
+        # Catch any unexpected errors during the route execution itself
+        app.logger.error(f"Unexpected error in /upcoming-courses route: {e}", exc_info=True)
+        flash("An unexpected error occurred while loading upcoming courses.", "danger")
+        error_message = "Server error."
+        courses_data = [] # Ensure template gets an empty list
+
+    return render_template(
+        'upcoming_courses.html',
+        courses=courses_data,
+        error_message=error_message, # Pass error message to template
+        hosts_list=hosts_list,               # Pass hosts
+        course_configs_list=course_configs_list, # Pass course configs
+        current_theme=current_theme
+    )
+
+@app.route('/current-courses')
+def view_current_courses():
+    """Displays CURRENT week's courses fetched from Salesforce."""
+    current_theme = request.cookies.get('theme', 'light')
+    courses_data = []
+    hosts_list = []
+    course_configs_list = []
+    error_message = None
+
+    # Fetch Hosts and Course Configs (same as for upcoming)
+    if host_collection is not None:
+        try:
+            hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1)
+            hosts_list = [host['host_name'] for host in hosts_cursor if 'host_name' in host]
+        except PyMongoError as e: app.logger.error(f"Error fetching hosts list: {e}"); flash("Error fetching hosts.", "warning")
+    else: flash("Host collection unavailable.", "warning")
+    if course_config_collection is not None:
+        try:
+            configs_cursor = course_config_collection.find({}, {"course_name": 1, "vendor_shortcode": 1, "_id": 0}).sort([("vendor_shortcode", 1), ("course_name", 1)])
+            course_configs_list = list(configs_cursor)
+        except PyMongoError as e: app.logger.error(f"Error fetching course configs list: {e}"); flash("Error fetching lab build course list.", "warning")
+    else: flash("Course config collection unavailable.", "warning")
+
+    # Fetch and process Salesforce data for the CURRENT week
+    try:
+        courses_data = get_current_courses_data() # Calls the CURRENT week function
+
+        if courses_data is None:
+            flash("Failed to fetch or process Salesforce data. Check server logs.", "danger")
+            courses_data = []
+            error_message = "Error retrieving data."
+        elif not courses_data:
+             flash("No courses found running this week.", "info")
+             error_message = "No courses scheduled for the current week."
+
+    except Exception as e:
+        app.logger.error(f"Unexpected error in /current-courses route: {e}", exc_info=True)
+        flash("An unexpected error occurred while loading current courses.", "danger")
+        error_message = "Server error."
+        courses_data = []
+
+    return render_template(
+        'current_courses.html', # <<< Renders the NEW current_courses template
+        courses=courses_data,
+        error_message=error_message,
+        hosts_list=hosts_list,
+        course_configs_list=course_configs_list,
+        current_theme=current_theme
+    )
+
+@app.route('/build-row', methods=['POST'])
+def build_row():
+    """Handles the 'Build' action triggered from a row in upcoming courses."""
+    try:
+        data = request.json # Expecting JSON data from frontend JS
+        if not data:
+            return jsonify({"status": "error", "message": "No data received."}), 400
+
+        # Extract data sent from JavaScript
+        labbuild_course = data.get('labbuild_course')
+        start_pod = data.get('start_pod')
+        end_pod = data.get('end_pod')
+        host = data.get('host')
+        vendor = data.get('vendor') # Derived vendor passed from JS
+        sf_course_code = data.get('sf_course_code') # Optional: for logging/tagging
+
+        # --- Basic Validation ---
+        if not all([labbuild_course, start_pod, end_pod, host, vendor]):
+             return jsonify({"status": "error", "message": "Missing required fields (Course, Pod Range, Host, Vendor)."}), 400
+        try:
+            # Validate pod numbers
+            s_pod = int(start_pod)
+            e_pod = int(end_pod)
+            if s_pod < 0 or e_pod < 0 or s_pod > e_pod:
+                 raise ValueError("Invalid pod range.")
+        except ValueError:
+             return jsonify({"status": "error", "message": "Invalid Start/End Pod numbers."}), 400
+
+        # Construct args for labbuild setup command
+        # Use a default tag or create one from course info
+        tag = f"uc_{sf_course_code}" if sf_course_code else "uc_dashboard"
+        tag = tag[:50] # Limit tag length if necessary
+
+        args_list = [
+            'setup',
+            '-v', vendor,
+            '-g', labbuild_course,
+            '--host', host,
+            '-s', str(s_pod),
+            '-e', str(e_pod),
+            '-t', tag
+            # Add other default flags if needed, e.g., '-th', '8'
+        ]
+
+        # Run the task in the background
+        thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True)
+        thread.start()
+
+        flash(f"Submitted build for {labbuild_course} (Pods {s_pod}-{e_pod}) on {host}.", "info")
+        return jsonify({"status": "success", "message": "Build submitted."}), 200
+
+    except Exception as e:
+        app.logger.error(f"Error in /build-row: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "Internal server error."}), 500
 
 # --- Cleanup ---
 def shutdown_resources():

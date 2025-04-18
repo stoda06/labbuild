@@ -1,0 +1,142 @@
+{# dashboard/templates/current_courses.html #}
+{% extends 'base.html' %}
+
+{# --- CHANGE Title --- #}
+{% block title %}Current Courses (This Week){% endblock %}
+
+{% block content %}
+{# --- Keep exact same styles as upcoming_courses.html --- #}
+<style>
+    /* Styles for table, headers, controls etc. */
+    .upcoming-table th, .upcoming-table td { font-size: 0.85rem; vertical-align: middle; }
+    .upcoming-table th { white-space: nowrap; cursor: pointer; position: relative; padding-right: 20px; }
+    .upcoming-table th .sort-icon { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); font-size: 0.8em; color: #aaa; transition: color 0.2s ease; }
+    .upcoming-table th.sort-asc .sort-icon, .upcoming-table th.sort-desc .sort-icon { color: #333; }
+    body.dark-mode .upcoming-table th.sort-asc .sort-icon, body.dark-mode .upcoming-table th.sort-desc .sort-icon { color: #ddd; }
+    .upcoming-table td { white-space: normal; }
+    .col-numbers { text-align: center; min-width: 60px; }
+    .col-dates { min-width: 95px; }
+    .col-code { min-width: 130px; }
+    .col-type { min-width: 150px; }
+    .col-trainer { min-width: 130px; }
+    .col-labbuild-course { min-width: 220px; }
+    .col-pod-input { min-width: 75px; }
+    .col-class-input { min-width: 75px; }
+    .col-host-select { min-width: 150px; }
+    .col-action { min-width: 80px; text-align: center;}
+    .upcoming-table td .form-control, .upcoming-table td .form-select { font-size: 0.8rem; padding: 0.25rem 0.5rem; height: auto; }
+    .upcoming-table td .form-control[type=number] { width: 65px; }
+    .f5-class-input-wrapper { display: none; }
+    tr[data-derived-vendor="f5"] .f5-class-input-wrapper { display: block; }
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+   {# --- CHANGE Heading --- #}
+   <h1>Current Courses (This Week)</h1>
+   <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+</div>
+
+<div class="card">
+  {# --- CHANGE Card Header --- #}
+  <div class="card-header">Courses Running This Week</div>
+  <div class="card-body p-0">
+    {% if courses %}
+      <div class="table-responsive">
+        {# --- Use same table ID --- #}
+        <table class="table table-sm table-striped table-hover mb-0 upcoming-table" id="current-courses-table">
+          <thead class="table-light">
+            {# --- Keep exact same headers as upcoming_courses.html --- #}
+            <tr>
+              <th scope="col" class="col-dates sortable-header" data-column="Start Date" data-type="date">Start Date<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-dates sortable-header" data-column="End Date" data-type="date">End Date<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-code sortable-header" data-column="Course Code" data-type="string">Course Code<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-type sortable-header" data-column="Course Type" data-type="string">Course Type<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-trainer sortable-header" data-column="Trainer" data-type="string">Trainer<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-numbers sortable-header" data-column="Pax" data-type="number">Pax<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-numbers sortable-header" data-column="Pods Req." data-type="number">Pods Req.<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-labbuild-course">LabBuild Course</th>
+              <th scope="col" class="col-pod-input">Start Pod</th>
+              <th scope="col" class="col-pod-input">End Pod</th>
+              <th scope="col" class="col-class-input">Class # (F5)</th>
+              <th scope="col" class="col-host-select">Host</th>
+              <th scope="col" class="col-action">Action</th>
+            </tr>
+          </thead>
+          {# --- Use same tbody ID --- #}
+          <tbody id="current-courses-tbody">
+            {# Rows rendered by JS #}
+          </tbody>
+        </table>
+      </div>
+    {% elif error_message %}
+        {# Display error message passed from Flask #}
+        <div class="alert alert-warning m-3">{{ error_message }}</div>
+    {% else %}
+        {# Fallback if no error message but no courses #}
+        <p class="p-3">No data available or failed to load.</p>
+    {% endif %}
+  </div> {# End card-body #}
+</div> {# End card #}
+
+{# --- Embed same data as JSON --- #}
+<script id="courses-data" type="application/json">
+  {{ courses | tojson | safe }}
+</script>
+<script id="hosts-data" type="application/json">
+  {{ hosts_list | tojson | safe }}
+</script>
+<script id="course-configs-data" type="application/json">
+  {{ course_configs_list | tojson | safe }}
+</script>
+
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  {# --- Use EXACT SAME JavaScript as upcoming_courses.html --- #}
+  {# Just ensure IDs match (e.g., #current-courses-table, #current-courses-tbody) #}
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // --- Get IDs specific to THIS page ---
+        const table = document.getElementById('current-courses-table'); // Changed ID
+        const tbody = document.getElementById('current-courses-tbody'); // Changed ID
+        // --- Keep the rest of the variable declarations ---
+        const headers = table.querySelectorAll('th.sortable-header');
+        const coursesDataScript = document.getElementById('courses-data');
+        const hostsDataScript = document.getElementById('hosts-data');
+        const courseConfigsDataScript = document.getElementById('course-configs-data');
+
+        let courseData = [];
+        let hostsList = [];
+        let courseConfigsList = [];
+        let sortState = { column: 'Start Date', direction: 'asc' };
+
+        // --- Keep Data Parsing logic ---
+        try { /* ... */ } catch (e) { /* ... */ }
+        if (!table || !tbody || !headers.length) { /* ... */ return; }
+
+        // --- Render Table Function (Keep as is - it renders based on data) ---
+        function renderTable(data) {
+             tbody.innerHTML = '';
+             const colCount = 13; // Correct colspan
+             if (!data || data.length === 0) {
+                  tbody.innerHTML = `<tr><td colspan="${colCount}">No courses found for the current week.</td></tr>`; // Adjusted message
+                  return;
+             }
+             data.forEach((course, index) => { /* ... keep row creation logic ... */ });
+        }
+
+        // --- Keep updateSortIndicators and sortTable functions ---
+        function updateSortIndicators() { /* ... */ }
+        function sortTable(columnName, dataType, forceDirection = null) { /* ... */ }
+
+        // --- Keep Event Listeners for Headers and Build Button ---
+        headers.forEach(header => { /* ... */ });
+        tbody.addEventListener('click', function(event) { /* ... */ });
+
+        // --- Initial Render & Sort ---
+        sortTable('Start Date', 'date', 'asc');
+
+    });
+  </script>
+{% endblock %}
