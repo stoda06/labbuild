@@ -195,7 +195,7 @@ def build_pod(service_instance, pod_config, mem=None, rebuild=False, full=False,
                             datastore_name = "keg2" 
                         else:
                             datastore_name = "datastore2-ho"
-                        iso_path = "podiso/pod-" + pod_number + "-a.iso"
+                        iso_path = f"podiso/pod-{pod_number}-a.iso"
                         if not vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True):
                             return False, "modify_cd_drive", f"Failed modifying CD drive for {clone_name}"
                 # STEP 3.4: Reconfigure VM resources and update VM UUID if needed.
