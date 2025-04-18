@@ -297,7 +297,7 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     return True, None, None
 
 
-def build_cortex_pod(service_instance, pod_config, rebuild=False, full=False, selected_components=None):
+def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
     pod = int(pod_config["pod_number"])

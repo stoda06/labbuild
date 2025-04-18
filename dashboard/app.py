@@ -837,28 +837,19 @@ def schedule_run():
         flash_msg = ""
 
         if schedule_type == 'date' and schedule_time_str:
-            # --- Timezone Handling for DateTrigger (Convert to UTC) ---
-            # 1. Parse naive datetime string
+            # --- Convert Naive Input -> Server Local -> UTC ---
             naive_dt = datetime.datetime.fromisoformat(schedule_time_str)
-            # 2. *Assume* the naive time represents the user's desired wall-clock time
-            #    IN THEIR LOCAL timezone. To convert this to the correct UTC instant,
-            #    we *ideally* need the user's timezone. Since we don't have it,
-            #    we'll use a common workaround: Localize to SERVER timezone, THEN convert to UTC.
-            #    This ensures the UTC instant matches what someone *in the server's timezone*
-            #    would get if they entered that same wall-clock time.
-            #    NOTE: This is still an approximation if the user is NOT in the server timezone.
+            # 1. Localize to Server TZ (Interpret input as server's wall-clock time)
             server_local_dt = SERVER_TIMEZONE.localize(naive_dt)
+            # 2. Convert to equivalent UTC instant
             run_date_utc = server_local_dt.astimezone(pytz.utc)
-
-            # 3. Pass the UTC datetime to DateTrigger. APScheduler will handle it correctly
-            #    relative to its configured server timezone.
+            # 3. Schedule using the UTC datetime object
             trigger = DateTrigger(run_date=run_date_utc)
+            # --- End Conversion ---
 
-            # Display both UTC and Server Local time for clarity
             flash_msg = f"for {server_local_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')} (Server Time) / {run_date_utc.strftime('%Y-%m-%d %H:%M:%S %Z')} (UTC)"
-            log_time_str = run_date_utc.isoformat() # Log UTC
-            app.logger.info(f"Scheduling job for UTC instant: {run_date_utc} (derived from server local: {server_local_dt})")
-            # --- End Timezone Handling ---
+            log_time_str = run_date_utc.isoformat()
+            app.logger.info(f"Scheduling job for UTC instant: {run_date_utc} (interpreted from naive input as server time: {server_local_dt})")
 
         elif schedule_type == 'cron' and cron_expression:
             # CronTrigger uses the scheduler's timezone (now SERVER_TIMEZONE) by default
@@ -867,7 +858,8 @@ def schedule_run():
             # Explicitly pass the server timezone for clarity, though it's the default now
             trigger = CronTrigger.from_crontab(cron_expression, timezone=SERVER_TIMEZONE)
             flash_msg = f"with cron: '{cron_expression}' ({SERVER_TIMEZONE_STR})"
-            app.logger.info(f"Scheduling cron job with server timezone: {cron_expression} ({SERVER_TIMEZONE_STR})")
+            log_time_str = flash_msg
+            app.logger.info(f"Scheduling cron job relative to server timezone: {log_time_str}")
 
         elif schedule_type == 'interval' and interval_value:
              # IntervalTrigger doesn't inherently use timezones for its interval,
@@ -884,12 +876,14 @@ def schedule_run():
              flash('Invalid schedule details.', 'danger')
              return redirect(url_for('index'))
 
+        # Add job (keep misfire_grace_time)
         job = scheduler.add_job(
             run_labbuild_task, trigger=trigger, args=[args_list],
-            name=job_name, misfire_grace_time=3600, replace_existing=False # Allow multiple jobs
+            name=job_name, misfire_grace_time=3600, replace_existing=False
         )
         flash(f"Scheduled job '{job.id}' {flash_msg}", 'success')
-    except ValueError as ve: # Catch specific errors like bad cron/date format
+        app.logger.info(f"Job '{job.id}' ({job_name}) scheduled. Trigger time info: {log_time_str}")
+    except ValueError as ve:
         app.logger.error(f"Invalid schedule input: {ve}", exc_info=True)
         flash(f"Invalid schedule input: {ve}", 'danger')
     except Exception as e:
@@ -915,24 +909,22 @@ def schedule_batch():
     except ValueError: flash('Invalid delay.', 'danger'); return redirect(url_for('index'))
     if not scheduler.running: flash("Scheduler not running.", "danger"); return redirect(url_for('index'))
 
-    # --- Parse Start Time and Convert to UTC ---
+    # --- Parse Start Time: Naive -> Server Local -> UTC ---
     try:
         naive_dt = datetime.datetime.fromisoformat(start_time_str)
-        # Localize to SERVER timezone first
         first_run_server_local_dt = SERVER_TIMEZONE.localize(naive_dt)
-        # Convert that to the equivalent UTC instant
-        first_run_utc = first_run_server_local_dt.astimezone(pytz.utc)
-        app.logger.info(f"Batch Schedule: First job UTC start: {first_run_utc} (derived from server local: {first_run_server_local_dt})")
-    except ValueError: flash("Invalid start time format.", "danger"); return redirect(url_for('index'))
-    except Exception as e: app.logger.error(f"Err parse batch start: {e}"); flash("Err process time.", "danger"); return redirect(url_for('index'))
+        first_run_utc = first_run_server_local_dt.astimezone(pytz.utc) # Schedule UTC time
+        app.logger.info(f"Batch Schedule: First job UTC start: {first_run_utc} (interpreted from naive input as server time: {first_run_server_local_dt})")
+    except Exception as e:
+        app.logger.error(f"Err parse batch start: {e}", exc_info=True)
+        flash("Err process time.", "danger")
+        return redirect(url_for('index'))
     # --- End Parse Start Time ---
 
     scheduled_count = 0
     failed_lines = 0
-    # --- Use the SERVER timezone-aware datetime for scheduling ---
-    # --- Use the UTC datetime for scheduling ---
-    current_run_time_utc = first_run_utc # Start with the first UTC time
-    job_delay = datetime.timedelta(minutes=delay_minutes)
+    current_run_time_utc = first_run_utc # Use UTC for tracking
+    job_delay = datetime.timedelta(minutes=int(request.form.get('delay_minutes', '30'))) # Ensure delay is int
 
     try:
         filename = werkzeug.utils.secure_filename(file.filename)
