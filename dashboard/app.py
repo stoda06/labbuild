@@ -56,7 +56,8 @@ try:
     # Import constants first
     from constants import (
         DB_NAME, OPERATION_LOG_COLLECTION, LOG_COLLECTION,
-        COURSE_CONFIG_COLLECTION, HOST_COLLECTION, ALLOCATION_COLLECTION
+        COURSE_CONFIG_COLLECTION, HOST_COLLECTION, ALLOCATION_COLLECTION,
+        COURSE_MAPPING_RULES_COLLECTION
     )
     # Then import utilities
     from db_utils import delete_from_database
@@ -127,6 +128,7 @@ std_logs_collection = None
 course_config_collection = None
 host_collection = None
 alloc_collection = None
+course_mapping_rules_collection = None
 
 try:
     # App client
@@ -140,6 +142,7 @@ try:
     course_config_collection = db[COURSE_CONFIG_COLLECTION]
     host_collection = db[HOST_COLLECTION]
     alloc_collection = db[ALLOCATION_COLLECTION]
+    course_mapping_rules_collection = db[COURSE_MAPPING_RULES_COLLECTION]
     app.logger.info("Successfully connected App MongoDB client.")
 
     # Scheduler client
@@ -316,6 +319,91 @@ def build_args_from_form(form_data):
         flash("Internal error building command arguments.", "danger")
         return None
 
+def build_args_from_dict(data: dict) -> Optional[List[str]]:
+    """
+    Converts a dictionary (from API JSON) to a list of CLI arguments
+    for labbuild.py. Returns None if validation fails.
+    Performs basic validation.
+    """
+    command = data.get('command')
+    if not command:
+        app.logger.error("API Error: 'command' field is missing.")
+        return None, "'command' field is required."
+
+    args = [command] # Command first
+
+    # --- Map standard arguments to flags ---
+    # Use .get() with default None to handle missing optional fields
+    arg_map = {
+        'vendor': '-v', 'course': '-g', 'host': '--host',
+        'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn',
+        'tag': '-t', 'component': '-c', 'operation': '-o',
+        'memory': '-mem', 'prtg_server': '--prtg-server',
+        'datastore': '-ds', 'thread': '-th'
+    }
+    for key, flag in arg_map.items():
+        value = data.get(key)
+        # Add arg only if value is provided (not None, maybe allow empty strings?)
+        if value is not None: # Check for None explicitly, allow 0 or False
+             # Special handling for tag default? API should probably provide tag if desired.
+             if key == 'tag' and value == '': continue # Skip empty tag? Or use default? Let's skip.
+             args.extend([flag, str(value)])
+
+    # --- Map boolean flags ---
+    # Expect boolean True/False in JSON request
+    bool_flags = {
+         'rebuild': '--re-build', # Note the key name change from form ('re_build')
+         'full': '--full',
+         'monitor_only': '--monitor-only',
+         'db_only': '--db-only',
+         'perm': '--perm',
+         'verbose': '--verbose'
+    }
+    for key, flag in bool_flags.items():
+        if data.get(key) is True: # Check for explicit True
+            args.append(flag)
+
+    # --- Basic Server-Side Validation ---
+    vendor_val = data.get('vendor')
+    if not vendor_val:
+        return None, "'vendor' field is required."
+
+    # Command-specific required fields
+    if command in ['setup', 'manage', 'teardown']:
+        if not data.get('course'):
+             return None, "'course' field is required for setup/manage/teardown."
+        if command == 'manage' and not data.get('operation'):
+             return None, "'operation' field is required for manage command."
+
+        # Core args validation based on mode and vendor (similar to form validation)
+        is_f5 = vendor_val.lower() == 'f5'
+        is_special_mode = (
+            data.get('db_only') is True or
+            data.get('monitor_only') is True or
+            data.get('perm') is True or
+            data.get('component') == '?' or
+            data.get('course') == '?'
+        )
+
+        if not is_special_mode:
+             if not data.get('host'):
+                 return None, "'host' field is required for standard operations."
+             if is_f5 and data.get('class_number') is None: # Check for None explicitly
+                 return None, "'class_number' field is required for F5 operations."
+             if not is_f5 and (data.get('start_pod') is None or data.get('end_pod') is None):
+                 return None, "'start_pod' and 'end_pod' fields are required for non-F5 operations."
+             # Pod range sanity check
+             start_p = data.get('start_pod')
+             end_p = data.get('end_pod')
+             if start_p is not None and end_p is not None:
+                  try:
+                      if int(start_p) > int(end_p):
+                           return None, "start_pod cannot be greater than end_pod."
+                  except (ValueError, TypeError):
+                       return None, "Invalid non-integer value for start_pod or end_pod."
+
+    app.logger.debug(f"Built arguments from API data: {args}")
+    return args, None # Return args and no error message
 
 def build_log_filter_query(request_args):
     """Builds a MongoDB filter dictionary based on request arguments."""
@@ -448,6 +536,59 @@ def format_job_args(job_args: tuple) -> str:
     except Exception as e:
         app.logger.error(f"Error formatting job args '{job_args}': {e}")
         return "[Error Formatting Args]"
+    
+
+@app.route('/api/v1/labbuild', methods=['POST'])
+def api_run_labbuild():
+    """
+    API endpoint to trigger labbuild commands asynchronously.
+    Accepts JSON POST requests.
+    Requires Authentication (TODO: Implement proper auth).
+    """
+    # --- TODO: Implement Authentication/Authorization ---
+    # Example: Check for an API key in headers
+    # api_key = request.headers.get('X-API-Key')
+    # if not api_key or not validate_api_key(api_key): # Implement validate_api_key
+    #     return jsonify({"error": "Unauthorized"}), 401
+    # ----------------------------------------------------
+
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 415 # Unsupported Media Type
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No JSON data received"}), 400
+
+    app.logger.info(f"API request received: {data}")
+
+    # Build and validate arguments
+    args_list, error_msg = build_args_from_dict(data)
+
+    if error_msg:
+        app.logger.error(f"API validation failed: {error_msg}")
+        return jsonify({"error": f"Invalid input: {error_msg}"}), 400
+    if not args_list: # Should be caught by error_msg check, but belt-and-suspenders
+         app.logger.error("API argument building failed silently.")
+         return jsonify({"error": "Failed to process arguments."}), 500
+
+
+    # Execute the command asynchronously
+    try:
+        thread = threading.Thread(
+            target=run_labbuild_task, args=(args_list,), daemon=True
+        )
+        thread.start()
+        app.logger.info(f"Submitted API task: {' '.join(args_list)}")
+        # Return 202 Accepted - Task submitted but not completed yet
+        return jsonify({
+            "status": "submitted",
+            "message": "LabBuild command submitted for asynchronous execution.",
+            "submitted_command": args_list
+            # TODO: Ideally return a run_id here for tracking later
+        }), 202
+    except Exception as e:
+        app.logger.error(f"Failed to start background thread for API task: {e}", exc_info=True)
+        return jsonify({"error": "Failed to start background task."}), 500
 
 # --- Flask Routes ---
 @app.route('/')
@@ -569,204 +710,421 @@ def api_courses():
 
 @app.route('/allocations')
 def view_allocations():
-    """Displays current allocations."""
+    """
+    Fetches allocation data, processes it into a flat list with group headers
+    suitable for server-side pagination and grouping display. Includes power status.
+
+    Handles filtering based on request arguments:
+    - filter_tag (regex contains, case-insensitive)
+    - filter_vendor (regex exact match, case-insensitive)
+    - filter_course (regex contains, case-insensitive)
+    - filter_host (substring contains, case-insensitive, post-processing)
+    - filter_number (exact match integer, post-processing)
+
+    Returns:
+        Flask Response: Renders the 'allocations.html' template with:
+            - allocation_list: The SLICED flat list for the current page.
+            - total_data_items: Count of actual pod/class data items matching filters.
+            - current_page: The current page number being displayed.
+            - total_pages: The total number of pages calculated.
+            - pagination_args: Dictionary of active filters for pagination links.
+            - current_filters: Dictionary of active filters for form persistence.
+            - current_theme: Current theme setting.
+    """
+    # Simulate request context if running standalone
+    # Example: request = type('obj', (object,), {'args': {'filter_tag': 'test', 'page': '1'}, 'cookies': {'theme': 'light'}})()
     current_theme = request.cookies.get('theme', 'light')
-    page = request.args.get('page', 1, type=int)
-    per_page = 50
-    allocation_list = []
-    current_filters = {k: v for k, v in request.args.items() if k != 'page'}
+    current_filters = {k: v for k, v in request.args.items() if k != 'page'} # Exclude page from filters
+    try:
+        page = int(request.args.get('page', 1))
+        if page < 1: page = 1
+    except ValueError:
+        page = 1
+    per_page = 50 # Rows per page (including headers) - adjust as needed
+
     mongo_filter = {}
+    flat_display_list_all = [] # Store the full flattened list temporarily
+    total_data_items = 0 # Count only actual pod/class data items
+
+    # --- Build Mongo Filter ---
     if current_filters.get('filter_tag'):
-        mongo_filter['tag'] = {
-            '$regex': f'^{re.escape(current_filters["filter_tag"])}$',
-            '$options': 'i'
-        }
+        mongo_filter['tag'] = {'$regex': re.escape(current_filters["filter_tag"]), '$options': 'i'}
     if current_filters.get('filter_vendor'):
-        mongo_filter['courses.vendor'] = {
-            '$regex': f'^{re.escape(current_filters["filter_vendor"])}$',
-            '$options': 'i'
-        }
+        mongo_filter['courses.vendor'] = {'$regex': f'^{re.escape(current_filters["filter_vendor"])}$', '$options': 'i'}
     if current_filters.get('filter_course'):
-        mongo_filter['courses.course_name'] = {
-            '$regex': re.escape(current_filters['filter_course']),
-            '$options': 'i'
-        }
-    host_filter = current_filters.get('filter_host', '').strip().lower()
-    num_filter_str = current_filters.get('filter_number', '').strip()
-    num_filter_int = None
-    if num_filter_str:
-        try: num_filter_int = int(num_filter_str)
-        except ValueError: flash("Invalid number filter.", "warning")
+        mongo_filter['courses.course_name'] = {'$regex': re.escape(current_filters['filter_course']), '$options': 'i'}
+    # Host and Number filters are applied after fetching
 
-    docs_to_process = []
-    if db is not None and alloc_collection is not None:
-        try:
-            cursor = alloc_collection.find(mongo_filter)
-            docs_to_process = list(cursor)
-        except PyMongoError as e:
-            app.logger.error(f"Error fetching allocations: {e}")
-            flash("Error fetching allocations.", "danger")
-    else: flash("DB or allocation collection unavailable.", "danger")
+    try:
+        # --- Database Availability Check ---
+        # Replace 'db' and 'alloc_collection' with actual access method
+        global db, alloc_collection # Example if using globals
+        if db is None or alloc_collection is None:
+            flash("DB connection or allocation collection unavailable.", "danger") # Replace flash if needed
+            app.logger.error("DB connection or allocation collection is None.")
+            raise ConnectionError("Database not available") # Raise error to be caught below
 
-    # Flatten and Apply Post-Filters
-    for doc in docs_to_process:
-        tag = doc.get("tag", "UT")
-        for course in doc.get("courses", []):
-            if not isinstance(course, dict): continue
-            c_name = course.get("course_name", "?")
-            vendor = course.get("vendor")
-            v_str = str(vendor) if vendor else "N/A"
-            is_f5 = v_str.lower() == 'f5'
-            for pd in course.get("pod_details", []):
-                if not isinstance(pd, dict): continue
-                host = pd.get("host", pd.get("pod_host", "?"))
-                pod = pd.get("pod_number")
-                cls = pd.get("class_number")
-                prtg = pd.get("prtg_url")
+        # --- Fetch and Pre-Group Data (Temporary Grouping) ---
+        temp_grouped_allocations = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        alloc_cursor = alloc_collection.find(mongo_filter).sort("tag", 1)
 
-                def matches_num(n):
-                    return num_filter_int is None or n == num_filter_int
-                def matches_host(h):
-                    return not host_filter or host_filter in h.lower()
+        for tag_doc in alloc_cursor:
+            tag = tag_doc.get("tag", "Unknown Tag")
+            courses_in_tag = tag_doc.get("courses", [])
+            if not isinstance(courses_in_tag, list): continue
 
-                if is_f5 and cls is not None:
-                    if matches_num(cls) and matches_host(host):
-                        allocation_list.append({
-                            "tag": tag, "course": c_name, "vendor": v_str,
-                            "host": host, "id_type": "Class", "number": cls,
-                            "prtg_url": prtg, "is_f5_class": True,
-                            "class_number_sort": cls, "pod_number_sort": -1
-                        })
-                    for np in pd.get("pods", []):
-                        if isinstance(np, dict):
-                            np_num = np.get("pod_number")
-                            np_host = np.get("host", host)
-                            np_prtg = np.get("prtg_url")
-                            if (np_num is not None and matches_num(np_num) and
-                                    matches_host(np_host)):
-                                allocation_list.append({
-                                    "tag": tag, "course": c_name,
-                                    "vendor": v_str, "host": np_host,
-                                    "id_type": "Pod", "number": np_num,
-                                    "prtg_url": np_prtg, "class_number": cls,
-                                    "is_f5_class": False,
-                                    "class_number_sort": cls,
-                                    "pod_number_sort": np_num
-                                })
-                elif pod is not None:
-                    if matches_num(pod) and matches_host(host):
-                        allocation_list.append({
-                            "tag": tag, "course": c_name, "vendor": v_str,
-                            "host": host, "id_type": "Pod", "number": pod,
-                            "prtg_url": prtg, "is_f5_class": False,
-                            "class_number_sort": -1, "pod_number_sort": pod
-                        })
+            for course in courses_in_tag:
+                if not isinstance(course, dict): continue
+                course_name = course.get("course_name", "Unknown Course")
+                vendor = course.get("vendor", "N/A")
+                is_f5 = vendor.lower() == 'f5'
+                pod_details_list = course.get("pod_details", [])
+                if not isinstance(pod_details_list, list): continue
 
-    # Sort and Paginate
-    allocation_list.sort(key=lambda x: (
-        x['host'], x['tag'], x['vendor'], x['course'],
-        x.get('class_number_sort', -1), x.get('pod_number_sort', -1)
-    ))
-    total_items = len(allocation_list)
-    total_pages = math.ceil(total_items / per_page) if per_page > 0 else 1
-    start_idx = (page - 1) * per_page
-    paginated_allocations = allocation_list[start_idx: start_idx + per_page]
-    pagination_args = current_filters.copy()
+                for pod_detail in pod_details_list:
+                    if not isinstance(pod_detail, dict): continue
+                    host = pod_detail.get("host", pod_detail.get("pod_host", "Unknown Host"))
+                    pod_num = pod_detail.get("pod_number")
+                    class_num = pod_detail.get("class_number")
+                    prtg_url = pod_detail.get("prtg_url")
+                    # Fetch Power Status - Treat 'True' string/boolean as True, others as False
+                    power_on_status = str(pod_detail.get("poweron", False)).lower() == 'true'
 
+
+                    # Post-processing Host Filter
+                    filter_host_val = current_filters.get('filter_host', '').strip().lower()
+                    if filter_host_val and filter_host_val not in host.lower():
+                        continue
+
+                    # Post-processing Number Filter
+                    num_filter_str = current_filters.get('filter_number', '').strip()
+                    num_filter_int = None
+                    is_num_filter_active = False
+                    if num_filter_str:
+                        try:
+                            num_filter_int = int(num_filter_str)
+                            is_num_filter_active = True
+                        except ValueError:
+                            is_num_filter_active = False # Ignore invalid number filter
+
+                    # Prepare item data dictionary
+                    item_data = {
+                        "pod_number": pod_num, "class_number": class_num,
+                        "prtg_url": prtg_url, "vendor": vendor,
+                        "course_name": course_name, "tag": tag, "host": host,
+                        "type": "unknown", "number": None,
+                        "poweron": power_on_status # Store boolean power status
+                    }
+
+                    # F5 Class Logic
+                    if is_f5 and class_num is not None:
+                        item_data["type"] = "f5_class"; item_data["number"] = class_num
+                        nested_pods_filtered = []
+                        nested_power_states = {} # Store power states of nested pods
+                        for np in pod_detail.get("pods", []):
+                             if isinstance(np, dict):
+                                  np_num = np.get("pod_number")
+                                  np_power = str(np.get("poweron", False)).lower() == 'true'
+                                  if np_num is not None:
+                                      nested_power_states[np_num] = np_power
+                                      if not is_num_filter_active or np_num == num_filter_int:
+                                          nested_pods_filtered.append(np_num)
+
+                        class_matches_num = (not is_num_filter_active) or (class_num == num_filter_int)
+
+                        if class_matches_num or nested_pods_filtered:
+                             item_data["nested_pods"] = sorted(list(set(nested_pods_filtered)))
+                             item_data["nested_power_states"] = nested_power_states # Include nested states
+                             # Check for duplicates before adding to temp grouping
+                             group_list = temp_grouped_allocations[tag][course_name][host]
+                             if not any(d.get("type") == "f5_class" and d.get("number") == class_num for d in group_list):
+                                  group_list.append(item_data)
+
+                    # Pod Logic
+                    elif pod_num is not None:
+                         item_data["type"] = "pod"; item_data["number"] = pod_num
+                         pod_matches_num = (not is_num_filter_active) or (pod_num == num_filter_int)
+                         if pod_matches_num:
+                             temp_grouped_allocations[tag][course_name][host].append(item_data)
+
+        # --- Flatten the Grouped Data with Headers ---
+        current_tag, current_course, current_host = None, None, None
+        for tag, courses in sorted(temp_grouped_allocations.items()):
+            if tag != current_tag:
+                flat_display_list_all.append({"row_type": "tag_header", "tag": tag})
+                current_tag, current_course, current_host = tag, None, None
+            for course_name, hosts_data in sorted(courses.items()):
+                if course_name != current_course:
+                     flat_display_list_all.append({"row_type": "course_header", "course_name": course_name, "tag": tag})
+                     current_course, current_host = course_name, None
+                for host, items in sorted(hosts_data.items()):
+                    if host != current_host:
+                         flat_display_list_all.append({"row_type": "host_header", "host": host, "course_name": course_name, "tag": tag})
+                         current_host = host
+                    items.sort(key=lambda x: (x.get("type", ""), x.get("number", 0)))
+                    for item in items:
+                        item["row_type"] = "data"
+                        flat_display_list_all.append(item)
+                        total_data_items += 1
+
+    # --- Exception Handling ---
+    except (PyMongoError, ConnectionError) as db_e: # Catch DB specific errors
+        app.logger.error(f"Database error fetching allocations: {db_e}")
+        flash("Error fetching allocation data from database.", "danger")
+        # Reset lists on error
+        flat_display_list_all = []
+        total_data_items = 0
+    except Exception as e: # Catch other processing errors
+         app.logger.error(f"Error processing allocation data: {e}", exc_info=True)
+         flash("An error occurred while processing allocation data.", "danger")
+         # Reset lists on error
+         flat_display_list_all = []
+         total_data_items = 0
+
+    # --- Server-Side Pagination Logic ---
+    total_rows = len(flat_display_list_all) # Total display rows (headers + data)
+    total_pages = math.ceil(total_rows / per_page) if per_page > 0 and total_rows > 0 else 1
+    # Validate current page number against calculated total pages
+    page = max(1, min(page, total_pages))
+    # Calculate slice indices
+    start_index = (page - 1) * per_page
+    end_index = start_index + per_page
+    # Slice the list to get only rows for the current page
+    paginated_list = flat_display_list_all[start_index:end_index]
+
+    # --- Group-Aware Pagination Adjustment (on the sliced list) ---
+    # If the first item on the page is NOT a tag header, we might need to prepend headers
+    # This adds complexity back. Simpler approach: Ensure first item IS a tag header if possible,
+    # or accept that a page might start mid-group with server-side pagination.
+    # For now, we'll stick with the simple slice. Advanced group-aware server-side
+    # pagination requires more complex index calculation or different data structures.
+
+    # --- Render Template ---
     return render_template(
-        'allocations.html', allocations=paginated_allocations,
-        current_page=page, total_pages=total_pages, total_logs=total_items,
-        pagination_args=pagination_args, current_filters=current_filters,
+        'allocations.html',
+        allocation_list=paginated_list,  # Pass ONLY the slice for the current page
+        total_data_items=total_data_items, # Pass count of actual pod/class items
+        current_page=page,               # Pass validated current page number
+        total_pages=total_pages,         # Pass total number of pages
+        pagination_args=current_filters, # Pass filters for pagination links
+        current_filters=current_filters,   # Pass filters for form persistence
         current_theme=current_theme
     )
 
 
+# --- NEW Route to Handle Power Toggle ---
+@app.route('/toggle-power', methods=['POST'])
+def toggle_power():
+    """
+    Triggers 'labbuild manage' start or stop based on the requested scope
+    (tag or individual item) and its *assumed opposite* current state.
+    Does NOT guarantee success or update DB state immediately.
+    """
+    scope = request.form.get('scope') # 'tag' or 'item'
+    tag = request.form.get('tag')
+    current_state_is_on = request.form.get('current_state') == 'on' # Check if the *triggering icon* suggested it was on
+
+    # Data for individual items
+    item_type = request.form.get('item_type') # 'pod' or 'f5_class'
+    item_number_str = request.form.get('item_number')
+    host = request.form.get('host')
+    vendor = request.form.get('vendor')
+    course = request.form.get('course')
+
+    if not scope or not tag:
+        flash("Missing scope or tag for power toggle.", "danger")
+        query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
+        return redirect(url_for('view_allocations', **query_params))
+
+    # Determine desired action (opposite of current state suggested by icon)
+    action = 'stop' if current_state_is_on else 'start'
+    app.logger.info(f"Power toggle request: Scope='{scope}', Tag='{tag}', CurrentStateOn='{current_state_is_on}', Action='{action}'")
+
+    tasks_to_run = []
+
+    try:
+        if db is None or alloc_collection is None:
+            raise Exception("Database connection unavailable.")
+
+        if scope == 'tag':
+            # Find all items under the tag and group by host/course/vendor
+            tag_doc = alloc_collection.find_one({"tag": tag})
+            if not tag_doc: raise Exception(f"Tag '{tag}' not found.")
+
+            items_to_manage = defaultdict(list) # { (vendor, course, host): [item_details] }
+
+            courses_in_tag = tag_doc.get("courses", [])
+            if not isinstance(courses_in_tag, list): courses_in_tag = []
+
+            for course_item in courses_in_tag:
+                 if not isinstance(course_item, dict): continue
+                 c_name = course_item.get("course_name")
+                 c_vendor = course_item.get("vendor")
+                 pod_details = course_item.get("pod_details", [])
+                 if not c_name or not c_vendor or not isinstance(pod_details, list): continue
+
+                 for pd in pod_details:
+                     if not isinstance(pd, dict): continue
+                     pd_host = pd.get("host", pd.get("pod_host"))
+                     pd_pod = pd.get("pod_number")
+                     pd_class = pd.get("class_number")
+                     if not pd_host: continue
+
+                     key = (c_vendor, c_name, pd_host)
+                     item_detail = {"pod": pd_pod, "class": pd_class, "is_f5": c_vendor.lower() == 'f5'}
+                     items_to_manage[key].append(item_detail)
+
+            # Generate manage commands for each group
+            for (v, c, h), items in items_to_manage.items():
+                pods = sorted([i['pod'] for i in items if i['pod'] is not None and not i['is_f5']])
+                f5_classes = sorted([i['class'] for i in items if i['class'] is not None and i['is_f5']])
+
+                # Manage F5 classes individually
+                for class_num in f5_classes:
+                     args = ['manage', '-v', v, '-g', c, '--host', h, '-t', tag, '-o', action, '-cn', str(class_num)]
+                     desc = f"Tag '{tag}' - Manage {action} Class {class_num} ({c} on {h})"
+                     tasks_to_run.append((args, desc))
+                     # TODO: If needed, add logic to manage specific pods *within* an F5 class based on 'nested_pods'
+
+                # Manage non-F5 pods (potentially creating ranges if needed, simpler: one command per pod)
+                # Warning: This could generate many commands for a large tag.
+                for pod_num in pods:
+                     args = ['manage', '-v', v, '-g', c, '--host', h, '-t', tag, '-o', action, '-s', str(pod_num), '-e', str(pod_num)]
+                     desc = f"Tag '{tag}' - Manage {action} Pod {pod_num} ({c} on {h})"
+                     tasks_to_run.append((args, desc))
+
+        elif scope == 'item':
+            # Manage a single item (pod or class)
+            if not all([item_type, item_number_str, host, vendor, course]):
+                raise ValueError("Missing item details for power toggle.")
+            item_number = int(item_number_str)
+
+            args = ['manage', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-o', action]
+            if item_type == 'f5_class':
+                args.extend(['-cn', str(item_number)])
+                desc = f"Item - Manage {action} Class {item_number} ({course} on {host})"
+            elif item_type == 'pod':
+                args.extend(['-s', str(item_number), '-e', str(item_number)])
+                # Add class context if it's an F5 pod (assuming class_number passed in form)
+                item_class_num_str = request.form.get('item_class_number') # Need to pass this from form
+                if vendor.lower() == 'f5' and item_class_num_str:
+                     args.extend(['-cn', item_class_num_str])
+                desc = f"Item - Manage {action} Pod {item_number} ({course} on {host})"
+            else:
+                raise ValueError(f"Invalid item_type: {item_type}")
+
+            tasks_to_run.append((args, desc))
+
+        else:
+             raise ValueError(f"Invalid scope: {scope}")
+
+        # --- Execute Tasks (Sequentially for safety/clarity) ---
+        if not tasks_to_run:
+             flash(f"No valid manage tasks found for scope '{scope}', Tag '{tag}'.", "warning")
+        else:
+            app.logger.info(f"Found {len(tasks_to_run)} manage tasks for Scope '{scope}', Tag '{tag}'. Submitting sequentially...")
+            def run_sequential_manage_tasks(tasks):
+                 total = len(tasks)
+                 for i, (args, desc) in enumerate(tasks):
+                     app.logger.info(f"Starting manage task {i+1}/{total}: {desc} (Args: {' '.join(args)})")
+                     run_labbuild_task(args)
+                     app.logger.info(f"Finished manage task {i+1}/{total}: {desc}")
+                 app.logger.info(f"All {total} manage tasks for Scope '{scope}', Tag '{tag}' submitted.")
+
+            thread = threading.Thread(target=run_sequential_manage_tasks, args=(tasks_to_run,), daemon=True)
+            thread.start()
+            flash(f"Submitted {len(tasks_to_run)} power '{action}' tasks for Scope '{scope}', Tag '{tag}'. Check logs.", "info")
+
+    except Exception as e:
+        app.logger.error(f"Error processing power toggle for Scope '{scope}', Tag '{tag}': {e}", exc_info=True)
+        flash(f"Error submitting power toggle for Scope '{scope}', Tag '{tag}': {e}", 'danger')
+
+    # Redirect back to allocations page, preserving filters
+    query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
+    return redirect(url_for('view_allocations', **query_params))
+
+
 @app.route('/teardown-item', methods=['POST'])
 def teardown_item():
-    """Triggers teardown OR direct DB deletion."""
+    """Triggers teardown OR direct DB deletion for various levels."""
     try:
+        # Extract common identifiers
         tag = request.form.get('tag')
-        host = request.form.get('host')
-        vendor = request.form.get('vendor')
+        host = request.form.get('host') # Needed for VM teardown
+        vendor = request.form.get('vendor') # Needed for VM teardown
         course = request.form.get('course')
         pod_num_str = request.form.get('pod_number')
         class_num_str = request.form.get('class_number')
-        delete_level = request.form.get('delete_level')
+        delete_level = request.form.get('delete_level') # e.g., 'pod', 'class', 'pod_db', 'class_db', 'tag_db'
 
-        if not delete_level or not tag:
-            flash("Missing level or tag.", "danger")
+        # --- Basic Validation ---
+        if not delete_level:
+            flash("Missing delete level.", "danger")
             return redirect(url_for('view_allocations'))
+        if not tag: # Tag is required for almost all actions here
+            flash("Tag identifier is missing.", "danger")
+            return redirect(url_for('view_allocations'))
+
+        # Parse numbers if present
         pod_num = int(pod_num_str) if pod_num_str else None
         class_num = int(class_num_str) if class_num_str else None
 
-        # DB Deletion
+        # --- Handle DB Deletion Levels ---
         if delete_level.endswith('_db'):
             app.logger.info(
-                f"DB delete: Level='{delete_level}', Tag='{tag}', "
+                f"DB delete request: Level='{delete_level}', Tag='{tag}', "
                 f"Course='{course}', Pod='{pod_num}', Class='{class_num}'"
             )
-            success, item_desc = False, ""
+            success, item_desc = False, "Unknown Item"
             try:
+                # --- NEW: Handle Tag DB Deletion ---
                 if delete_level == 'tag_db':
+                    # Call delete_from_database with only the tag specified
                     success = delete_from_database(tag=tag)
-                    item_desc = f"Tag '{tag}'"
+                    item_desc = f"Entire Tag '{tag}'"
+                # --- End New ---
                 elif delete_level == 'course_db':
+                    if not course: flash("Course name missing for DB deletion.", "warning"); return redirect(url_for('view_allocations'))
                     success = delete_from_database(tag=tag, course_name=course)
-                    item_desc = f"Course '{course}' (Tag: {tag})"
+                    item_desc = f"Course '{course}' (in Tag '{tag}')"
                 elif delete_level == 'class_db':
-                    success = delete_from_database(
-                        tag=tag, course_name=course, class_number=class_num
-                    )
-                    item_desc = f"Class {class_num}"
+                    if not course or class_num is None: flash("Course or Class# missing for DB deletion.", "warning"); return redirect(url_for('view_allocations'))
+                    success = delete_from_database(tag=tag, course_name=course, class_number=class_num)
+                    item_desc = f"Class {class_num} (in Course '{course}', Tag '{tag}')"
                 elif delete_level == 'pod_db':
-                    success = delete_from_database(
-                        tag=tag, course_name=course, pod_number=pod_num,
-                        class_number=class_num # Pass class for context
-                    )
-                    item_desc = (f"Pod {pod_num}" +
-                                 (f" (Class {class_num})" if class_num else ""))
+                    if not course or pod_num is None: flash("Course or Pod# missing for DB deletion.", "warning"); return redirect(url_for('view_allocations'))
+                    # Pass class_num context if available (for F5 nested pods)
+                    success = delete_from_database(tag=tag, course_name=course, pod_number=pod_num, class_number=class_num)
+                    item_desc = f"Pod {pod_num}" + (f" (Class {class_num})" if class_num else "") + f" (in Course '{course}', Tag '{tag}')"
                 else:
-                    flash("Invalid DB delete level.", "warning")
+                    flash("Invalid DB delete level specified.", "warning")
                     return redirect(url_for('view_allocations'))
 
-                flash(f"Removed DB entry for {item_desc}." if success
-                      else f"Failed DB removal for {item_desc}.",
-                      'success' if success else 'danger')
+                flash(f"Removed DB entry for {item_desc}." if success else f"Failed DB removal for {item_desc}.", 'success' if success else 'danger')
+
             except Exception as e_db:
                 flash(f"Error during DB delete: {e_db}", 'danger')
                 app.logger.error(f"DB delete error: {e_db}", exc_info=True)
-            return redirect(url_for('view_allocations'))
 
-        # Full Teardown (Run labbuild.py)
-        elif delete_level in ['tag', 'course', 'class', 'pod']:
+            # Redirect back to allocations page after DB action
+            query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')} # Preserve filters
+            return redirect(url_for('view_allocations', **query_params))
+
+        # --- Handle Full Teardown (Run labbuild.py) ---
+        # (Keep existing logic for 'pod' and 'class' levels)
+        elif delete_level in ['class', 'pod']:
             if not all([vendor, course, host]):
-                flash("Vendor, Course, Host required for teardown command.",
-                      "danger")
+                flash("Vendor, Course, Host required for infrastructure teardown.", "danger")
                 return redirect(url_for('view_allocations'))
 
             args_list, item_desc = [], ""
-            if delete_level == 'tag':
-                app.logger.warning(f"Tag teardown not supported. DB delete Tag '{tag}'.")
-                delete_from_database(tag=tag)
-                flash(f"Removed Tag '{tag}' DB entry.", 'info')
-                return redirect(url_for('view_allocations'))
-            elif delete_level == 'course':
-                app.logger.warning(f"Course teardown not supported. DB delete Course '{course}' Tag '{tag}'.")
-                delete_from_database(tag=tag, course_name=course)
-                flash(f"Removed Course '{course}' (Tag: {tag}) DB entry.", 'info')
-                return redirect(url_for('view_allocations'))
-            elif delete_level == 'class' and vendor.lower() == 'f5' and class_num is not None:
-                args_list = [
-                    'teardown', '-v', vendor, '-g', course, '--host', host,
-                    '-t', tag, '-cn', str(class_num)
-                ]
+            if delete_level == 'class' and vendor.lower() == 'f5' and class_num is not None:
+                args_list = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-cn', str(class_num)]
                 item_desc = f"F5 Class {class_num}"
             elif delete_level == 'pod' and pod_num is not None:
-                args_list = [
-                    'teardown', '-v', vendor, '-g', course, '--host', host,
-                    '-t', tag, '-s', str(pod_num), '-e', str(pod_num)
-                ]
+                args_list = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
                 item_desc = f"Pod {pod_num}"
+                # Add class context for F5 pods during teardown
                 if vendor.lower() == 'f5' and class_num is not None:
                     args_list.extend(['-cn', str(class_num)])
                     item_desc += f" (Class {class_num})"
@@ -775,19 +1133,131 @@ def teardown_item():
                 return redirect(url_for('view_allocations'))
 
             if args_list:
-                thread = threading.Thread(
-                    target=run_labbuild_task, args=(args_list,), daemon=True
-                )
+                thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True)
                 thread.start()
-                flash(f"Submitted teardown for {item_desc}.", 'info')
+                flash(f"Submitted infrastructure teardown for {item_desc}.", 'info')
             else:
                 flash("Failed build teardown command.", "danger")
         else:
-            flash("Invalid delete action.", "danger")
+            # Handle unsupported levels like 'tag' or 'course' for full teardown if desired,
+            # otherwise just show error. Currently not supported.
+            flash(f"Unsupported teardown level: '{delete_level}'. Only 'pod' and 'class' infrastructure teardown supported.", "warning")
+
     except Exception as e:
-        app.logger.error(f"Error processing teardown: {e}", exc_info=True)
-        flash(f"Error: {e}", 'danger')
-    return redirect(url_for('view_allocations'))
+        app.logger.error(f"Error processing teardown/delete request: {e}", exc_info=True)
+        flash(f"Error processing request: {e}", 'danger')
+
+    # Redirect back to allocations page by default or on general error
+    query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')} # Preserve filters
+    return redirect(url_for('view_allocations', **query_params))
+
+
+@app.route('/teardown-tag', methods=['POST'])
+def teardown_tag():
+    """
+    Finds all allocations for a given tag and triggers background
+    labbuild teardown commands for each unique group (course/host/range/class).
+    """
+    tag = request.form.get('tag')
+    if not tag:
+        flash("Tag identifier is missing for teardown.", "danger")
+        query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
+        return redirect(url_for('view_allocations', **query_params))
+
+    app.logger.info(f"Initiating FULL teardown for Tag: '{tag}'")
+    tasks_to_run = [] # List to hold ([args_list], description) tuples
+
+    try:
+        if db is None or alloc_collection is None:
+            raise Exception("Database connection or allocation collection unavailable.")
+
+        # Find the tag document
+        tag_doc = alloc_collection.find_one({"tag": tag})
+        if not tag_doc:
+            flash(f"Tag '{tag}' not found in database.", "warning")
+            query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
+            return redirect(url_for('view_allocations', **query_params))
+
+        # --- Collect Teardown Arguments ---
+        courses_in_tag = tag_doc.get("courses", [])
+        if not isinstance(courses_in_tag, list): courses_in_tag = []
+
+        for course in courses_in_tag:
+            if not isinstance(course, dict): continue
+            course_name = course.get("course_name")
+            vendor = course.get("vendor")
+            pod_details_list = course.get("pod_details", [])
+            if not isinstance(pod_details_list, list) or not course_name or not vendor: continue
+
+            # Group pods by host for non-F5, classes by host for F5
+            items_by_host = defaultdict(lambda: {"pods": set(), "classes": set()})
+            for pd in pod_details_list:
+                if not isinstance(pd, dict): continue
+                host = pd.get("host", pd.get("pod_host"))
+                pod_num = pd.get("pod_number")
+                class_num = pd.get("class_number")
+                if not host: continue # Cannot teardown without host
+
+                is_f5 = vendor.lower() == 'f5'
+                if is_f5 and class_num is not None:
+                     # If F5, teardown is by class number
+                     items_by_host[host]["classes"].add(class_num)
+                elif pod_num is not None:
+                     # For non-F5, collect individual pod numbers per host
+                     items_by_host[host]["pods"].add(pod_num)
+
+            # --- Generate labbuild command args for each host group ---
+            for host, items in items_by_host.items():
+                # Teardown F5 Classes
+                for class_num in sorted(list(items["classes"])):
+                    args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-cn', str(class_num)]
+                    desc = f"Tag '{tag}', Course '{course_name}', Host '{host}', Class '{class_num}'"
+                    tasks_to_run.append((args, desc))
+
+                # Teardown non-F5 Pods (or F5 pods if stored flat - current logic assumes class teardown for F5)
+                if items["pods"]:
+                    # Note: Teardown by individual pod range might be inefficient if many pods.
+                    # Consider if your teardown script handles a list or if you need ranges.
+                    # For now, generating individual teardown commands per pod found.
+                    # TODO: Implement range generation if teardown script supports -s X -e Y efficiently for scattered pods.
+                    for pod_num in sorted(list(items["pods"])):
+                        args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
+                        # Add -cn if it's an F5 pod teardown potentially? Assumes flat structure if needed.
+                        # This part might need adjustment based on how F5 pod teardown is invoked.
+                        # Currently assumes F5 teardown happens only via class_num above.
+                        desc = f"Tag '{tag}', Course '{course_name}', Host '{host}', Pod '{pod_num}'"
+                        tasks_to_run.append((args, desc))
+
+
+        # --- Execute Tasks Sequentially (Safer than Parallel for Teardown) ---
+        if not tasks_to_run:
+             flash(f"No valid teardown tasks found for Tag '{tag}'.", "warning")
+        else:
+            app.logger.info(f"Found {len(tasks_to_run)} teardown tasks for Tag '{tag}'. Submitting sequentially...")
+            # Use a single background thread to run tasks one by one
+            def run_sequential_tasks(tasks):
+                 total = len(tasks)
+                 for i, (args, desc) in enumerate(tasks):
+                     app.logger.info(f"Starting teardown task {i+1}/{total}: {desc} (Args: {' '.join(args)})")
+                     run_labbuild_task(args) # This function already runs subprocess.run
+                     app.logger.info(f"Finished teardown task {i+1}/{total}: {desc}")
+                 app.logger.info(f"All {total} teardown tasks for Tag '{tag}' submitted.")
+                 # Optionally, delete the tag DB entry AFTER all tasks are submitted (or finished if run_labbuild_task was blocking)
+                 # Be cautious with auto-deleting the DB entry here. Maybe leave it manual.
+                 # delete_from_database(tag=tag)
+                 # logger.info(f"DB entry for tag '{tag}' potentially removed after teardown tasks submitted.")
+
+            thread = threading.Thread(target=run_sequential_tasks, args=(tasks_to_run,), daemon=True)
+            thread.start()
+            flash(f"Submitted {len(tasks_to_run)} teardown tasks for Tag '{tag}'. See logs for progress.", "info")
+
+    except Exception as e:
+        app.logger.error(f"Error processing teardown for Tag '{tag}': {e}", exc_info=True)
+        flash(f"Error submitting teardown for Tag '{tag}': {e}", 'danger')
+
+    # Redirect back to allocations page, preserving filters
+    query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
+    return redirect(url_for('view_allocations', **query_params))
 
 
 @app.route('/run', methods=['POST'])
@@ -1305,66 +1775,67 @@ def stream_command():
 # --- NEW: Route for Upcoming Courses ---
 @app.route('/upcoming-courses')
 def view_upcoming_courses():
-    """Displays upcoming courses fetched from Salesforce."""
     current_theme = request.cookies.get('theme', 'light')
-    courses_data = []
-    hosts_list = []       # NEW: For host dropdown
-    course_configs_list = [] # NEW: For course dropdown
+    # Initialize lists
+    hosts_list = []
+    course_configs_list = []
+    mapping_rules = []
+    courses_with_preselects = [] # Store final augmented data
     error_message = None
 
-    # Fetch Hosts from DB
-    if host_collection is not None: # Use 'is not None'
-        try:
-            hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1)
-            hosts_list = [host['host_name'] for host in hosts_cursor if 'host_name' in host]
-        except PyMongoError as e:
-            app.logger.error(f"Error fetching hosts list: {e}")
-            flash("Error fetching hosts.", "warning")
-    else:
-         flash("Host collection unavailable.", "warning") # This case means DB connection likely failed earlier
+    # Fetch Hosts
+    if host_collection is not None:
+        try: # ... fetch hosts ...
+             hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1)
+             hosts_list = [host['host_name'] for host in hosts_cursor if 'host_name' in host]
+        except PyMongoError as e: app.logger.error(f"Hosts fetch error: {e}"); flash("Error fetching hosts.", "warning")
+    else: flash("Host collection unavailable.", "warning")
 
-    # Fetch Course Configs from DB (Name and Vendor only)
-    if course_config_collection is not None: # Use 'is not None'
-        try:
-            configs_cursor = course_config_collection.find(
-                {},
-                {"course_name": 1, "vendor_shortcode": 1, "_id": 0}
-            ).sort([("vendor_shortcode", 1), ("course_name", 1)])
-            course_configs_list = list(configs_cursor)
-        except PyMongoError as e:
-            app.logger.error(f"Error fetching course configs list: {e}")
-            flash("Error fetching lab build course list.", "warning")
-    else:
-        flash("Course config collection unavailable.", "warning") # This case means DB connection likely failed earlier
+    # Fetch Course Configs
+    if course_config_collection is not None:
+        try: # ... fetch configs ...
+             configs_cursor = course_config_collection.find({},{"course_name": 1, "vendor_shortcode": 1, "_id": 0}).sort([("vendor_shortcode", 1), ("course_name", 1)])
+             course_configs_list = list(configs_cursor) # Keep as list of dicts
+        except PyMongoError as e: app.logger.error(f"Configs fetch error: {e}"); flash("Error fetching lab build course list.", "warning")
+    else: flash("Course config collection unavailable.", "warning")
 
+    # Fetch Mapping Rules
+    if course_mapping_rules_collection is not None:
+        try: # ... fetch rules ...
+             rules_cursor = course_mapping_rules_collection.find().sort("priority", 1)
+             mapping_rules = list(rules_cursor) # Keep raw BSON types for backend logic
+        except PyMongoError as e: app.logger.error(f"Rules fetch error: {e}"); flash("Error fetching automation rules.", "warning")
+    else: flash("Course mapping rules collection unavailable.", "warning")
+
+    # --- Fetch SF data AND Apply Rules ---
     try:
-        # Fetch and process data using the utility function
-        courses_data = get_upcoming_courses_data()
+        # Call the orchestrator which now applies rules internally
+        courses_with_preselects = get_upcoming_courses_data(
+            mapping_rules, course_configs_list, hosts_list
+        )
 
-        if courses_data is None:
-            # A critical error occurred during fetch/process (already logged)
+        if courses_with_preselects is None:
             flash("Failed to fetch or process Salesforce data. Check server logs.", "danger")
-            courses_data = [] # Ensure template gets an empty list
+            courses_with_preselects = []
             error_message = "Error retrieving data."
-        elif not courses_data:
-             # Processing finished, but no courses found for the upcoming week
+        elif not courses_with_preselects:
              flash("No upcoming courses found for the next week.", "info")
-             error_message = "No courses scheduled for the upcoming week."
-
+             error_message = "No courses scheduled for upcoming week."
 
     except Exception as e:
-        # Catch any unexpected errors during the route execution itself
         app.logger.error(f"Unexpected error in /upcoming-courses route: {e}", exc_info=True)
-        flash("An unexpected error occurred while loading upcoming courses.", "danger")
+        flash("An unexpected error occurred.", "danger")
         error_message = "Server error."
-        courses_data = [] # Ensure template gets an empty list
+        courses_with_preselects = []
 
     return render_template(
         'upcoming_courses.html',
-        courses=courses_data,
-        error_message=error_message, # Pass error message to template
-        hosts_list=hosts_list,               # Pass hosts
-        course_configs_list=course_configs_list, # Pass course configs
+        courses=courses_with_preselects, # Pass augmented data
+        error_message=error_message,
+        # Pass lists needed for dropdowns *in the template*
+        hosts_list=hosts_list,
+        course_configs_list=course_configs_list,
+        # No need to pass mapping_rules to template anymore
         current_theme=current_theme
     )
 

@@ -76,16 +76,19 @@
   </div> {# End card-body #}
 </div> {# End card #}
 
-{# --- Embed data as JSON --- #}
+{# --- Embed ALL data as JSON --- #}
 <script id="courses-data" type="application/json">
   {{ courses | tojson | safe }}
 </script>
-{# --- Embed NEW data as JSON --- #}
 <script id="hosts-data" type="application/json">
   {{ hosts_list | tojson | safe }}
 </script>
 <script id="course-configs-data" type="application/json">
   {{ course_configs_list | tojson | safe }}
+</script>
+{# --- Embed NEW rules data --- #}
+<script id="mapping-rules-data" type="application/json">
+  {{ mapping_rules | tojson | safe }}
 </script>
 
 
@@ -102,10 +105,12 @@
         const coursesDataScript = document.getElementById('courses-data');
         const hostsDataScript = document.getElementById('hosts-data');
         const courseConfigsDataScript = document.getElementById('course-configs-data');
+        const mappingRulesDataScript = document.getElementById('mapping-rules-data'); // Get rules script
 
         let courseData = [];
         let hostsList = [];
         let courseConfigsList = [];
+        let mappingRules = []; // Store rules
         let sortState = { column: 'Start Date', direction: 'asc' }; // Default sort state
 
         // --- Parse Embedded Data ---
@@ -113,6 +118,7 @@
             if (coursesDataScript?.textContent) courseData = JSON.parse(coursesDataScript.textContent);
             if (hostsDataScript?.textContent) hostsList = JSON.parse(hostsDataScript.textContent);
             if (courseConfigsDataScript?.textContent) courseConfigsList = JSON.parse(courseConfigsDataScript.textContent);
+            if (mappingRulesDataScript?.textContent) mappingRules = JSON.parse(mappingRulesDataScript.textContent);
         } catch (e) {
             console.error("Error parsing embedded JSON data:", e);
             if(tbody) tbody.innerHTML = '<tr><td colspan="12" class="text-danger">Error loading page data.</td></tr>'; // Adjust colspan
@@ -124,102 +130,97 @@
             return;
         }
 
-        // --- Render Table Function (MODIFIED) ---
+        // --- Render Table Function (MODIFIED - Pass calculated endPod) ---
         function renderTable(data) {
-            tbody.innerHTML = ''; // Clear existing rows
-            const colCount = 12; // <<< Update colspan count to 12
+            tbody.innerHTML = '';
+            const colCount = 13;
             if (!data || data.length === 0) {
-                 tbody.innerHTML = `<tr><td colspan="${colCount}">No upcoming courses found.</td></tr>`;
+                 tbody.innerHTML = `<tr><td colspan="${colCount}">No courses found for this period.</td></tr>`;
                  return;
             }
 
-            data.forEach((course, index) => {
+            data.forEach((course, index) => { // course now has preselect_ fields
                 const row = tbody.insertRow();
-                row.dataset.rowIndex = index; // Add index for later reference
+                row.dataset.rowIndex = index;
 
-                // 1. Standard Info Cells
-                row.insertCell().textContent = course['Start Date'] || 'N/A';
-                row.insertCell().textContent = course['End Date'] || 'N/A';
-                const courseCodeCell = row.insertCell();
-                courseCodeCell.textContent = course['Course Code'] || 'N/A';
-                row.insertCell().textContent = course['Course Type'] || 'N/A';
-                row.insertCell().textContent = course['Trainer'] || 'N/A';
-                const paxCell = row.insertCell();
-                paxCell.textContent = course['Pax'] ?? 'N/A';
-                paxCell.style.textAlign = 'center';
-                const podsReqCell = row.insertCell();
-                podsReqCell.textContent = course['Pods Req.'] ?? 'N/A';
-                podsReqCell.style.textAlign = 'center';
-
-                // Derive Vendor (needed for course dropdown)
+                // 1. Extract standard info + derived vendor
                 const sfCourseCode = course['Course Code'] || '';
                 const derivedVendor = sfCourseCode.substring(0, 2).toLowerCase();
-                row.dataset.derivedVendor = derivedVendor; // Store derived vendor on the row
+                row.dataset.derivedVendor = derivedVendor;
 
-                // 2. LabBuild Course Select Cell
+                 // 1b. Render Standard Info Cells
+                /* ... render standard cells using course['FieldName'] ... */
+                row.insertCell().textContent = course['Start Date'] || 'N/A';
+                row.insertCell().textContent = course['End Date'] || 'N/A';
+                row.insertCell().textContent = sfCourseCode;
+                row.insertCell().textContent = course['Course Type'] || 'N/A';
+                row.insertCell().textContent = course['Trainer'] || 'N/A';
+                const paxCell = row.insertCell(); paxCell.textContent = course['Pax'] ?? 'N/A'; paxCell.style.textAlign = 'center';
+                const podsReqCell = row.insertCell(); podsReqCell.textContent = course['Pods Req.'] ?? 'N/A'; podsReqCell.style.textAlign = 'center';
+
+                // --- 2. Render Controls using pre-selected values from backend ---
+                // LabBuild Course Select
                 const courseSelectCell = row.insertCell();
                 const courseSelect = document.createElement('select');
                 courseSelect.className = 'form-select form-select-sm build-control course-select';
-                courseSelect.innerHTML = '<option value="" selected>Select LabBuild Course...</option>'; // Placeholder
-                // Populate options based on vendor
-                courseConfigsList.forEach(config => {
-                    if (config.vendor_shortcode && config.vendor_shortcode.toLowerCase() === derivedVendor) {
+                courseSelect.innerHTML = '<option value="">Select LabBuild Course...</option>';
+                courseConfigsList.forEach(config => { // Populate all vendor options
+                    if (config.vendor_shortcode?.toLowerCase() === derivedVendor) {
                         const option = document.createElement('option');
                         option.value = config.course_name;
                         option.textContent = config.course_name;
+                        // Use preselect value passed from backend
+                        if (config.course_name === course.preselect_labbuild_course) {
+                            option.selected = true;
+                        }
                         courseSelect.appendChild(option);
                     }
                 });
-                if (courseSelect.options.length <= 1) { // Only placeholder exists
-                    courseSelect.disabled = true;
-                    courseSelect.options[0].textContent = "No courses found";
-                }
+                if (courseSelect.options.length <= 1) { /* disable */ }
                 courseSelectCell.appendChild(courseSelect);
 
-                // 3. Start Pod Input Cell
+                // Start Pod Input
                 const startPodCell = row.insertCell();
                 const startPodInput = document.createElement('input');
-                startPodInput.type = 'number';
-                startPodInput.className = 'form-control form-control-sm build-control start-pod-input';
-                startPodInput.min = '1';
-                startPodInput.value = '1'; // Default start pod
+                /* ... set attributes ... */
+                startPodInput.type = 'number'; startPodInput.className = 'form-control form-control-sm build-control start-pod-input'; startPodInput.min = '1';
+                startPodInput.value = course.preselect_start_pod || 1; // Use preselect value
                 startPodCell.appendChild(startPodInput);
 
-                // 4. End Pod Input Cell
+                // End Pod Input
                 const endPodCell = row.insertCell();
                 const endPodInput = document.createElement('input');
-                endPodInput.type = 'number';
-                endPodInput.className = 'form-control form-control-sm build-control end-pod-input';
-                endPodInput.min = '1';
-                // Pre-fill end pod with 'Pods Req.' value if available and numeric
-                const requiredPods = parseInt(course['Pods Req.'], 10);
-                if (!isNaN(requiredPods) && requiredPods > 0) {
-                    endPodInput.value = requiredPods;
-                }
+                /* ... set attributes ... */
+                 endPodInput.type = 'number'; endPodInput.className = 'form-control form-control-sm build-control end-pod-input'; endPodInput.min = '1';
+                endPodInput.value = course.preselect_end_pod || 1; // Use preselect value
                 endPodCell.appendChild(endPodInput);
 
-                // 5. Host Select Cell
+                // F5 Class Input
+                // const classInputCell = row.insertCell(); /* ... create wrapper/input ... */
+                //  const classInputWrapper = document.createElement('div'); classInputWrapper.className = 'f5-class-input-wrapper'; const classNumberInput = document.createElement('input'); classNumberInput.type = 'number'; classNumberInput.className = 'form-control form-control-sm build-control class-number-input'; classNumberInput.min = '1'; classNumberInput.placeholder = 'Class #'; classInputWrapper.appendChild(classNumberInput); classInputCell.appendChild(classInputWrapper);
+
+                // Host Select
                 const hostSelectCell = row.insertCell();
                 const hostSelect = document.createElement('select');
-                hostSelect.className = 'form-select form-select-sm build-control host-select';
-                hostSelect.innerHTML = '<option value="" selected>Select Host...</option>';
+                /* ... set classes ... */
+                 hostSelect.className = 'form-select form-select-sm build-control host-select';
+                hostSelect.innerHTML = '<option value="">Select Host...</option>';
                 hostsList.forEach(host => {
                     const option = document.createElement('option');
-                    option.value = host;
-                    option.textContent = host;
+                    /* ... set value/text ... */
+                     option.value = host; option.textContent = host;
+                    // Use preselect value passed from backend
+                    if (host === course.preselect_host) {
+                        option.selected = true;
+                    }
                     hostSelect.appendChild(option);
                 });
+                 if (hostSelect.options.length <= 1) { /* disable */ }
                 hostSelectCell.appendChild(hostSelect);
 
-                // 6. Action Button Cell
-                const actionCell = row.insertCell();
-                actionCell.className = 'col-action';
-                const buildButton = document.createElement('button');
-                buildButton.className = 'btn btn-sm btn-primary build-row-btn';
-                buildButton.innerHTML = '<i class="fas fa-cogs"></i> Build'; // Icon + Text
-                buildButton.title = 'Build lab for this course';
-                buildButton.dataset.sfCourseCode = sfCourseCode; // Store SF code for potential use
-                actionCell.appendChild(buildButton);
+                // Action Button
+                const actionCell = row.insertCell(); /* ... create button ... */
+                 actionCell.className = 'col-action'; const buildButton = document.createElement('button'); buildButton.className = 'btn btn-sm btn-primary build-row-btn'; buildButton.innerHTML = '<i class="fas fa-cogs"></i> Build'; buildButton.title = 'Build lab for this course'; buildButton.dataset.sfCourseCode = sfCourseCode; actionCell.appendChild(buildButton);
             });
         }
 

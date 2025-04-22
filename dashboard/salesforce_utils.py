@@ -425,8 +425,153 @@ def process_salesforce_data_current_week(df: pd.DataFrame) -> Optional[pd.DataFr
     logger.info(f"CURRENT week processing complete. Returning {len(final_df)} rows.")
     return final_df
 
+# --- NEW: Function to Apply Rules on Backend ---
+def apply_mapping_rules_to_courses(
+    courses_df: pd.DataFrame,
+    mapping_rules: list,
+    course_configs_list: list,
+    hosts_list: list
+) -> list:
+    """
+    Applies mapping rules to a DataFrame of processed course data.
+
+    Args:
+        courses_df: DataFrame from process_salesforce_data functions.
+        mapping_rules: List of rule documents from MongoDB (sorted by priority).
+        course_configs_list: List of available LabBuild course configs ({course_name, vendor_shortcode}).
+        hosts_list: List of available host names.
+
+    Returns:
+        List of dictionaries, where each dictionary represents a course
+        and includes added keys for pre-selections:
+        'preselect_labbuild_course', 'preselect_host',
+        'preselect_start_pod', 'preselect_end_pod'
+    """
+    if courses_df is None or courses_df.empty:
+        return []
+
+    output_list = []
+    # Convert configs to a dict keyed by vendor for faster lookup
+    configs_by_vendor = {}
+    for cfg in course_configs_list:
+        vendor = cfg.get('vendor_shortcode', '').lower()
+        if vendor not in configs_by_vendor:
+            configs_by_vendor[vendor] = []
+        configs_by_vendor[vendor].append(cfg.get('course_name'))
+
+    for index, course_row in courses_df.iterrows():
+        # Create a dictionary from the row for easier access
+        course_info = course_row.to_dict()
+
+        # --- Prepare data for rule matching ---
+        sf_course_code = course_info.get('Course Code', '')
+        sf_course_type = course_info.get('Course Type', '') # Make sure this name matches df column
+        required_pods = int(course_info.get('Pods Req.', 0)) # Ensure numeric
+        derived_vendor = sf_course_code[:2].lower() if sf_course_code else ''
+
+        # --- Initialize Preselections ---
+        preselect = {
+            "labbuild_course": None,
+            "host": None,
+            "max_pods": None, # Store intermediate max_pods from rules
+            "start_pod": 1,
+            "end_pod": required_pods if required_pods > 0 else 1
+        }
+        extracted_part = None # For regex extraction
+
+        # --- Apply Rules (Logic moved from JS) ---
+        for rule in mapping_rules: # Assumes rules are pre-sorted by priority
+            match = True
+            conditions = rule.get("conditions", {})
+            actions = rule.get("actions", {})
+            extracted_part = None # Reset for each rule
+
+            # Condition Checks
+            if conditions.get("vendor") and conditions["vendor"] != derived_vendor:
+                match = False
+            if match and conditions.get("sf_course_type_contains"):
+                type_lower = sf_course_type.lower()
+                if not any(term.lower() in type_lower for term in conditions["sf_course_type_contains"]):
+                    match = False
+            if match and conditions.get("sf_course_code_contains"):
+                code_lower = sf_course_code.lower()
+                if not any(term.lower() in code_lower for term in conditions["sf_course_code_contains"]):
+                    match = False
+            if match and conditions.get("sf_course_type_extract_pattern"):
+                try:
+                    pattern = conditions["sf_course_type_extract_pattern"]
+                    regex_match = re.search(pattern, sf_course_type) # Case sensitive regex search
+                    if regex_match and len(regex_match.groups()) > 0:
+                        extracted_part = regex_match.group(1)
+                    else:
+                        match = False
+                except Exception as e:
+                    logger.error(f"Regex error in rule {rule.get('_id')}: {e}")
+                    match = False
+            # Add more condition checks here
+
+            # Apply Actions if Match
+            if match:
+                # Apply LabBuild Course (only if not already set by higher priority)
+                course_set_action_applied = False
+                if actions.get("set_labbuild_course_contains_extract") and extracted_part and preselect["labbuild_course"] is None:
+                    vendor_courses = configs_by_vendor.get(derived_vendor, [])
+                    found_course_name = next((name for name in vendor_courses if extracted_part in name), None) # Case sensitive check
+                    if found_course_name:
+                        preselect["labbuild_course"] = found_course_name
+                        course_set_action_applied = True
+                    else:
+                         logger.warning(f"Rule action for {sf_course_code}: Could not find course containing '{extracted_part}' for vendor '{derived_vendor}'.")
+
+                if not course_set_action_applied and actions.get("set_labbuild_course") and preselect["labbuild_course"] is None:
+                    preselect["labbuild_course"] = actions["set_labbuild_course"]
+
+                # Apply Host (only if not already set by higher priority)
+                host_set_action_applied = False
+                if actions.get("set_host_preference") and preselect["host"] is None:
+                    for preferred_host in actions["set_host_preference"]:
+                        if preferred_host in hosts_list:
+                            preselect["host"] = preferred_host
+                            host_set_action_applied = True
+                            break
+                    if not host_set_action_applied:
+                         logger.warning(f"Rule action for {sf_course_code}: Host preference {actions['set_host_preference']} specified, but none found in available hosts.")
+
+                if not host_set_action_applied and actions.get("set_host") and preselect["host"] is None:
+                    preselect["host"] = actions["set_host"]
+
+                # Apply Max Pods (overwrites lower priority)
+                if actions.get("set_max_pods") is not None:
+                    try:
+                        max_p = int(actions["set_max_pods"])
+                        if max_p >= 1:
+                            preselect["max_pods"] = max_p
+                        else:
+                             logger.warning(f"Rule action for {sf_course_code}: Invalid max_pods value '{actions['set_max_pods']}'.")
+                    except (ValueError, TypeError):
+                         logger.warning(f"Rule action for {sf_course_code}: Invalid max_pods value '{actions['set_max_pods']}'.")
+
+        # --- Calculate final End Pod ---
+        if preselect["max_pods"] is not None:
+            effective_required = required_pods if required_pods > 0 else preselect["max_pods"]
+            preselect["end_pod"] = min(preselect["max_pods"], effective_required)
+            if preselect["start_pod"] > preselect["end_pod"]:
+                preselect["start_pod"] = preselect["end_pod"] # Adjust start if needed
+        else:
+             preselect["end_pod"] = required_pods if required_pods > 0 else 1
+
+        # --- Add preselection info to the original course data ---
+        course_info['preselect_labbuild_course'] = preselect["labbuild_course"]
+        course_info['preselect_host'] = preselect["host"]
+        course_info['preselect_start_pod'] = preselect["start_pod"]
+        course_info['preselect_end_pod'] = preselect["end_pod"]
+
+        output_list.append(course_info)
+
+    return output_list
+
 # --- Orchestrator Function ---
-def get_upcoming_courses_data() -> Optional[list]:
+def get_upcoming_courses_data(mapping_rules: list, course_configs_list: list, hosts_list: list) -> Optional[list]:
     """
     Connects to Salesforce, fetches report data, processes it,
     and returns it as a list of dictionaries suitable for Flask templates.
@@ -457,14 +602,12 @@ def get_upcoming_courses_data() -> Optional[list]:
     elif df_processed.empty:
          # No data after processing (e.g., no courses in the upcoming week)
          return [] # Return empty list
-
-    # Convert DataFrame to list of dictionaries for the template
-    try:
-        data_list = df_processed.to_dict(orient='records')
-        return data_list
-    except Exception as e:
-        logger.error(f"Error converting processed DataFrame to list: {e}", exc_info=True)
-        return None
+    
+    # Apply rules
+    augmented_data_list = apply_mapping_rules_to_courses(
+        df_processed, mapping_rules, course_configs_list, hosts_list
+    )
+    return augmented_data_list # Return the list directly
 
 # --- NEW Orchestrator Function for CURRENT Week ---
 def get_current_courses_data() -> Optional[list]:
