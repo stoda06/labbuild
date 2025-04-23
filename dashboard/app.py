@@ -917,124 +917,153 @@ def view_allocations():
 def toggle_power():
     """
     Triggers 'labbuild manage' start or stop based on the requested scope
-    (tag or individual item) and its *assumed opposite* current state.
-    Does NOT guarantee success or update DB state immediately.
+    (tag or individual item) and the OPPOSITE of its current DB state.
+    Attempts to update the DB state after submitting the command.
     """
-    scope = request.form.get('scope') # 'tag' or 'item'
+    scope = request.form.get('scope')
     tag = request.form.get('tag')
-    current_state_is_on = request.form.get('current_state') == 'on' # Check if the *triggering icon* suggested it was on
+    # current_state_is_on = request.form.get('current_state') == 'on' # No longer needed for tag scope
 
-    # Data for individual items
-    item_type = request.form.get('item_type') # 'pod' or 'f5_class'
+    # Data for individual items (still needed if scope=item)
+    item_type = request.form.get('item_type')
     item_number_str = request.form.get('item_number')
     host = request.form.get('host')
     vendor = request.form.get('vendor')
     course = request.form.get('course')
+    item_class_number_str = request.form.get('item_class_number') # For F5 pods context
 
     if not scope or not tag:
         flash("Missing scope or tag for power toggle.", "danger")
         query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
         return redirect(url_for('view_allocations', **query_params))
 
-    # Determine desired action (opposite of current state suggested by icon)
-    action = 'stop' if current_state_is_on else 'start'
-    app.logger.info(f"Power toggle request: Scope='{scope}', Tag='{tag}', CurrentStateOn='{current_state_is_on}', Action='{action}'")
+    app.logger.info(f"Power toggle request received: Scope='{scope}', Tag='{tag}'")
 
-    tasks_to_run = []
+    tasks_to_run = [] # List of tuples: (args_list, description, db_update_info)
+                      # db_update_info = (course_name, host, number, item_type, new_power_state_bool)
 
     try:
         if db is None or alloc_collection is None:
-            raise Exception("Database connection unavailable.")
+            raise ConnectionError("Database connection unavailable.")
 
+        # --- Logic for Tag Scope ---
         if scope == 'tag':
-            # Find all items under the tag and group by host/course/vendor
             tag_doc = alloc_collection.find_one({"tag": tag})
-            if not tag_doc: raise Exception(f"Tag '{tag}' not found.")
-
-            items_to_manage = defaultdict(list) # { (vendor, course, host): [item_details] }
+            if not tag_doc: raise ValueError(f"Tag '{tag}' not found.")
 
             courses_in_tag = tag_doc.get("courses", [])
             if not isinstance(courses_in_tag, list): courses_in_tag = []
 
             for course_item in courses_in_tag:
-                 if not isinstance(course_item, dict): continue
-                 c_name = course_item.get("course_name")
-                 c_vendor = course_item.get("vendor")
-                 pod_details = course_item.get("pod_details", [])
-                 if not c_name or not c_vendor or not isinstance(pod_details, list): continue
+                if not isinstance(course_item, dict): continue
+                c_name = course_item.get("course_name")
+                c_vendor = course_item.get("vendor")
+                pod_details = course_item.get("pod_details", [])
+                if not c_name or not c_vendor or not isinstance(pod_details, list): continue
 
-                 for pd in pod_details:
-                     if not isinstance(pd, dict): continue
-                     pd_host = pd.get("host", pd.get("pod_host"))
-                     pd_pod = pd.get("pod_number")
-                     pd_class = pd.get("class_number")
-                     if not pd_host: continue
+                for pd in pod_details:
+                    if not isinstance(pd, dict): continue
+                    pd_host = pd.get("host", pd.get("pod_host"))
+                    pd_pod = pd.get("pod_number")
+                    pd_class = pd.get("class_number")
+                    # Read current DB state, default to False (treat unknowns as off)
+                    current_power_on = str(pd.get("poweron", False)).lower() == 'true'
+                    action = 'stop' if current_power_on else 'start' # Desired action is opposite
+                    new_power_state_bool = not current_power_on # Intended state after action
 
-                     key = (c_vendor, c_name, pd_host)
-                     item_detail = {"pod": pd_pod, "class": pd_class, "is_f5": c_vendor.lower() == 'f5'}
-                     items_to_manage[key].append(item_detail)
+                    if not pd_host: continue # Skip if no host
 
-            # Generate manage commands for each group
-            for (v, c, h), items in items_to_manage.items():
-                pods = sorted([i['pod'] for i in items if i['pod'] is not None and not i['is_f5']])
-                f5_classes = sorted([i['class'] for i in items if i['class'] is not None and i['is_f5']])
+                    is_f5 = c_vendor.lower() == 'f5'
+                    item_detail = None # To store info for DB update
 
-                # Manage F5 classes individually
-                for class_num in f5_classes:
-                     args = ['manage', '-v', v, '-g', c, '--host', h, '-t', tag, '-o', action, '-cn', str(class_num)]
-                     desc = f"Tag '{tag}' - Manage {action} Class {class_num} ({c} on {h})"
-                     tasks_to_run.append((args, desc))
-                     # TODO: If needed, add logic to manage specific pods *within* an F5 class based on 'nested_pods'
+                    if is_f5 and pd_class is not None:
+                        # Handle F5 Class
+                        args = ['manage', '-v', c_vendor, '-g', c_name, '--host', pd_host, '-t', tag, '-o', action, '-cn', str(pd_class)]
+                        desc = f"Tag '{tag}' - Manage {action} Class {pd_class} ({c_name} on {pd_host})"
+                        item_detail = (c_name, pd_host, pd_class, "f5_class", new_power_state_bool)
+                        tasks_to_run.append((args, desc, item_detail))
+                        # TODO: Optionally iterate pd.get("pods", []) here if you want separate manage commands AND DB updates for nested F5 pods.
 
-                # Manage non-F5 pods (potentially creating ranges if needed, simpler: one command per pod)
-                # Warning: This could generate many commands for a large tag.
-                for pod_num in pods:
-                     args = ['manage', '-v', v, '-g', c, '--host', h, '-t', tag, '-o', action, '-s', str(pod_num), '-e', str(pod_num)]
-                     desc = f"Tag '{tag}' - Manage {action} Pod {pod_num} ({c} on {h})"
-                     tasks_to_run.append((args, desc))
+                    elif pd_pod is not None:
+                        # Handle non-F5 Pod (or potentially flat F5 pod - needs schema check)
+                        args = ['manage', '-v', c_vendor, '-g', c_name, '--host', pd_host, '-t', tag, '-o', action, '-s', str(pd_pod), '-e', str(pd_pod)]
+                        # Add F5 class context if needed for manage command
+                        if is_f5 and pd_class is not None:
+                            args.extend(['-cn', str(pd_class)])
+                        desc = f"Tag '{tag}' - Manage {action} Pod {pd_pod} ({c_name} on {pd_host})"
+                        item_detail = (c_name, pd_host, pd_pod, "pod", new_power_state_bool)
+                        tasks_to_run.append((args, desc, item_detail))
 
+        # --- Logic for Item Scope ---
         elif scope == 'item':
-            # Manage a single item (pod or class)
             if not all([item_type, item_number_str, host, vendor, course]):
                 raise ValueError("Missing item details for power toggle.")
             item_number = int(item_number_str)
+            # Get current state passed from form (based on the icon clicked)
+            current_state_is_on = request.form.get('current_state') == 'on'
+            action = 'stop' if current_state_is_on else 'start'
+            new_power_state_bool = not current_state_is_on
 
             args = ['manage', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-o', action]
+            item_detail = None # Info for DB update
+
             if item_type == 'f5_class':
                 args.extend(['-cn', str(item_number)])
                 desc = f"Item - Manage {action} Class {item_number} ({course} on {host})"
+                item_detail = (course, host, item_number, "f5_class", new_power_state_bool)
             elif item_type == 'pod':
                 args.extend(['-s', str(item_number), '-e', str(item_number)])
-                # Add class context if it's an F5 pod (assuming class_number passed in form)
-                item_class_num_str = request.form.get('item_class_number') # Need to pass this from form
-                if vendor.lower() == 'f5' and item_class_num_str:
-                     args.extend(['-cn', item_class_num_str])
+                item_class_num = None
+                if vendor.lower() == 'f5' and item_class_number_str:
+                     item_class_num = int(item_class_number_str) # Parse if needed
+                     args.extend(['-cn', item_class_number_str])
                 desc = f"Item - Manage {action} Pod {item_number} ({course} on {host})"
+                item_detail = (course, host, item_number, "pod", new_power_state_bool)
+                # Add class_num to item_detail if F5 pod for accurate DB update query
+                if item_class_num is not None:
+                    item_detail = (course, host, item_number, "pod", new_power_state_bool, item_class_num)
+
             else:
                 raise ValueError(f"Invalid item_type: {item_type}")
 
-            tasks_to_run.append((args, desc))
+            tasks_to_run.append((args, desc, item_detail))
 
         else:
              raise ValueError(f"Invalid scope: {scope}")
 
-        # --- Execute Tasks (Sequentially for safety/clarity) ---
+        # --- Execute Tasks and Update DB Sequentially ---
         if not tasks_to_run:
              flash(f"No valid manage tasks found for scope '{scope}', Tag '{tag}'.", "warning")
         else:
             app.logger.info(f"Found {len(tasks_to_run)} manage tasks for Scope '{scope}', Tag '{tag}'. Submitting sequentially...")
-            def run_sequential_manage_tasks(tasks):
+
+            def run_sequential_manage_and_update(tasks):
                  total = len(tasks)
-                 for i, (args, desc) in enumerate(tasks):
+                 for i, (args, desc, db_info) in enumerate(tasks):
                      app.logger.info(f"Starting manage task {i+1}/{total}: {desc} (Args: {' '.join(args)})")
-                     run_labbuild_task(args)
+                     run_labbuild_task(args) # Execute the manage command
                      app.logger.info(f"Finished manage task {i+1}/{total}: {desc}")
+
+                     # --- Attempt to Update DB Power State ---
+                     if db_info:
+                         try:
+                             update_power_state_in_db(tag, *db_info) # Pass tag and unpacked db_info tuple
+                         except Exception as db_update_err:
+                              app.logger.error(f"Failed to update DB power state for {desc}: {db_update_err}")
+                     # --- End DB Update ---
+
                  app.logger.info(f"All {total} manage tasks for Scope '{scope}', Tag '{tag}' submitted.")
 
-            thread = threading.Thread(target=run_sequential_manage_tasks, args=(tasks_to_run,), daemon=True)
+            thread = threading.Thread(target=run_sequential_manage_and_update, args=(tasks_to_run,), daemon=True)
             thread.start()
-            flash(f"Submitted {len(tasks_to_run)} power '{action}' tasks for Scope '{scope}', Tag '{tag}'. Check logs.", "info")
+            flash(f"Submitted {len(tasks_to_run)} power toggle tasks for Scope '{scope}', Tag '{tag}'. DB state will be updated optimistically.", "info")
 
+    except ConnectionError as e:
+        app.logger.error(f"DB Connection Error during power toggle for {tag}: {e}")
+        flash("Database connection error.", "danger")
+    except ValueError as e: # Catch validation errors
+         app.logger.error(f"Value Error during power toggle for {tag}: {e}")
+         flash(f"Error: {e}", "warning")
     except Exception as e:
         app.logger.error(f"Error processing power toggle for Scope '{scope}', Tag '{tag}': {e}", exc_info=True)
         flash(f"Error submitting power toggle for Scope '{scope}', Tag '{tag}': {e}", 'danger')
@@ -1042,6 +1071,89 @@ def toggle_power():
     # Redirect back to allocations page, preserving filters
     query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
     return redirect(url_for('view_allocations', **query_params))
+
+
+# --- NEW Helper function to update power state in DB ---
+def update_power_state_in_db(tag, course_name, host, item_number, item_type, new_state_bool, f5_class_num_context=None):
+    """
+    Updates the 'poweron' field for a specific pod/class within the nested DB structure.
+    """
+    if alloc_collection is None:
+        app.logger.error("DB update skipped: alloc_collection is None.")
+        return
+
+    power_state_str = str(new_state_bool) # Store as string 'True' or 'False'
+    target_id = item_number
+
+    # Construct the query to find the specific item
+    query = {"tag": tag, "courses.course_name": course_name}
+    update = None
+
+    if item_type == 'f5_class':
+        # Update the poweron status of the main F5 class entry
+        query["courses.pod_details"] = {
+            "$elemMatch": {"class_number": target_id, "host": host}
+        }
+        update = {
+            "$set": {"courses.$[courseElem].pod_details.$[podElem].poweron": power_state_str}
+        }
+        array_filters = [
+            {"courseElem.course_name": course_name},
+            {"podElem.class_number": target_id, "podElem.host": host}
+        ]
+    elif item_type == 'pod':
+        if f5_class_num_context is not None:
+            # Update a nested pod within an F5 class entry
+            query["courses.pod_details"] = {
+                "$elemMatch": {"class_number": f5_class_num_context, "host": host}
+            }
+            update = {
+                 # This uses positional operator $ to update the matched class_detail
+                 # Then it needs another positional operator $[podItem] for the nested pod
+                 # This might require MongoDB 4.2+ and careful array filter definition
+                 # Simpler alternative might be to fetch, modify, and update the whole courses array (less efficient)
+                 # Let's try the arrayFilters approach (requires MongoDB 3.6+)
+                 "$set": { "courses.$[courseElem].pod_details.$[classElem].pods.$[podElem].poweron": power_state_str }
+            }
+            array_filters = [
+                {"courseElem.course_name": course_name},
+                {"classElem.class_number": f5_class_num_context, "classElem.host": host},
+                {"podElem.pod_number": target_id} # Filter the nested pod by number
+            ]
+        else:
+            # Update a non-F5 pod entry
+            query["courses.pod_details"] = {
+                "$elemMatch": {"pod_number": target_id, "host": host}
+            }
+            update = {
+                "$set": {"courses.$[courseElem].pod_details.$[podElem].poweron": power_state_str}
+            }
+            array_filters = [
+                 {"courseElem.course_name": course_name},
+                 {"podElem.pod_number": target_id, "podElem.host": host}
+            ]
+    else:
+        app.logger.error(f"DB Update Error: Unknown item_type '{item_type}' for tag '{tag}', item {target_id}")
+        return
+
+    if update:
+        try:
+            result = alloc_collection.update_one(
+                query,
+                update,
+                array_filters=array_filters
+             )
+            if result.matched_count > 0:
+                 if result.modified_count > 0:
+                      app.logger.info(f"DB power state updated for Tag '{tag}', Course '{course_name}', Host '{host}', {item_type} {target_id} to {power_state_str}")
+                 else:
+                      app.logger.warning(f"DB power state potentially already '{power_state_str}' for Tag '{tag}', {item_type} {target_id}. No change made.")
+            else:
+                 app.logger.error(f"DB power state update FAILED: No matching document found for Tag '{tag}', Course '{course_name}', Host '{host}', {item_type} {target_id} (Class Context: {f5_class_num_context})")
+        except PyMongoError as e:
+             app.logger.error(f"PyMongoError updating DB power state for Tag '{tag}', {item_type} {target_id}: {e}")
+        except Exception as e:
+             app.logger.error(f"Unexpected error updating DB power state for Tag '{tag}', {item_type} {target_id}: {e}", exc_info=True)
 
 
 @app.route('/teardown-item', methods=['POST'])

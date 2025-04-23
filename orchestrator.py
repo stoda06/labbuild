@@ -8,6 +8,7 @@ from typing import Optional, Dict, List, Any, Callable
 from concurrent.futures import ThreadPoolExecutor
 # argparse no longer needed directly here
 # import argparse
+import time
 
 # Import vendor modules
 import labs.setup.avaya as avaya
@@ -51,7 +52,10 @@ def update_monitor_and_database(
     config: Dict[str, Any],
     args_dict: Dict[str, Any], # Changed from args: argparse.Namespace
     data: Dict[str, Any],
-    extra_details: Optional[Dict[str, Any]] = None
+    extra_details: Optional[Dict[str, Any]] = None,
+    max_retries: int = 3,         # Max attempts for monitor action
+    retry_delay_seconds: int = 10 # Delay between retries
+    
 ):
     """Add PRTG monitor and update database allocation."""
     vendor_shortcode = config.get("vendor_shortcode", "ot") # Default to 'ot' if missing
@@ -59,32 +63,47 @@ def update_monitor_and_database(
     prtg_url = None
     # Extract prtg_server preference from args_dict
     prtg_server_preference = args_dict.get('prtg_server')
+    monitor_identifier = f"Pod {config.get('pod_number', '')}" if config.get('pod_number') else f"Class {config.get('class_number', '')}"
+    monitor_identifier += f" (Course: {config.get('course_name', 'N/A')})"
 
-    try:
-        with mongo_client() as client:
-            if not client:
-                logger.error("Cannot add monitor: DB connection failed.")
+    logger.info(f"Attempting to add/update PRTG monitor for {monitor_identifier}...")
+
+    for attempt in range(1, max_retries + 1):
+        prtg_url = None # Reset prtg_url for each attempt
+        monitor_success = False
+
+        try:
+            with mongo_client() as client:
+                if not client:
+                    logger.error(f"[Attempt {attempt}/{max_retries}] Cannot add monitor for {monitor_identifier}: DB connection failed.")
+                else:
+                    # Pass the preference to the vendor-specific function if it accepts it
+                    # Checkpoint's add_monitor accepts it, others might need adaptation
+                    if vendor_shortcode in ["cp", "pa", "f5"]:
+                         prtg_url = add_monitor_func(config, client, prtg_server_preference)
+                    else: # Default call for others
+                         prtg_url = add_monitor_func(config, client) # Assumes default doesn't need preference
+
+            if prtg_url:
+                logger.info(f"[Attempt {attempt}/{max_retries}] PRTG monitor added/updated successfully for {monitor_identifier}. URL: {prtg_url}")
+                monitor_success = True
+                break # Exit retry loop on success
             else:
-                # Pass the preference to the vendor-specific function if it accepts it
-                # Checkpoint's add_monitor accepts it, others might need adaptation
-                if vendor_shortcode == "cp":
-                    prtg_url = add_monitor_func(config, client, prtg_server_preference)
-                elif vendor_shortcode == "pa": # Palo Alto specific call
-                    prtg_url = add_monitor_func(config, client, prtg_server_preference)
-                elif vendor_shortcode == "f5": # F5 specific call
-                    prtg_url = add_monitor_func(config, client, prtg_server_preference)
-                else: # Default for others (av, pr, nu, ot)
-                    # The default PRTGManager.add_monitor doesn't use prtg_server arg
-                    # If needed, create specific entries in VENDOR_MONITOR_MAP or adapt PRTGManager
-                    prtg_url = add_monitor_func(config, client)
+                # The add_monitor function should log its specific failure reason
+                logger.warning(f"[Attempt {attempt}/{max_retries}] Failed to add/update PRTG monitor for {monitor_identifier} (check specific add_monitor logs).")
 
-        if prtg_url:
-            logger.debug(f"PRTG monitor added/updated, URL: {prtg_url}")
-        else:
-            logger.warning(f"Failed to add/update PRTG monitor for item.") # More specific logging handled within add_monitor func
-
-    except Exception as e:
-        logger.error(f"Error adding PRTG monitor: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"[Attempt {attempt}/{max_retries}] Error adding PRTG monitor for {monitor_identifier}: {e}", exc_info=True)
+        
+        # If not successful and not the last attempt, wait before retrying
+        if not monitor_success and attempt < max_retries:
+            logger.info(f"Waiting {retry_delay_seconds}s before retrying PRTG monitor action...")
+            time.sleep(retry_delay_seconds)
+    
+    # Log final failure if all retries failed
+    if not prtg_url:
+         logger.error(f"Failed to add/update PRTG monitor for {monitor_identifier} after {max_retries} attempts.")
+         # Proceed to DB update anyway, but prtg_url will be None
 
     # --- Update Data Accumulator (Database structure) ---
     # Get host from args_dict
