@@ -10,7 +10,7 @@
     <div class="card-header">Run or Schedule Operation</div>
     <div class="card-body">
       {# --- Run Now Form --- #}
-      <form id="runForm" action="{{ url_for('run_now') }}" method="POST" class="mb-4">
+      <form id="runForm" action="{{ url_for('actions.run_now') }}" method="POST" class="mb-4">
          <div class="row g-3">
             {% include '_form_fields.html' %} {# Include common form fields #}
          </div>
@@ -22,7 +22,7 @@
       <hr class="my-4">
 
       {# --- Schedule Form --- #}
-       <form id="scheduleForm" action="{{ url_for('schedule_run') }}" method="POST">
+       <form id="scheduleForm" action="{{ url_for('actions.schedule_run') }}" method="POST">
         <div class="row g-3">
             {% include '_form_fields.html' %} {# Include common form fields again #}
             <div class="col-md-4">
@@ -68,7 +68,7 @@
   <div class="card mb-4">
     <div class="card-header">Schedule Batch from File</div>
     <div class="card-body">
-      <form action="{{ url_for('schedule_batch') }}" method="POST" enctype="multipart/form-data">
+      <form action="{{ url_for('actions.schedule_batch') }}" method="POST" enctype="multipart/form-data">
          <div class="row g-3 align-items-end"> {# Use align-items-end for button alignment #}
             <div class="col-md-5">
               <label for="batch_file" class="form-label">Command File</label>
@@ -100,7 +100,7 @@
     <div class="card-header">Scheduled Jobs</div>
     <div class="card-body">
       {# --- NEW: Form for Bulk Delete --- #}
-      <form id="bulkDeleteForm" action="{{ url_for('delete_bulk_jobs') }}" method="POST">
+      <form id="bulkDeleteForm" action="{{ url_for('actions.delete_bulk_jobs') }}" method="POST">
         {% if jobs %}
           <div class="table-responsive"> {# Make table scrollable on small screens #}
               <table class="table table-sm table-striped table-hover">
@@ -132,7 +132,7 @@
                           <i class="fas fa-edit"></i>
                       </button>
                       {# Single Delete Form with Icon Button #}
-                      <form action="{{ url_for('delete_job', job_id=job.id) }}" method="POST" style="display:inline;">
+                      <form action="{{ url_for('actions.delete_job', job_id=job.id) }}" method="POST" style="display:inline;">
                         <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete job {{ job.id }}?');" title="Delete Job {{ job.id }}">
                             <i class="fas fa-trash-alt"></i>
                         </button>
@@ -155,7 +155,7 @@
   </div> {# End card #}
 
   <div class="mb-3 text-end">
-    <a href="{{ url_for('all_logs') }}" class="btn btn-outline-primary btn-sm">View All Logs »</a>
+    <a href="{{ url_for('main.all_logs') }}" class="btn btn-outline-primary btn-sm">View All Logs »</a>
   </div>
 
   <!-- Recent Runs Card -->
@@ -191,7 +191,7 @@
                   </td>
                   <td id="success-{{ run.run_id }}">{{ run.summary.success_count if run.summary else '?' }}</td>
                   <td id="failure-{{ run.run_id }}">{{ run.summary.failure_count if run.summary else '?'}}</td>
-                  <td><a href="{{ url_for('log_detail', run_id=run.run_id) }}" class="btn btn-secondary btn-sm">View Log</a></td>
+                  <td><a href="{{ url_for('main.log_detail', run_id=run.run_id) }}" class="btn btn-secondary btn-sm">View Log</a></td>
                 </tr>
                 {% endfor %}
               </tbody>

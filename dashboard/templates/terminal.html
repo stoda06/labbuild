@@ -77,7 +77,7 @@
         formData.append('command', `labbuild ${commandLine}`); // Prepend 'labbuild'
 
         // Use Fetch API to POST to the streaming endpoint
-        fetch("{{ url_for('stream_command') }}", {
+        fetch("{{ url_for('sse.stream_command') }}", {
             method: 'POST',
             body: formData // Send command in the body
         })

@@ -36,7 +36,7 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3">
    <h1>Upcoming Courses (Next Week)</h1>
-   <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
 </div>
 
 <div class="card">
@@ -357,7 +357,7 @@
                 };
 
                 // Send POST request to backend
-                fetch("{{ url_for('build_row') }}", {
+                fetch("{{ url_for('actions.build_row') }}", {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

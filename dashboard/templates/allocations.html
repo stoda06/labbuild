@@ -134,20 +134,20 @@
 {# --- Page Header --- #}
 <div class="d-flex justify-content-between align-items-center mb-3">
    <h1>Current Allocations</h1>
-   <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
 </div>
 
 {# --- Filter Form --- #}
 <div class="card mb-4">
     <div class="card-header">Filter Allocations</div>
     <div class="card-body">
-        <form action="{{ url_for('view_allocations') }}" method="GET" class="row g-3">
+        <form action="{{ url_for('main.view_allocations') }}" method="GET" class="row g-3">
              <div class="col-md-3"><label for="filter_tag" class="form-label">Tag (contains)</label><input type="text" class="form-control form-control-sm" id="filter_tag" name="filter_tag" value="{{ current_filters.get('filter_tag', '') }}"></div>
              <div class="col-md-2"><label for="filter_vendor" class="form-label">Vendor (exact)</label><input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}"></div>
              <div class="col-md-3"><label for="filter_course" class="form-label">Course (contains)</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
              <div class="col-md-2"><label for="filter_host" class="form-label">Host (contains)</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
              <div class="col-md-2"><label for="filter_number" class="form-label">Pod/Class # (exact)</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
-             <div class="col-12"><button type="submit" class="btn btn-primary btn-sm">Filter</button> <a href="{{ url_for('view_allocations') }}" class="btn btn-secondary btn-sm">Clear Filters</a></div>
+             <div class="col-12"><button type="submit" class="btn btn-primary btn-sm">Filter</button> <a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm">Clear Filters</a></div>
         </form>
     </div>
 </div>
@@ -185,7 +185,7 @@
                   {# Actions for Tag Row #}
                   <td class="text-end action-forms">
                       {# Power Toggle for ENTIRE Tag #}
-                       <form action="{{ url_for('toggle_power') }}" method="POST" class="d-inline" onsubmit="return confirm('Toggle power (Start/Stop) for ALL items in Tag \'{{ item.tag }}\'?')">
+                       <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline" onsubmit="return confirm('Toggle power (Start/Stop) for ALL items in Tag \'{{ item.tag }}\'?')">
                            <input type="hidden" name="scope" value="tag">
                            <input type="hidden" name="tag" value="{{ item.tag }}">
                            {# Indicate a 'toggle' action - backend determines start/stop per group #}
@@ -198,7 +198,7 @@
                        </form>
 
                       {# Teardown ENTIRE Tag (Infrastructure) - Use Dumpster Icon #}
-                      <form action="{{ url_for('teardown_tag') }}" method="POST" class="d-inline" onsubmit="return confirm('TEARDOWN ALL resources (VMs, networks, etc.) for Tag \'{{ item.tag }}\'? This affects ALL courses/hosts under this tag and CANNOT be easily undone.')">
+                      <form action="{{ url_for('actions.teardown_tag') }}" method="POST" class="d-inline" onsubmit="return confirm('TEARDOWN ALL resources (VMs, networks, etc.) for Tag \'{{ item.tag }}\'? This affects ALL courses/hosts under this tag and CANNOT be easily undone.')">
                           <input type="hidden" name="tag" value="{{ item.tag }}">
                            {# Pass filters back #}
                            {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
@@ -208,7 +208,7 @@
                       </form>
 
                       {# Delete Tag DB Entry Only #}
-                      <form action="{{ url_for('teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry for ENTIRE Tag \'{{ item.tag }}\'? This affects all courses and pods under this tag. This CANNOT be undone.')">
+                      <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry for ENTIRE Tag \'{{ item.tag }}\'? This affects all courses and pods under this tag. This CANNOT be undone.')">
                           <input type="hidden" name="delete_level" value="tag_db">
                           <input type="hidden" name="tag" value="{{ item.tag }}">
                            {# Pass filters back #}
@@ -264,7 +264,7 @@
                   {# Actions Column #}
                   <td class="text-end action-forms">
                         {# Power Toggle for Individual Item #}
-                        <form action="{{ url_for('toggle_power') }}" method="POST"
+                        <form action="{{ url_for('actions.toggle_power') }}" method="POST"
                                 class="d-inline power-toggle-form"
                                 {# Add data attributes for confirmation message parts #}
                                 data-action="{{ 'Stop' if item.poweron else 'Start' }}"
@@ -292,7 +292,7 @@
                         </form>
 
                         {# Teardown Item Form #}
-                         <form action="{{ url_for('teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown {{ item.type }} {{ item.number }}? This deletes VMs.')">
+                         <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown {{ item.type }} {{ item.number }}? This deletes VMs.')">
                            <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
                            {# Pass context #}
                            <input type="hidden" name="tag" value="{{ item.tag }}">
@@ -310,7 +310,7 @@
                          </form>
 
                         {# DB Delete Item Form #}
-                         <form action="{{ url_for('teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry ONLY for {{ item.type }} {{ item.number }}?')">
+                         <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry ONLY for {{ item.type }} {{ item.number }}?')">
                            <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
                            {# Pass context #}
                            <input type="hidden" name="tag" value="{{ item.tag }}">
@@ -338,14 +338,14 @@
           <ul class="pagination pagination-sm justify-content-center mb-0">
             {# Previous Page Link #}
             <li class="page-item {{ 'disabled' if current_page == 1 else '' }}">
-              <a class="page-link" href="{{ url_for('view_allocations', page=current_page-1, **pagination_args) }}">Previous</a>
+              <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page-1, **pagination_args) }}">Previous</a>
             </li>
             {# Page Number Links (Example with ellipsis) #}
             {% set page_window = 2 %}
             {% for page_num in range(1, total_pages + 1) %}
                 {% if page_num == 1 or page_num == total_pages or (page_num >= current_page - page_window and page_num <= current_page + page_window) %}
                      <li class="page-item {{ 'active' if page_num == current_page else '' }}">
-                         <a class="page-link" href="{{ url_for('view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a>
+                         <a class="page-link" href="{{ url_for('main.view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a>
                      </li>
                 {% elif page_num == 2 and current_page > page_window + 2 %}
                      <li class="page-item disabled"><span class="page-link">...</span></li>
@@ -355,7 +355,7 @@
             {% endfor %}
             {# Next Page Link #}
             <li class="page-item {{ 'disabled' if current_page == total_pages else '' }}">
-              <a class="page-link" href="{{ url_for('view_allocations', page=current_page+1, **pagination_args) }}">Next</a>
+              <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page+1, **pagination_args) }}">Next</a>
             </li>
           </ul>
         </nav>
