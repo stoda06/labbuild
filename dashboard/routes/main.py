@@ -12,15 +12,13 @@ from pymongo.errors import PyMongoError
 # Import extensions and utils from the dashboard package
 from ..extensions import (
     op_logs_collection, std_logs_collection, course_config_collection,
-    host_collection, alloc_collection, scheduler, db # Need db and alloc_collection for allocations
+    host_collection, alloc_collection, scheduler, db, # Need db/collections
+    course_mapping_rules_collection # NEED RULES COLLECTION AGAIN
 )
 from ..utils import build_log_filter_query, format_datetime
 
-# Import utilities from the main project level if needed
-# e.g., from salesforce_utils import get_upcoming_courses_data (if still needed directly)
-# Corrected import path assuming salesforce_utils is sibling to routes folder
-from ..salesforce_utils import get_upcoming_courses_data, get_current_courses_data
-from ..extensions import course_mapping_rules_collection # Import rules collection
+# Import the Salesforce util that APPLIES RULES
+from ..salesforce_utils import get_upcoming_courses_data # USE THIS ONE
 
 
 # Define Blueprint
@@ -326,61 +324,71 @@ def terminal():
 # --- Upcoming Courses Route ---
 @bp.route('/upcoming-courses')
 def view_upcoming_courses():
-    # Logic moved from original app.py
     current_theme = request.cookies.get('theme', 'light')
-    hosts_list, course_configs_list, mapping_rules, courses_with_preselects, error_message = [], [], [], [], None
+    # Initialize lists
+    hosts_list = [] # Still fetch for potential future use or context? Let's keep it.
+    course_configs_list = [] # Still fetch for potential future use? Let's keep it.
+    mapping_rules = [] # NEED RULES AGAIN
+    courses_with_preselects = [] # Store final augmented data
+    error_message = None
 
-    # Fetch Hosts
+    # Fetch Hosts (Optional for this view now, but might be needed later)
     if host_collection is not None:
-        try: hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1); hosts_list = [host['host_name'] for host in hosts_cursor if 'host_name' in host]
+        try:
+            hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1)
+            hosts_list = [host['host_name'] for host in hosts_cursor if 'host_name' in host]
         except PyMongoError as e: logger.error(f"Hosts fetch error: {e}"); flash("Error fetching hosts.", "warning")
     else: flash("Host collection unavailable.", "warning")
-    # Fetch Course Configs
+
+    # Fetch Course Configs (Optional for this view now)
     if course_config_collection is not None:
-        try: configs_cursor = course_config_collection.find({},{"course_name": 1, "vendor_shortcode": 1, "_id": 0}).sort([("vendor_shortcode", 1), ("course_name", 1)]); course_configs_list = list(configs_cursor)
+        try:
+            configs_cursor = course_config_collection.find({},{"course_name": 1, "vendor_shortcode": 1, "_id": 0}).sort([("vendor_shortcode", 1), ("course_name", 1)])
+            course_configs_list = list(configs_cursor) # Keep as list of dicts
         except PyMongoError as e: logger.error(f"Configs fetch error: {e}"); flash("Error fetching lab build course list.", "warning")
     else: flash("Course config collection unavailable.", "warning")
-    # Fetch Mapping Rules
+
+    # Fetch Mapping Rules (NEEDED AGAIN)
     if course_mapping_rules_collection is not None:
-        try: rules_cursor = course_mapping_rules_collection.find().sort("priority", 1); mapping_rules = list(rules_cursor)
+        try:
+            rules_cursor = course_mapping_rules_collection.find().sort("priority", 1)
+            mapping_rules = list(rules_cursor) # Keep raw BSON types for backend logic
         except PyMongoError as e: logger.error(f"Rules fetch error: {e}"); flash("Error fetching automation rules.", "warning")
     else: flash("Course mapping rules collection unavailable.", "warning")
 
-    # Fetch SF data AND Apply Rules
+    # --- Fetch SF data AND Apply Rules (Use the correct function) ---
     try:
-        courses_with_preselects = get_upcoming_courses_data(mapping_rules, course_configs_list, hosts_list)
-        if courses_with_preselects is None: flash("Failed to fetch or process Salesforce data.", "danger"); courses_with_preselects = []; error_message = "Error retrieving data."
-        elif not courses_with_preselects: flash("No upcoming courses found for the next week.", "info"); error_message = "No courses scheduled for upcoming week."
-    except Exception as e: logger.error(f"Unexpected error in /upcoming-courses route: {e}", exc_info=True); flash("An unexpected error occurred.", "danger"); error_message = "Server error."; courses_with_preselects = []
+        # Call the orchestrator which applies rules internally
+        courses_with_preselects = get_upcoming_courses_data(
+            mapping_rules, course_configs_list, hosts_list
+        )
 
-    return render_template( 'upcoming_courses.html', courses=courses_with_preselects, error_message=error_message, hosts_list=hosts_list, course_configs_list=course_configs_list, mapping_rules=mapping_rules, current_theme=current_theme )
+        if courses_with_preselects is None:
+            flash("Failed to fetch or process Salesforce data. Check server logs.", "danger")
+            courses_with_preselects = []
+            error_message = "Error retrieving data."
+        elif not courses_with_preselects:
+             flash("No upcoming courses found for the next week.", "info")
+             # error_message = "No courses scheduled for upcoming week." # Comment out to avoid extra message if empty list is valid
+             courses_with_preselects = []
 
 
-# --- Current Courses Route ---
-@bp.route('/current-courses')
-def view_current_courses():
-    # Logic moved from original app.py
-    current_theme = request.cookies.get('theme', 'light')
-    courses_data, hosts_list, course_configs_list, error_message = [], [], [], None
+    except Exception as e:
+        logger.error(f"Unexpected error in /upcoming-courses route: {e}", exc_info=True)
+        flash("An unexpected error occurred while loading upcoming courses.", "danger")
+        error_message = "Server error."
+        courses_with_preselects = []
 
-    # Fetch Hosts and Course Configs
-    if host_collection is not None:
-        try: hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1); hosts_list = [host['host_name'] for host in hosts_cursor if 'host_name' in host]
-        except PyMongoError as e: logger.error(f"Error fetching hosts list: {e}"); flash("Error fetching hosts.", "warning")
-    else: flash("Host collection unavailable.", "warning")
-    if course_config_collection is not None:
-        try: configs_cursor = course_config_collection.find({}, {"course_name": 1, "vendor_shortcode": 1, "_id": 0}).sort([("vendor_shortcode", 1), ("course_name", 1)]); course_configs_list = list(configs_cursor)
-        except PyMongoError as e: logger.error(f"Error fetching course configs list: {e}"); flash("Error fetching lab build course list.", "warning")
-    else: flash("Course config collection unavailable.", "warning")
-
-    # Fetch and process Salesforce data for the CURRENT week
-    try:
-        courses_data = get_current_courses_data()
-        if courses_data is None: flash("Failed to fetch or process Salesforce data.", "danger"); courses_data = []; error_message = "Error retrieving data."
-        elif not courses_data: flash("No courses found running this week.", "info"); error_message = "No courses scheduled for the current week."
-    except Exception as e: logger.error(f"Unexpected error in /current-courses route: {e}", exc_info=True); flash("An unexpected error occurred.", "danger"); error_message = "Server error."; courses_data = []
-
-    return render_template( 'current_courses.html', courses=courses_data, error_message=error_message, hosts_list=hosts_list, course_configs_list=course_configs_list, current_theme=current_theme )
+    return render_template(
+        'upcoming_courses.html',
+        courses=courses_with_preselects, # Pass augmented data WITH preselects
+        error_message=error_message,
+        # Pass hosts/configs just in case template needs them elsewhere (JS won't use them)
+        hosts_list=hosts_list,
+        course_configs_list=course_configs_list,
+        # No need to pass mapping_rules to template
+        current_theme=current_theme
+    )
 
 # --- Add Status Endpoint ---
 @bp.route('/status/<run_id>')

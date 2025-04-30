@@ -6,8 +6,12 @@ import os
 import logging
 import datetime
 import pytz
-from typing import Optional, List
+from typing import Optional, List, Dict
 from flask import current_app
+
+from pyVmomi import vim # type: ignore
+from vcenter_utils import get_vcenter_instance # Import your vCenter connector
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import DB collection from extensions only if needed by utils directly
 # Currently only update_power_state_in_db needs it
@@ -384,6 +388,108 @@ def update_power_state_in_db(tag, course_name, host, item_number, item_type, new
         except Exception as e:
              logger.error(f"Exception updating DB power state for Tag '{tag}', {item_type} {target_id}: {e}", exc_info=True)
 
-# Keep build_args_from_dict as is (or move here if preferred)
+def get_hosts_available_memory_parallel(host_details_list: List[Dict]) -> Dict[str, float]:
+    """
+    Connects to vCenter in parallel for specified hosts and returns available memory in GB.
+    Uses the 'fqdn' field for vCenter lookup. Requires host details dicts as input.
+    WARNING: Direct vCenter calls can still be slow; caching is recommended.
 
-# --- END OF dashboard/utils.py ---
+    Args:
+        host_details_list: List of dictionaries, where each dictionary contains
+                           details for one host (must include 'host_name', 'vcenter', 'fqdn').
+
+    Returns:
+        Dictionary mapping host SHORT name to available memory in GB (float).
+        Returns None for hosts where data couldn't be fetched.
+    """
+    host_memory_gb = {} # Maps short_name -> memory_gb
+    # Group hosts by vCenter to reuse connections efficiently within the parallel tasks
+    hosts_by_vcenter = {}
+    for details in host_details_list:
+        vcenter_ip = details.get("vcenter")
+        if vcenter_ip not in hosts_by_vcenter:
+            hosts_by_vcenter[vcenter_ip] = []
+        hosts_by_vcenter[vcenter_ip].append(details) # Add full details dict
+
+    max_workers = min(len(host_details_list), 10) # Limit concurrent connections/threads
+    logger.info(f"Fetching memory for {len(host_details_list)} hosts across {len(hosts_by_vcenter)} vCenters using {max_workers} workers...")
+
+    # Results will be stored here temporarily
+    results_list = []
+
+    # --- Worker Function ---
+    def fetch_memory_for_host(host_details):
+        host_short_name = host_details.get("host_name")
+        vcenter_ip = host_details.get("vcenter")
+        host_fqdn_in_vcenter = host_details.get("fqdn")
+        si_obj = None
+        service_instance = None
+        available_gb_result = None # Use None to indicate fetch failure
+
+        if not all([host_short_name, vcenter_ip, host_fqdn_in_vcenter]):
+            logger.warning(f"Skipping host details due to missing info: {host_details}")
+            return (host_short_name, None) # Return tuple (short_name, memory_gb)
+
+        try:
+            # Establish connection (no reuse needed here as each worker handles one host)
+            si_obj = get_vcenter_instance(host_details)
+            if not si_obj:
+                 logger.warning(f"Connection failed for {host_short_name} on {vcenter_ip}")
+                 return (host_short_name, None)
+            service_instance = si_obj.connection
+
+            content = service_instance.RetrieveContent()
+            host_view_obj = None
+            container = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
+            for host_system in container.view:
+                 if host_system.name == host_fqdn_in_vcenter: host_view_obj = host_system; break
+            container.Destroy()
+
+            if not host_view_obj:
+                logger.warning(f"Host FQDN '{host_fqdn_in_vcenter}' not found in vCenter '{vcenter_ip}'.")
+                return (host_short_name, None)
+
+            # Get memory info
+            total_memory_bytes = host_view_obj.hardware.memorySize
+            memory_usage_mb = host_view_obj.summary.quickStats.overallMemoryUsage
+
+            if total_memory_bytes is None or memory_usage_mb is None:
+                 logger.warning(f"Could not retrieve full memory stats for host '{host_short_name}' (FQDN: {host_fqdn_in_vcenter}).")
+            else:
+                total_memory_gb = total_memory_bytes / (1024**3)
+                memory_usage_gb = memory_usage_mb / 1024
+                available_gb = total_memory_gb - memory_usage_gb
+                available_gb_result = round(max(0, available_gb), 2) # Store the result
+                logger.info(f"Fetched memory for '{host_short_name}': ~{available_gb_result:.2f} GB Available.")
+
+        except vim.fault.NotAuthenticated:
+             logger.error(f"vCenter auth failed for host '{host_short_name}' ({vcenter_ip}).")
+        except Exception as e:
+            logger.error(f"Error fetching memory for host '{host_short_name}': {e}", exc_info=False) # Less verbose logging
+        finally:
+            # Disconnect vCenter instance
+            if service_instance:
+                try: from pyVim.connect import Disconnect; Disconnect(service_instance)
+                except Exception: pass # Ignore disconnect errors
+
+        return (host_short_name, available_gb_result) # Return tuple
+    # --- End Worker Function ---
+
+    # --- Submit tasks in parallel ---
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_host = {executor.submit(fetch_memory_for_host, details): details.get("host_name") for details in host_details_list}
+
+        for future in as_completed(future_to_host):
+            host_s_name = future_to_host[future]
+            try:
+                result_tuple = future.result() # Gets the (short_name, memory_gb) tuple
+                if result_tuple:
+                    host_memory_gb[result_tuple[0]] = result_tuple[1] # Store result using short name key
+                else:
+                     host_memory_gb[host_s_name] = None # Ensure key exists even on worker error
+            except Exception as exc:
+                logger.error(f"Worker thread for host '{host_s_name}' generated an exception: {exc}")
+                host_memory_gb[host_s_name] = None # Mark as None on thread error
+
+    logger.info(f"Finished parallel memory fetch. Results for {len(host_memory_gb)} hosts.")
+    return host_memory_gb

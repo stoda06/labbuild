@@ -4,16 +4,27 @@ import logging
 import threading
 import datetime
 import pytz
+import json
 from flask import (
-    Blueprint, request, redirect, url_for, flash, current_app, jsonify
+    Blueprint, request, redirect, url_for, flash, current_app, jsonify, render_template
+)
+from pymongo.errors import PyMongoError
+import pymongo
+# Import extensions, utils, tasks from dashboard package
+from ..extensions import (
+    scheduler,
+    db,
+    interim_alloc_collection, # For saving review data
+    alloc_collection,         # For toggle_power and teardown_tag
+    host_collection,          # For getting host list in build_review
+    course_config_collection  # For getting memory in build_review
 )
 
-# Import extensions, utils, tasks from dashboard package
-from ..extensions import scheduler, alloc_collection, db # Need alloc_collection for teardown/toggle
-from ..utils import build_args_from_form, parse_command_line, update_power_state_in_db
+from ..utils import build_args_from_form, parse_command_line, update_power_state_in_db, get_hosts_available_memory_parallel
 from ..tasks import run_labbuild_task
 
 # Import top-level utils if needed (e.g., delete_from_database)
+from config_utils import get_host_by_name
 from db_utils import delete_from_database
 
 # Define Blueprint
@@ -405,4 +416,225 @@ def build_row():
         return jsonify({"status": "success", "message": "Build submitted."}), 200
     except Exception as e: logger.error(f"Error in /build-row: {e}", exc_info=True); return jsonify({"status": "error", "message": "Internal server error."}), 500
 
-# --- END OF dashboard/routes/actions.py ---
+@bp.route('/intermediate-build-review', methods=['POST'])
+def intermediate_build_review():
+    current_theme = request.cookies.get('theme', 'light')
+    selected_courses_json = request.form.get('selected_courses')
+    processed_courses_for_review = []
+    save_error_flag = False
+    saved_count = 0
+    updated_count = 0
+
+    if not selected_courses_json:
+        flash("No courses selected for review.", "warning")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    try:
+        selected_courses_input = json.loads(selected_courses_json)
+        if not isinstance(selected_courses_input, list) or not selected_courses_input:
+             flash("Invalid course data received.", "danger")
+             return redirect(url_for('main.view_upcoming_courses'))
+
+        # --- Fetch Host Information & FILTER ---
+        hosts_to_check = []
+        all_host_names_in_db = []
+        if host_collection is not None:
+             try:
+                 # Fetch full documents for hosts marked for inclusion
+                 hosts_cursor = host_collection.find({"include_for_build": "true"})
+                 hosts_to_check = list(hosts_cursor) # List of host document dicts
+                 all_host_names_in_db = [h['host_name'] for h in hosts_to_check if 'host_name' in h]
+                 logger.info(f"Found {len(hosts_to_check)} hosts marked with include_for_build=true: {all_host_names_in_db}")
+                 if not hosts_to_check:
+                      flash("No hosts are marked for build inclusion in the database configuration.", "warning")
+             except PyMongoError as e:
+                 logger.error(f"Failed to fetch/filter host list from DB: {e}")
+                 flash("Could not retrieve host list from database.", "warning")
+        else:
+            flash("Host collection unavailable.", "danger")
+            # Proceeding without hosts will cause assignments to fail below
+
+        # --- Fetch Host Memory IN PARALLEL (Using Filtered List) ---
+        host_capacities_gb = {}
+        if hosts_to_check: # Only fetch if there are hosts to check
+            host_capacities_gb = get_hosts_available_memory_parallel(hosts_to_check)
+        else:
+             logger.warning("Skipping host memory check as no hosts are marked for inclusion.")
+
+
+        # --- Process Each Selected Course ---
+        for course in selected_courses_input:
+            # ... (get labbuild_course, vendor, pods_req - same as before) ...
+            labbuild_course = course.get('labbuild_course')
+            vendor = course.get('vendor')
+            pods_req_str = course.get('sf_pods_req', '1'); pods_req = 1
+            try: pods_req = max(1, int(pods_req_str)) # Ensure >= 1 pod
+            except: logger.warning(f"Invalid pods_req '{pods_req_str}', using 1.")
+
+            host_assignments = {}
+            memory_gb_per_pod = 0
+            error_determining_hosts = None
+
+            # 1. Get Memory Requirement (same as before)
+            if course_config_collection is not None and labbuild_course:
+                try:
+                    # ... (logic to get memory_gb_per_pod remains the same) ...
+                    config = course_config_collection.find_one({"course_name": labbuild_course})
+                    if config:
+                         memory_gb_per_pod = float(config.get('memory', 0))
+                         if memory_gb_per_pod <= 0: error_determining_hosts = "Memory requirement unknown"
+                    else: error_determining_hosts = "Course config not found"
+                except Exception as e: error_determining_hosts = "DB/Config error"; logger.error(f"Err getting memory {labbuild_course}: {e}")
+            else: error_determining_hosts = "DB unavailable/No course"
+
+            # 2. Determine Host Priority & Assign Pods (if memory found)
+            if error_determining_hosts is None and memory_gb_per_pod > 0:
+                total_memory_needed_gb = pods_req * memory_gb_per_pod
+                logger.info(f"Course '{labbuild_course}': Needs {pods_req} pods, Total: {total_memory_needed_gb:.2f} GB.")
+
+                # Determine priority list (same logic as before)
+                priority_hosts = []
+                course_code = course.get('sf_course_code','').lower()
+                if vendor == 'pa' and 'cortex' not in course_code: priority_hosts = ['nightbird', 'hotshot']
+                elif vendor == 'pa' and 'cortex' in course_code: priority_hosts = ['unicron', 'ultramagnus', 'cliffjumper', 'nightbird']
+                elif vendor == 'f5': priority_hosts = ['ultramagnus', 'cliffjumper', 'unicron', 'nightbird']
+                elif vendor == 'cp': priority_hosts = ['unicron', 'ultramagnus', 'cliffjumper', 'nightbird']
+                elif vendor == 'nu': priority_hosts = ['hotshot']
+                else: priority_hosts = ['unicron', 'ultramagnus', 'cliffjumper', 'nightbird', 'hotshot', 'apollo'] # Default order?
+
+                # *** Filter priority list based on hosts marked for inclusion AND having capacity data ***
+                available_priority_hosts = [
+                    h for h in priority_hosts
+                    if h in all_host_names_in_db # Must be in the initial DB list marked for inclusion
+                    and h in host_capacities_gb   # Must have capacity data returned
+                    and host_capacities_gb[h] is not None # Capacity fetch must not have failed
+                ]
+                logger.debug(f"Filtered priority hosts for '{labbuild_course}': {available_priority_hosts}")
+
+                # Assign Pods (using a mutable copy of capacities for this assignment round)
+                current_round_capacities = host_capacities_gb.copy() # Copy capacities for this course calculation
+                pods_assigned = 0
+                for host_prio in available_priority_hosts:
+                    # Use the capacity from our current round copy
+                    available_mem_host = current_round_capacities.get(host_prio, 0)
+                    if available_mem_host is None: available_mem_host = 0 # Treat fetch failure as 0 capacity
+
+                    pods_on_this_host = 0
+                    while pods_assigned < pods_req:
+                        if available_mem_host >= memory_gb_per_pod:
+                            available_mem_host -= memory_gb_per_pod
+                            pods_on_this_host += 1
+                            pods_assigned += 1
+                        else: break # Not enough memory
+
+                    if pods_on_this_host > 0:
+                        host_assignments[host_prio] = pods_on_this_host
+                        logger.info(f"Assigned {pods_on_this_host} pods of '{labbuild_course}' to host '{host_prio}'.")
+                        # Update the capacity *in the copy* for this round
+                        current_round_capacities[host_prio] = available_mem_host
+
+                    if pods_assigned >= pods_req: break # All assigned
+
+                if pods_assigned < pods_req:
+                    logger.error(f"Insufficient capacity for course '{labbuild_course}'. Assigned {pods_assigned}/{pods_req} pods.")
+                    error_determining_hosts = f"Insufficient capacity (assigned {pods_assigned}/{pods_req})"
+
+            # 3. Add processed course data (same as before)
+            processed_course = course.copy()
+            if error_determining_hosts: processed_course['host_assignments'] = {"Error": error_determining_hosts}
+            elif not host_assignments: processed_course['host_assignments'] = {"Error": "No suitable hosts found"}
+            else: processed_course['host_assignments'] = host_assignments
+            processed_courses_for_review.append(processed_course)
+            # --- End Course Loop ---
+
+        # --- Save to interimallocation collection ---
+        if interim_alloc_collection is None:
+            flash("Interim allocation database collection is not available.", "danger")
+            logger.error("interim_alloc_collection is None. Cannot save.")
+            save_error_flag = True
+        elif not processed_courses_for_review:
+             flash("No valid courses processed for review/saving.", "warning")
+        else:
+            try:
+                batch_timestamp = datetime.datetime.now(pytz.utc)
+                bulk_ops = []
+                for p_course in processed_courses_for_review:
+                    # --- Define the UNIQUE FILTER for upsert ---
+                    # Using SF Course Code and selected LabBuild Course seems reasonable
+                    # Adjust if your definition of a unique "pending build" is different
+                    filter_criteria = {
+                        "sf_course_code": p_course.get("sf_course_code"),
+                        "labbuild_course": p_course.get("labbuild_course"),
+                        "status": "pending_review" # Only update existing *pending* reviews? Or any status? Let's assume pending.
+                    }
+                    # Remove keys with None values from filter if necessary,
+                    # though matching None might be intended depending on your data.
+                    filter_criteria = {k: v for k, v in filter_criteria.items() if v is not None}
+
+                    # Define the update document ($set will overwrite fields)
+                    update_data = {
+                        "$set": {
+                            "sf_course_type": p_course.get('sf_course_type'),
+                            "sf_start_date": p_course.get('sf_start_date'),
+                            "sf_end_date": p_course.get('sf_end_date'),
+                            "sf_trainer": p_course.get('sf_trainer'),
+                            "sf_pax": p_course.get('sf_pax'),
+                            "sf_pods_req": p_course.get('sf_pods_req'),
+                            "vendor": p_course.get('vendor'),
+                            "host_assignments": p_course.get('host_assignments', {}),
+                            "review_timestamp": batch_timestamp, # Update timestamp on modification
+                            "status": "pending_review" # Ensure status is set/reset
+                            # Add any other fields from p_course you want to save/update
+                        },
+                        # Optional: $setOnInsert can set fields only when creating a new doc
+                        # "$setOnInsert": {
+                        #     "initial_review_timestamp": batch_timestamp
+                        # }
+                    }
+
+                    # Create an UpdateOne operation with upsert=True
+                    bulk_ops.append(pymongo.UpdateOne(filter_criteria, update_data, upsert=True))
+
+                if bulk_ops:
+                    logger.info(f"Performing {len(bulk_ops)} upsert operations into interimallocation.")
+                    # Execute using bulk_write for efficiency
+                    result = interim_alloc_collection.bulk_write(bulk_ops)
+                    upserted_count = result.upserted_count
+                    modified_count = result.matched_count # In upsert=True, matched but not modified isn't easily distinguished here, bulk_write modified_count is often 0 for upserts. Use matched_count.
+                    # Refine counts based on upserted IDs
+                    inserted_count = len(result.upserted_ids) if result.upserted_ids else 0
+                    updated_count = result.matched_count # Assume matched were updated
+
+                    logger.info(f"Interim allocation upsert result: Inserted={inserted_count}, Matched/Updated={updated_count}")
+                    flash(f"{inserted_count} new course(s) added, {updated_count} existing course(s) updated for review.", "success")
+                else:
+                     flash("No valid course documents to save/update.", "warning")
+
+            except pymongo.errors.BulkWriteError as bwe:
+                 logger.error(f"Bulk write error saving to interimallocation: {bwe.details}", exc_info=True)
+                 flash("Database error during bulk save/update.", "danger")
+                 save_error_flag = True
+            except PyMongoError as e:
+                logger.error(f"Failed to save/update selected courses in interimallocation: {e}", exc_info=True)
+                flash("Database error saving/updating courses for review.", "danger")
+                save_error_flag = True
+            except Exception as e:
+                 logger.error(f"Unexpected error during interimallocation upsert: {e}", exc_info=True)
+                 flash("An unexpected error occurred while saving.", "danger")
+                 save_error_flag = True
+
+        # --- Render the review template ---
+        return render_template(
+            'intermediate_build_review.html',
+            selected_courses=processed_courses_for_review,
+            save_error=save_error_flag,
+            current_theme=current_theme
+        )
+
+    except json.JSONDecodeError:
+        flash("Invalid data format received from previous page.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+    except Exception as e:
+        logger.error(f"Error in intermediate_build_review route: {e}", exc_info=True)
+        flash("An error occurred preparing the build review.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))

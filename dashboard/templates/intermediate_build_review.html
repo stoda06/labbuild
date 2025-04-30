@@ -1,0 +1,106 @@
+{# dashboard/templates/intermediate_build_review.html #}
+{% extends 'base.html' %}
+
+{% block title %}Review Courses for Build{% endblock %}
+
+{% block head %}
+    {{ super() }}
+    <style>
+        .review-table th, .review-table td { font-size: 0.9rem; vertical-align: middle; }
+        .warning-message { font-weight: bold; color: var(--bs-danger); }
+        body.dark-mode .warning-message { color: var(--status-failed-dark-text); }
+        /* Style for host assignments */
+        .host-assignment-list { padding-left: 0; list-style: none; margin-bottom: 0; }
+        .host-assignment-list li { margin-bottom: 0.25rem; }
+        .host-error { color: var(--bs-danger); font-style: italic; }
+        body.dark-mode .host-error { color: var(--status-failed-dark-text); }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+   <h1>Review Courses for Build</h1>
+   <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-sm btn-outline-secondary">Back to Upcoming Courses</a>
+</div>
+
+{% if save_error %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Database Error:</strong> Failed to save the selected courses to the interim log. Review data below.
+    </div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header">Confirm Build Selection</div>
+    <div class="card-body">
+        {% if selected_courses %}
+            <p>Please review the following {{ selected_courses|length }} course(s) selected for building, including the automatically assigned host(s):</p>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped table-bordered review-table">
+                    <thead class="table-light">
+                        <tr>
+                            <th>SF Course Code</th>
+                            <th>LabBuild Course</th>
+                            <th>Vendor</th>
+                            <th>Start Date</th>
+                            {#<th>End Date</th>#} {# Removed End Date to save space? #}
+                            <th>Trainer</th>
+                            {#<th>Pods Req.</th>#} {# Pods Req shown in assignment #}
+                            <th>Assigned Host(s) & Pod Count</th> {# NEW/MODIFIED Column #}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for course in selected_courses %}
+                        <tr>
+                            <td>{{ course.sf_course_code }}</td>
+                            <td>{{ course.labbuild_course }}</td>
+                            <td>{{ course.vendor | upper }}</td>
+                            <td>{{ course.sf_start_date }}</td>
+                            {#<td>{{ course.sf_end_date }}</td>#}
+                            <td>{{ course.sf_trainer }}</td>
+                            {#<td>{{ course.sf_pods_req }}</td>#}
+                            <td>
+                                {# Display Host Assignments #}
+                                {% set assignments = course.get('host_assignments', {}) %}
+                                {% if assignments and 'Error' not in assignments %}
+                                    <ul class="host-assignment-list">
+                                    {% for host, count in assignments.items() %}
+                                        <li>{{ host }}: {{ count }} pod(s)</li>
+                                    {% endfor %}
+                                     <li><strong>Total: {{ course.sf_pods_req }} pod(s)</strong></li>
+                                    </ul>
+                                {% elif assignments and 'Error' in assignments %}
+                                    <span class="host-error">{{ assignments['Error'] }}</span>
+                                {% else %}
+                                    <span class="host-error">Assignment Failed</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            {# --- Placeholder for Final Build Trigger --- #}
+            <div class="mt-4">
+                <p class="warning-message">Warning: The "Confirm Build" functionality is not yet implemented.</p>
+                <form action="#" method="POST" id="confirmBuildForm">
+                     <button type="submit" class="btn btn-lg btn-success" disabled title="Confirm Build Action Not Implemented Yet">
+                         <i class="fas fa-check-circle"></i> Confirm and Start Build (DISABLED)
+                     </button>
+                     <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-lg btn-secondary ms-2">Cancel</a>
+                </form>
+            </div>
+
+        {% else %}
+            <div class="alert alert-warning"> No courses were received for review. </div>
+             <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary">Back to Upcoming Courses</a>
+        {% endif %}
+    </div> {# End card-body #}
+</div> {# End card #}
+
+{% endblock %}
+
+{% block scripts %}
+    {{ super() }}
+    {# No specific JS needed for this static review page yet #}
+{% endblock %}

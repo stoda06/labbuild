@@ -3,37 +3,14 @@
 
 {% block title %}Upcoming Courses (Next Week){% endblock %}
 
+{# Link to the CSS file #}
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/upcoming_courses.css') }}">
+{% endblock %}
+
+
 {% block content %}
-<style>
-    /* --- Keep existing styles --- */
-    .upcoming-table th, .upcoming-table td { font-size: 0.85rem; vertical-align: middle; }
-    .upcoming-table th { white-space: nowrap; cursor: pointer; position: relative; padding-right: 20px; }
-    .upcoming-table th .sort-icon { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); font-size: 0.8em; color: #aaa; transition: color 0.2s ease; }
-    .upcoming-table th.sort-asc .sort-icon, .upcoming-table th.sort-desc .sort-icon { color: #333; }
-    body.dark-mode .upcoming-table th.sort-asc .sort-icon, body.dark-mode .upcoming-table th.sort-desc .sort-icon { color: #ddd; }
-    .upcoming-table td { white-space: normal; }
-    .col-numbers { text-align: center; min-width: 60px; } /* Slightly narrower for numbers */
-    .col-dates { min-width: 95px; }
-    .col-code { min-width: 130px; }
-    .col-type { min-width: 150px; }
-    .col-trainer { min-width: 130px; }
-    /* --- NEW: Styles for controls --- */
-    .col-labbuild-course { min-width: 220px; }
-    .col-pod-input { min-width: 75px; }
-    .col-host-select { min-width: 150px; }
-    .col-action { min-width: 80px; text-align: center;}
-    .upcoming-table td .form-control,
-    .upcoming-table td .form-select {
-        font-size: 0.8rem; /* Smaller font in controls */
-        padding: 0.25rem 0.5rem; /* Reduced padding */
-        height: auto; /* Adjust height */
-    }
-    .upcoming-table td .form-control[type=number] {
-        width: 65px; /* Fixed width for pod inputs */
-    }
-
-</style>
-
 <div class="d-flex justify-content-between align-items-center mb-3">
    <h1>Upcoming Courses (Next Week)</h1>
    <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
@@ -41,33 +18,43 @@
 
 <div class="card">
   <div class="card-header">Courses Scheduled for Next Week</div>
-  <div class="card-body p-0">
-    {% if courses %}
+  <div class="card-body p-0"> {# Keep no padding #}
+    {% if courses is not none %}
       <div class="table-responsive">
         <table class="table table-sm table-striped table-hover mb-0 upcoming-table" id="upcoming-courses-table">
           <thead class="table-light">
-            {# --- UPDATED HEADERS --- #}
+            {# Ensure classes match CSS #}
             <tr>
+              <th scope="col" class="col-checkbox"><input type="checkbox" id="selectAllCourses" title="Select/Deselect All"></th>
               <th scope="col" class="col-dates sortable-header" data-column="Start Date" data-type="date">Start Date<span class="sort-icon ms-1"></span></th>
               <th scope="col" class="col-dates sortable-header" data-column="End Date" data-type="date">End Date<span class="sort-icon ms-1"></span></th>
               <th scope="col" class="col-code sortable-header" data-column="Course Code" data-type="string">Course Code<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-type sortable-header" data-column="Course Type" data-type="string">Course Type<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-trainer sortable-header" data-column="Trainer" data-type="string">Trainer<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-type sortable-header" data-column="Course Type" data-type="string">Course Type<span class="sort-icon ms-1"></span></th> {# Flexible #}
+              <th scope="col" class="col-trainer sortable-header" data-column="Trainer" data-type="string">Trainer<span class="sort-icon ms-1"></span></th> {# Flexible #}
               <th scope="col" class="col-numbers sortable-header" data-column="Pax" data-type="number">Pax<span class="sort-icon ms-1"></span></th>
               <th scope="col" class="col-numbers sortable-header" data-column="Pods Req." data-type="number">Pods Req.<span class="sort-icon ms-1"></span></th>
-              {# --- NEW HEADERS --- #}
               <th scope="col" class="col-labbuild-course">LabBuild Course</th>
-              <th scope="col" class="col-pod-input">Start Pod</th>
-              <th scope="col" class="col-pod-input">End Pod</th>
-              <th scope="col" class="col-host-select">Host</th>
-              <th scope="col" class="col-action">Action</th>
             </tr>
           </thead>
           <tbody id="upcoming-courses-tbody">
-            {# Rows rendered by JS #}
+             <tr><td colspan="9">Loading courses...</td></tr>
           </tbody>
         </table>
       </div>
+
+      {# --- Submit Button Area --- #}
+      <div class="mt-3 d-flex align-items-center"> {# Use flexbox for alignment #}
+        <button type="button" class="btn btn-success" id="bulkBuildBtn">
+          <i class="fas fa-cogs"></i> Build Selected Courses
+        </button>
+        {# --- ADD Loading Indicator (Initially Hidden) --- #}
+        <div id="buildLoadingIndicator" class="spinner-border spinner-border-sm text-primary ms-3" role="status" style="display: none;">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <small id="buildLoadingText" class="text-muted ms-2" style="display: none;">Processing host availability...</small>
+      </div>
+       <small class="text-muted mt-1 d-block">Note: Uses selected LabBuild Course.</small> {# Moved note slightly #}
+
     {% elif error_message %}
         <div class="alert alert-warning m-3">{{ error_message }}</div>
     {% else %}
@@ -76,324 +63,18 @@
   </div> {# End card-body #}
 </div> {# End card #}
 
-{# --- Embed ALL data as JSON --- #}
+{# --- Embed necessary data as JSON --- #}
 <script id="courses-data" type="application/json">
   {{ courses | tojson | safe }}
-</script>
-<script id="hosts-data" type="application/json">
-  {{ hosts_list | tojson | safe }}
 </script>
 <script id="course-configs-data" type="application/json">
   {{ course_configs_list | tojson | safe }}
 </script>
-{# --- Embed NEW rules data --- #}
-<script id="mapping-rules-data" type="application/json">
-  {{ mapping_rules | tojson | safe }}
-</script>
-
 
 {% endblock %}
 
+{# Link to the JS file #}
 {% block scripts %}
   {{ super() }}
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const table = document.getElementById('upcoming-courses-table');
-        const tbody = document.getElementById('upcoming-courses-tbody');
-        const headers = table.querySelectorAll('th.sortable-header');
-        // Data Sources
-        const coursesDataScript = document.getElementById('courses-data');
-        const hostsDataScript = document.getElementById('hosts-data');
-        const courseConfigsDataScript = document.getElementById('course-configs-data');
-        const mappingRulesDataScript = document.getElementById('mapping-rules-data'); // Get rules script
-
-        let courseData = [];
-        let hostsList = [];
-        let courseConfigsList = [];
-        let mappingRules = []; // Store rules
-        let sortState = { column: 'Start Date', direction: 'asc' }; // Default sort state
-
-        // --- Parse Embedded Data ---
-        try {
-            if (coursesDataScript?.textContent) courseData = JSON.parse(coursesDataScript.textContent);
-            if (hostsDataScript?.textContent) hostsList = JSON.parse(hostsDataScript.textContent);
-            if (courseConfigsDataScript?.textContent) courseConfigsList = JSON.parse(courseConfigsDataScript.textContent);
-            if (mappingRulesDataScript?.textContent) mappingRules = JSON.parse(mappingRulesDataScript.textContent);
-        } catch (e) {
-            console.error("Error parsing embedded JSON data:", e);
-            if(tbody) tbody.innerHTML = '<tr><td colspan="12" class="text-danger">Error loading page data.</td></tr>'; // Adjust colspan
-            return;
-        }
-
-        if (!table || !tbody || !headers.length) {
-            console.error("Table elements not found. UI disabled.");
-            return;
-        }
-
-        // --- Render Table Function (MODIFIED - Pass calculated endPod) ---
-        function renderTable(data) {
-            tbody.innerHTML = '';
-            const colCount = 13;
-            if (!data || data.length === 0) {
-                 tbody.innerHTML = `<tr><td colspan="${colCount}">No courses found for this period.</td></tr>`;
-                 return;
-            }
-
-            data.forEach((course, index) => { // course now has preselect_ fields
-                const row = tbody.insertRow();
-                row.dataset.rowIndex = index;
-
-                // 1. Extract standard info + derived vendor
-                const sfCourseCode = course['Course Code'] || '';
-                const derivedVendor = sfCourseCode.substring(0, 2).toLowerCase();
-                row.dataset.derivedVendor = derivedVendor;
-
-                 // 1b. Render Standard Info Cells
-                /* ... render standard cells using course['FieldName'] ... */
-                row.insertCell().textContent = course['Start Date'] || 'N/A';
-                row.insertCell().textContent = course['End Date'] || 'N/A';
-                row.insertCell().textContent = sfCourseCode;
-                row.insertCell().textContent = course['Course Type'] || 'N/A';
-                row.insertCell().textContent = course['Trainer'] || 'N/A';
-                const paxCell = row.insertCell(); paxCell.textContent = course['Pax'] ?? 'N/A'; paxCell.style.textAlign = 'center';
-                const podsReqCell = row.insertCell(); podsReqCell.textContent = course['Pods Req.'] ?? 'N/A'; podsReqCell.style.textAlign = 'center';
-
-                // --- 2. Render Controls using pre-selected values from backend ---
-                // LabBuild Course Select
-                const courseSelectCell = row.insertCell();
-                const courseSelect = document.createElement('select');
-                courseSelect.className = 'form-select form-select-sm build-control course-select';
-                courseSelect.innerHTML = '<option value="">Select LabBuild Course...</option>';
-                courseConfigsList.forEach(config => { // Populate all vendor options
-                    if (config.vendor_shortcode?.toLowerCase() === derivedVendor) {
-                        const option = document.createElement('option');
-                        option.value = config.course_name;
-                        option.textContent = config.course_name;
-                        // Use preselect value passed from backend
-                        if (config.course_name === course.preselect_labbuild_course) {
-                            option.selected = true;
-                        }
-                        courseSelect.appendChild(option);
-                    }
-                });
-                if (courseSelect.options.length <= 1) { /* disable */ }
-                courseSelectCell.appendChild(courseSelect);
-
-                // Start Pod Input
-                const startPodCell = row.insertCell();
-                const startPodInput = document.createElement('input');
-                /* ... set attributes ... */
-                startPodInput.type = 'number'; startPodInput.className = 'form-control form-control-sm build-control start-pod-input'; startPodInput.min = '1';
-                startPodInput.value = course.preselect_start_pod || 1; // Use preselect value
-                startPodCell.appendChild(startPodInput);
-
-                // End Pod Input
-                const endPodCell = row.insertCell();
-                const endPodInput = document.createElement('input');
-                /* ... set attributes ... */
-                 endPodInput.type = 'number'; endPodInput.className = 'form-control form-control-sm build-control end-pod-input'; endPodInput.min = '1';
-                endPodInput.value = course.preselect_end_pod || 1; // Use preselect value
-                endPodCell.appendChild(endPodInput);
-
-                // F5 Class Input
-                // const classInputCell = row.insertCell(); /* ... create wrapper/input ... */
-                //  const classInputWrapper = document.createElement('div'); classInputWrapper.className = 'f5-class-input-wrapper'; const classNumberInput = document.createElement('input'); classNumberInput.type = 'number'; classNumberInput.className = 'form-control form-control-sm build-control class-number-input'; classNumberInput.min = '1'; classNumberInput.placeholder = 'Class #'; classInputWrapper.appendChild(classNumberInput); classInputCell.appendChild(classInputWrapper);
-
-                // Host Select
-                const hostSelectCell = row.insertCell();
-                const hostSelect = document.createElement('select');
-                /* ... set classes ... */
-                 hostSelect.className = 'form-select form-select-sm build-control host-select';
-                hostSelect.innerHTML = '<option value="">Select Host...</option>';
-                hostsList.forEach(host => {
-                    const option = document.createElement('option');
-                    /* ... set value/text ... */
-                     option.value = host; option.textContent = host;
-                    // Use preselect value passed from backend
-                    if (host === course.preselect_host) {
-                        option.selected = true;
-                    }
-                    hostSelect.appendChild(option);
-                });
-                 if (hostSelect.options.length <= 1) { /* disable */ }
-                hostSelectCell.appendChild(hostSelect);
-
-                // Action Button
-                const actionCell = row.insertCell(); /* ... create button ... */
-                 actionCell.className = 'col-action'; const buildButton = document.createElement('button'); buildButton.className = 'btn btn-sm btn-primary build-row-btn'; buildButton.innerHTML = '<i class="fas fa-cogs"></i> Build'; buildButton.title = 'Build lab for this course'; buildButton.dataset.sfCourseCode = sfCourseCode; actionCell.appendChild(buildButton);
-            });
-        }
-
-        // --- Sort Indicators Function ---
-        function updateSortIndicators() {
-            headers.forEach(header => {
-                const icon = header.querySelector('.sort-icon');
-                header.classList.remove('sort-asc', 'sort-desc');
-                header.removeAttribute('aria-sort');
-                icon.className = 'sort-icon ms-1 fas'; // Reset icon
-
-                if (header.dataset.column === sortState.column) {
-                    if (sortState.direction === 'asc') {
-                        header.classList.add('sort-asc');
-                        icon.classList.add('fa-sort-up');
-                        header.setAttribute('aria-sort', 'ascending');
-                    } else if (sortState.direction === 'desc') {
-                        header.classList.add('sort-desc');
-                        icon.classList.add('fa-sort-down');
-                        header.setAttribute('aria-sort', 'descending');
-                    } else {
-                         icon.classList.add('fa-sort'); // Neutral sort icon
-                         header.removeAttribute('aria-sort');
-                    }
-                } else {
-                     icon.classList.add('fa-sort'); // Neutral sort icon for non-active columns
-                     header.removeAttribute('aria-sort');
-                }
-            });
-        }
-
-
-        // --- Sort Table Function ---
-        function sortTable(columnName, dataType) {
-            if (!columnName) return;
-
-            let direction = 'asc';
-            let forceDirection = arguments.length > 2 ? arguments[2] : null; // Check for 3rd argument
-
-            if (forceDirection) {
-                 direction = forceDirection;
-            } else if (sortState.column === columnName) {
-                direction = sortState.direction === 'asc' ? 'desc' : 'asc';
-            } else {
-                direction = 'asc';
-            }
-
-            sortState.column = columnName;
-            sortState.direction = direction;
-
-            courseData.sort((a, b) => {
-                let valA = a[columnName];
-                let valB = b[columnName];
-
-                // Handle potential 'N/A' or missing values - push them down
-                const naA = (valA === null || valA === undefined || valA === 'N/A' || valA === 'Invalid Date');
-                const naB = (valB === null || valB === undefined || valB === 'N/A' || valB === 'Invalid Date');
-                if (naA && naB) return 0;
-                if (naA) return 1; // Push A down
-                if (naB) return -1; // Push B down
-
-                let comparison = 0;
-
-                if (dataType === 'number') {
-                    // Attempt numeric conversion, default to 0 on failure
-                    const numA = Number(valA) || 0;
-                    const numB = Number(valB) || 0;
-                    comparison = numA - numB;
-                } else if (dataType === 'date') {
-                    // Compare YYYY-MM-DD strings lexicographically
-                    comparison = valA.localeCompare(valB);
-                } else { // Default to string comparison
-                    // Case-insensitive string comparison
-                    comparison = String(valA).localeCompare(String(valB), undefined, { sensitivity: 'base' });
-                }
-
-                return direction === 'asc' ? comparison : -comparison;
-            });
-
-            renderTable(courseData);
-            updateSortIndicators();
-        }
-
-        // --- Add Event Listeners to Headers ---
-        headers.forEach(header => {
-            header.addEventListener('click', () => {
-                const columnName = header.dataset.column;
-                const dataType = header.dataset.type || 'string'; // Default to string
-                sortTable(columnName, dataType);
-            });
-        });
-
-        tbody.addEventListener('click', function(event) {
-            if (event.target && event.target.classList.contains('build-row-btn')) {
-                const buildButton = event.target;
-                const row = buildButton.closest('tr');
-                if (!row) return;
-
-                const courseSelect = row.querySelector('.course-select');
-                const startPodInput = row.querySelector('.start-pod-input');
-                const endPodInput = row.querySelector('.end-pod-input');
-                const hostSelect = row.querySelector('.host-select');
-
-                const labbuildCourse = courseSelect ? courseSelect.value : null;
-                const startPod = startPodInput ? startPodInput.value : null;
-                const endPod = endPodInput ? endPodInput.value : null;
-                const host = hostSelect ? hostSelect.value : null;
-                const vendor = row.dataset.derivedVendor; // Get vendor from row data attribute
-                const sfCourseCode = buildButton.dataset.sfCourseCode;
-
-                // Basic Validation
-                if (!labbuildCourse || !startPod || !endPod || !host || !vendor) {
-                    alert('Please select a LabBuild Course, Start/End Pod, and Host for this row.');
-                    return;
-                }
-                 if (parseInt(startPod, 10) > parseInt(endPod, 10)) {
-                     alert('Start Pod cannot be greater than End Pod.');
-                     return;
-                 }
-
-
-                // Disable button and show spinner
-                buildButton.disabled = true;
-                buildButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Submitting...';
-
-                // Prepare data for POST request
-                const postData = {
-                    labbuild_course: labbuildCourse,
-                    start_pod: startPod,
-                    end_pod: endPod,
-                    host: host,
-                    vendor: vendor,
-                    sf_course_code: sfCourseCode
-                };
-
-                // Send POST request to backend
-                fetch("{{ url_for('actions.build_row') }}", {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        // Add CSRF token header if needed by your Flask setup
-                    },
-                    body: JSON.stringify(postData)
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        // Maybe just remove the spinner and keep button disabled briefly
-                        // alert('Build submitted successfully!'); // Or use flash message reload
-                        buildButton.innerHTML = '<i class="fas fa-check"></i> Submitted';
-                        setTimeout(() => { // Re-enable after a delay
-                             buildButton.disabled = false;
-                             buildButton.innerHTML = '<i class="fas fa-cogs"></i> Build';
-                        }, 3000);
-                    } else {
-                        alert(`Error submitting build: ${data.message || 'Unknown error'}`);
-                        buildButton.disabled = false; // Re-enable on error
-                        buildButton.innerHTML = '<i class="fas fa-cogs"></i> Build';
-                    }
-                })
-                .catch(error => {
-                    console.error('Error submitting build request:', error);
-                    alert('Failed to submit build request. Check console.');
-                    buildButton.disabled = false; // Re-enable on fetch error
-                    buildButton.innerHTML = '<i class="fas fa-cogs"></i> Build';
-                });
-            }
-        });
-
-        // --- Initial Render ---
-        sortTable('Start Date', 'date', 'asc');
-
-
-    });
-  </script>
+  <script src="{{ url_for('static', filename='js/upcoming_courses.js') }}" defer></script>
 {% endblock %}
