@@ -9,11 +9,10 @@
         .review-table th, .review-table td { font-size: 0.9rem; vertical-align: middle; }
         .warning-message { font-weight: bold; color: var(--bs-danger); }
         body.dark-mode .warning-message { color: var(--status-failed-dark-text); }
-        /* Style for host assignments */
-        .host-assignment-list { padding-left: 0; list-style: none; margin-bottom: 0; }
-        .host-assignment-list li { margin-bottom: 0.25rem; }
         .host-error { color: var(--bs-danger); font-style: italic; }
         body.dark-mode .host-error { color: var(--status-failed-dark-text); }
+        /* Ensure assignment column can wrap */
+        .col-host-assignments { min-width: 250px; white-space: normal; }
     </style>
 {% endblock %}
 
@@ -33,7 +32,7 @@
     <div class="card-header">Confirm Build Selection</div>
     <div class="card-body">
         {% if selected_courses %}
-            <p>Please review the following {{ selected_courses|length }} course(s) selected for building, including the automatically assigned host(s):</p>
+            <p>Please review the {{ selected_courses|length }} course(s) and their assigned hosts/pods:</p>
             <div class="table-responsive">
                 <table class="table table-sm table-striped table-bordered review-table">
                     <thead class="table-light">
@@ -42,10 +41,8 @@
                             <th>LabBuild Course</th>
                             <th>Vendor</th>
                             <th>Start Date</th>
-                            {#<th>End Date</th>#} {# Removed End Date to save space? #}
                             <th>Trainer</th>
-                            {#<th>Pods Req.</th>#} {# Pods Req shown in assignment #}
-                            <th>Assigned Host(s) & Pod Count</th> {# NEW/MODIFIED Column #}
+                            <th class="col-host-assignments">Assigned Host(s) & Pod(s)</th> {# MODIFIED Header #}
                         </tr>
                     </thead>
                     <tbody>
@@ -55,23 +52,16 @@
                             <td>{{ course.labbuild_course }}</td>
                             <td>{{ course.vendor | upper }}</td>
                             <td>{{ course.sf_start_date }}</td>
-                            {#<td>{{ course.sf_end_date }}</td>#}
                             <td>{{ course.sf_trainer }}</td>
-                            {#<td>{{ course.sf_pods_req }}</td>#}
-                            <td>
-                                {# Display Host Assignments #}
-                                {% set assignments = course.get('host_assignments', {}) %}
-                                {% if assignments and 'Error' not in assignments %}
-                                    <ul class="host-assignment-list">
-                                    {% for host, count in assignments.items() %}
-                                        <li>{{ host }}: {{ count }} pod(s)</li>
-                                    {% endfor %}
-                                     <li><strong>Total: {{ course.sf_pods_req }} pod(s)</strong></li>
-                                    </ul>
-                                {% elif assignments and 'Error' in assignments %}
-                                    <span class="host-error">{{ assignments['Error'] }}</span>
+                            {# --- Display Host Assignments --- #}
+                            <td class="col-host-assignments"> {# Add class for potential styling #}
+                                {% set display_text = course.get('host_assignments_display', '') %}
+                                {% if display_text and 'Error' in display_text %} {# Check if it's an error message #}
+                                    <span class="host-error">{{ display_text }}</span>
+                                {% elif display_text %}
+                                    {{ display_text }} {# Display the generated string like "host1: 1-3, 5; host2: 10-12" #}
                                 {% else %}
-                                    <span class="host-error">Assignment Failed</span>
+                                    <span class="host-error">Assignment Failed/Pending</span> {# Fallback #}
                                 {% endif %}
                             </td>
                         </tr>
@@ -92,12 +82,11 @@
             </div>
 
         {% else %}
-            <div class="alert alert-warning"> No courses were received for review. </div>
+            <div class="alert alert-warning"> No courses were processed for review. </div>
              <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary">Back to Upcoming Courses</a>
         {% endif %}
     </div> {# End card-body #}
 </div> {# End card #}
-
 {% endblock %}
 
 {% block scripts %}

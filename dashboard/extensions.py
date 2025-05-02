@@ -21,7 +21,8 @@ if project_root not in sys.path:
 from constants import (
     DB_NAME, OPERATION_LOG_COLLECTION, LOG_COLLECTION,
     COURSE_CONFIG_COLLECTION, HOST_COLLECTION, ALLOCATION_COLLECTION,
-    COURSE_MAPPING_RULES_COLLECTION, INTERIM_ALLOCATION_COLLECTION
+    COURSE_MAPPING_RULES_COLLECTION, INTERIM_ALLOCATION_COLLECTION,
+    BUILD_RULES_COLLECTION
 )
 
 # --- Configuration ---
@@ -46,6 +47,7 @@ alloc_collection = None
 course_mapping_rules_collection = None
 scheduler = None
 interim_alloc_collection = None
+build_rules_collection = None
 
 if not MONGO_HOST:
     logger.critical("MONGO_HOST environment variable not set. Database/Scheduler unavailable.")
@@ -68,6 +70,7 @@ else:
         alloc_collection = db[ALLOCATION_COLLECTION]
         course_mapping_rules_collection = db[COURSE_MAPPING_RULES_COLLECTION]
         interim_alloc_collection = db[INTERIM_ALLOCATION_COLLECTION]
+        build_rules_collection = db[BUILD_RULES_COLLECTION]
         logger.info("Successfully connected App MongoDB client.")
 
         # Scheduler client

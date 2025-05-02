@@ -6,14 +6,14 @@ import logging
 from flask import (
     Blueprint, render_template, request, flash, current_app, jsonify, redirect, url_for
 )
-from pymongo import DESCENDING
+from pymongo import DESCENDING, ASCENDING
 from pymongo.errors import PyMongoError
 
 # Import extensions and utils from the dashboard package
 from ..extensions import (
     op_logs_collection, std_logs_collection, course_config_collection,
     host_collection, alloc_collection, scheduler, db, # Need db/collections
-    course_mapping_rules_collection # NEED RULES COLLECTION AGAIN
+    build_rules_collection # NEED RULES COLLECTION AGAIN
 )
 from ..utils import build_log_filter_query, format_datetime
 
@@ -326,13 +326,13 @@ def terminal():
 def view_upcoming_courses():
     current_theme = request.cookies.get('theme', 'light')
     # Initialize lists
-    hosts_list = [] # Still fetch for potential future use or context? Let's keep it.
-    course_configs_list = [] # Still fetch for potential future use? Let's keep it.
-    mapping_rules = [] # NEED RULES AGAIN
+    hosts_list = []
+    course_configs_list = []
+    build_rules = [] # Use build_rules instead of mapping_rules
     courses_with_preselects = [] # Store final augmented data
     error_message = None
 
-    # Fetch Hosts (Optional for this view now, but might be needed later)
+    # Fetch Hosts (Needed by get_upcoming_courses_data)
     if host_collection is not None:
         try:
             hosts_cursor = host_collection.find({}, {"host_name": 1, "_id": 0}).sort("host_name", 1)
@@ -340,38 +340,36 @@ def view_upcoming_courses():
         except PyMongoError as e: logger.error(f"Hosts fetch error: {e}"); flash("Error fetching hosts.", "warning")
     else: flash("Host collection unavailable.", "warning")
 
-    # Fetch Course Configs (Optional for this view now)
+    # Fetch Course Configs (Needed for dropdown AND rule application)
     if course_config_collection is not None:
         try:
             configs_cursor = course_config_collection.find({},{"course_name": 1, "vendor_shortcode": 1, "_id": 0}).sort([("vendor_shortcode", 1), ("course_name", 1)])
-            course_configs_list = list(configs_cursor) # Keep as list of dicts
+            course_configs_list = list(configs_cursor)
         except PyMongoError as e: logger.error(f"Configs fetch error: {e}"); flash("Error fetching lab build course list.", "warning")
     else: flash("Course config collection unavailable.", "warning")
 
-    # Fetch Mapping Rules (NEEDED AGAIN)
-    if course_mapping_rules_collection is not None:
+    # Fetch Build Rules (NEEDED for auto-selection)
+    if build_rules_collection is not None: # Use build_rules_collection
         try:
-            rules_cursor = course_mapping_rules_collection.find().sort("priority", 1)
-            mapping_rules = list(rules_cursor) # Keep raw BSON types for backend logic
-        except PyMongoError as e: logger.error(f"Rules fetch error: {e}"); flash("Error fetching automation rules.", "warning")
-    else: flash("Course mapping rules collection unavailable.", "warning")
+            rules_cursor = build_rules_collection.find().sort("priority", ASCENDING) # Sort by priority
+            build_rules = list(rules_cursor)
+            if not build_rules: flash("No build rules found.", "warning")
+        except PyMongoError as e: logger.error(f"Error fetching build rules: {e}"); flash("Error fetching build rules.", "danger")
+    else: flash("Build rules collection unavailable.", "danger")
 
-    # --- Fetch SF data AND Apply Rules (Use the correct function) ---
+    # --- Fetch SF data AND Apply Rules ---
     try:
-        # Call the orchestrator which applies rules internally
+        # *** Call the function that applies rules ***
+        # Pass the build_rules list to the function
         courses_with_preselects = get_upcoming_courses_data(
-            mapping_rules, course_configs_list, hosts_list
+            build_rules, course_configs_list, hosts_list
         )
 
         if courses_with_preselects is None:
             flash("Failed to fetch or process Salesforce data. Check server logs.", "danger")
             courses_with_preselects = []
             error_message = "Error retrieving data."
-        elif not courses_with_preselects:
-             flash("No upcoming courses found for the next week.", "info")
-             # error_message = "No courses scheduled for upcoming week." # Comment out to avoid extra message if empty list is valid
-             courses_with_preselects = []
-
+        # No need for elif not courses... here, empty list is handled by template
 
     except Exception as e:
         logger.error(f"Unexpected error in /upcoming-courses route: {e}", exc_info=True)
@@ -379,14 +377,12 @@ def view_upcoming_courses():
         error_message = "Server error."
         courses_with_preselects = []
 
+    # Pass augmented data (courses) and configs (for dropdowns) to template
     return render_template(
         'upcoming_courses.html',
-        courses=courses_with_preselects, # Pass augmented data WITH preselects
+        courses=courses_with_preselects, # This list now HAS preselect_* fields
         error_message=error_message,
-        # Pass hosts/configs just in case template needs them elsewhere (JS won't use them)
-        hosts_list=hosts_list,
-        course_configs_list=course_configs_list,
-        # No need to pass mapping_rules to template
+        course_configs_list=course_configs_list, # Still needed for dropdown options
         current_theme=current_theme
     )
 
