@@ -31,6 +31,16 @@ from ..tasks import run_labbuild_task
 # Import top-level utils if needed (e.g., delete_from_database)
 from config_utils import get_host_by_name
 from db_utils import delete_from_database
+from bson.errors import InvalidId
+from bson import ObjectId
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:
+    # Fallback for Python < 3.9 or if zoneinfo data isn't available
+    from datetime import timezone as ZoneInfo # Use basic UTC offset if zoneinfo missing
+
+SUBSEQUENT_POD_MEMORY_FACTOR = 0.7
 
 # Define Blueprint
 bp = Blueprint('actions', __name__)
@@ -209,11 +219,23 @@ def schedule_run():
 
         if schedule_type == 'date' and schedule_time_str:
             naive_dt = datetime.datetime.fromisoformat(schedule_time_str)
-            local_dt = scheduler_tz.localize(naive_dt) # Localize to scheduler's TZ
-            run_date_utc = local_dt.astimezone(pytz.utc) # Convert to UTC for storage/trigger
+            # *** MODIFIED TIMEZONE HANDLING ***
+            try:
+                # Make aware using the scheduler's timezone object
+                aware_dt = naive_dt.replace(tzinfo=scheduler_tz)
+            except TypeError:
+                 # Fallback for older pytz versions if scheduler_tz is pytz
+                 if hasattr(scheduler_tz, 'localize'):
+                      aware_dt = scheduler_tz.localize(naive_dt)
+                 else: # Could not make aware, proceed with naive (might be UTC if lucky)
+                      aware_dt = naive_dt
+                      logger.warning(f"Could not make datetime timezone-aware for scheduling: {naive_dt}. Assuming UTC or scheduler default.")
+
+            run_date_utc = aware_dt.astimezone(datetime.timezone.utc) # Always convert to UTC for DateTrigger
+            # *** END MODIFICATION ***
             trigger = DateTrigger(run_date=run_date_utc)
-            flash_msg = f"for {local_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')}"
-            log_time_str = f"UTC: {run_date_utc.isoformat()}, SchedulerTZ: {local_dt.isoformat()}"
+            flash_msg = f"for {aware_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')}" # Display in scheduler's TZ
+            log_time_str = f"UTC: {run_date_utc.isoformat()}, SchedulerTZ: {aware_dt.isoformat()}"
 
         elif schedule_type == 'cron' and cron_expression:
             parts = cron_expression.split()
@@ -273,8 +295,21 @@ def schedule_batch():
         from apscheduler.triggers.date import DateTrigger # Import here
         scheduler_tz = scheduler.timezone
         naive_dt = datetime.datetime.fromisoformat(start_time_str)
-        first_run_local = scheduler_tz.localize(naive_dt)
-        first_run_utc = first_run_local.astimezone(pytz.utc)
+        # *** MODIFIED TIMEZONE HANDLING ***
+        try:
+            # Make the naive datetime aware using the scheduler's timezone
+            first_run_local = naive_dt.replace(tzinfo=scheduler_tz)
+        except TypeError:
+            # Fallback for older pytz versions if scheduler_tz is pytz
+            if hasattr(scheduler_tz, 'localize'):
+                 first_run_local = scheduler_tz.localize(naive_dt)
+            else: # Could not make aware, proceed with naive (less ideal)
+                 first_run_local = naive_dt
+                 logger.warning(f"Could not make batch start time timezone-aware: {naive_dt}. Assuming UTC or scheduler default.")
+
+        # Calculate subsequent run times in UTC for DateTrigger
+        first_run_utc = first_run_local.astimezone(datetime.timezone.utc)
+        # *** END MODIFICATION ***
         logger.info(f"Batch Schedule: First job UTC start: {first_run_utc} (from local input {first_run_local})")
     except Exception as e: logger.error(f"Err parse batch start: {e}", exc_info=True); flash("Error processing start time.", "danger"); return redirect(url_for('main.index'))
 
@@ -614,17 +649,25 @@ def intermediate_build_review():
         logger.info("Processing current allocations for reusable pods...")
         if alloc_collection is not None:
             try:
+                logger.debug("Ensuring 'extend' field exists in currentallocation...")
                 # Ensure 'extend' field exists (defaulting to false)
                 alloc_collection.update_many({"extend": {"$exists": False}}, {"$set": {"extend": "false"}})
-                cursor = alloc_collection.find({"extend": "false"}, {"courses": 1, "_id": 0}) # Fetch only courses for relevant tags
+                logger.debug("Fetching allocations with 'extend': 'false'...")
+                cursor = alloc_collection.find({"extend": "false"}, {"tag": 1,"courses": 1, "_id": 0}) # Fetch only courses for relevant tags
 
                 for tag_doc in cursor:
+                    tag_name = tag_doc.get("tag", "UNKNOWN")
+                    logger.info(f"Processing reusable tag: '{tag_name}'")
                     for course_alloc in tag_doc.get("courses", []):
                         vendor = course_alloc.get("vendor")
                         course_name = course_alloc.get("course_name")
-                        if not vendor or not course_name: continue
+                        if not vendor or not course_name: 
+                            logger.warning(f"Skipping course in tag '{tag_name}': Missing vendor or course_name.")
+                            continue
                         mem_per_pod = _get_memory_for_course(course_name)
-                        if mem_per_pod <= 0: continue
+                        if mem_per_pod <= 0: 
+                            logger.warning(f"  Skipping course '{course_name}' in tag '{tag_name}': Cannot determine memory per pod ({mem_per_pod} GB). Check courseconfig.")
+                            continue
 
                         for pod_detail in course_alloc.get("pod_details", []):
                             pod_num = pod_detail.get("pod_number"); host = pod_detail.get("host")
@@ -638,6 +681,7 @@ def intermediate_build_review():
                                 except (ValueError, TypeError): pass # Ignore invalid pod numbers
                 # Log summary
                 for host, released_gb in released_memory_by_host.items():
+                    print(f"Released: {released_gb}")
                     if released_gb > 0: logger.info(f"Host '{host}': Calculated {released_gb:.2f} GB releasable memory.")
             except PyMongoError as e: logger.error(f"DB Error processing current allocations: {e}"); flash("Error checking existing allocations.", "warning")
             except Exception as e: logger.error(f"Unexpected error calculating released memory: {e}", exc_info=True); flash("Error calculating released memory.", "warning")
@@ -668,7 +712,7 @@ def intermediate_build_review():
             else: logger.warning(f"Excluding host '{host_name}' from assignment: capacity fetch failed.")
 
         # --- 5. Process Each Selected Course for Assignment ---
-        logger.info("Starting host and pod assignment loop...")
+        logger.info("Starting host/pod assignment loop with deduplication factor: %.2f", SUBSEQUENT_POD_MEMORY_FACTOR)
         for course_input_data in selected_courses_input:
             # Extract data from the input posted from the previous page
             sf_course_code = course_input_data.get('sf_course_code', '')
@@ -752,12 +796,17 @@ def intermediate_build_review():
                     ))
                     for reusable_pod_num in candidate_reusable:
                         if pods_to_assign <= 0: break
-                        if available_mem_host >= memory_gb_per_pod:
-                            available_mem_host -= memory_gb_per_pod
-                            pods_assigned_to_this_host_list.append(reusable_pod_num)
+                        # *** Calculate memory needed considering deduplication ***
+                        is_first_pod_on_host = not host_assignments_detail[host_prio]
+                        memory_needed = memory_gb_per_pod if is_first_pod_on_host else (memory_gb_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR)
+                        if available_mem_host >= memory_needed:
+                            available_mem_host -= memory_needed
+                            host_assignments_detail[host_prio].append(reusable_pod_num)
                             pods_to_assign -= 1
                             globally_assigned_pods_by_vendor[vendor].add(reusable_pod_num) # Mark globally
-                        else: break # No memory for reusable
+                        else: 
+                            logger.debug(f"Host {host_prio} insufficient memory ({available_mem_host:.2f}GB) for reusable pod {reusable_pod_num} (needs ~{memory_needed:.2f}GB).")
+                            break # No memory for reusable
 
                     # 5b. Assign NEW pods
                     if pods_to_assign > 0:
@@ -766,20 +815,35 @@ def intermediate_build_review():
                             # Find next globally available new pod number for this vendor
                             while pod_num_candidate in globally_assigned_pods_by_vendor.get(vendor, set()):
                                 pod_num_candidate += 1
+                            
+                            # *** Calculate memory needed considering deduplication ***
+                            is_first_pod_on_host = not host_assignments_detail[host_prio]
+                            memory_needed = memory_gb_per_pod if is_first_pod_on_host else (memory_gb_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR)
 
-                            if available_mem_host >= memory_gb_per_pod:
-                                available_mem_host -= memory_gb_per_pod
-                                pods_assigned_to_this_host_list.append(pod_num_candidate)
+                            if available_mem_host >= memory_needed:
+                                available_mem_host -= memory_needed
+                                host_assignments_detail[host_prio].append(pod_num_candidate)
                                 pods_to_assign -= 1
                                 globally_assigned_pods_by_vendor[vendor].add(pod_num_candidate) # Mark globally
                                 pod_num_candidate += 1
-                            else: break # No memory for new
+                            else: 
+                                logger.debug(f"Host {host_prio} insufficient memory ({available_mem_host:.2f}GB) for new pod {pod_num_candidate} (needs ~{memory_needed:.2f}GB).")
+                                break # No memory for new
 
                     # Record assignment for this host and update *master* capacity map
-                    if pods_assigned_to_this_host_list:
-                        host_assignments_detail[host_prio].extend(sorted(pods_assigned_to_this_host_list))
-                        assignment_capacities_gb[host_prio] = available_mem_host # Update overall remaining capacity
-                        logger.info(f"Assigned pods {sorted(pods_assigned_to_this_host_list)} of '{final_labbuild_course}' to host '{host_prio}'. New tracked capacity: {available_mem_host:.2f} GB")
+                    if host_prio in host_assignments_detail and host_prio in assignment_capacities_gb:
+                     # Calculate total memory consumed on this host BY THIS COURSE (with dedupe)
+                     pods_on_this_host_count = len(host_assignments_detail[host_prio])
+                     mem_consumed_this_host_this_course = 0
+                     if pods_on_this_host_count > 0:
+                          mem_consumed_this_host_this_course = memory_gb_per_pod + (pods_on_this_host_count - 1) * memory_gb_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+
+                     # Calculate the NEW remaining capacity by subtracting consumed from ORIGINAL adjusted capacity before this course started
+                     original_adjusted_capacity = assignment_capacities_gb[host_prio] # Get capacity before this course touched it
+                     new_remaining_capacity = original_adjusted_capacity - mem_consumed_this_host_this_course
+                     assignment_capacities_gb[host_prio] = max(0, new_remaining_capacity) # Update master map
+
+                     logger.info(f"Host '{host_prio}' capacity updated after assigning {pods_on_this_host_count} pods of '{final_labbuild_course}'. New tracked capacity: {assignment_capacities_gb[host_prio]:.2f} GB")
                 # --- End Host Loop for Course ---
 
                 # Check assignment success
@@ -796,23 +860,32 @@ def intermediate_build_review():
             if error_determining_hosts:
                 processed_course['host_assignments_display'] = f"Error: {error_determining_hosts}"
                 processed_course['host_assignments_pods'] = {}
+                processed_course['total_memory_gb'] = 0.0 
             elif not host_assignments_detail:
                 processed_course['host_assignments_display'] = "Error: No suitable hosts found"
                 processed_course['host_assignments_pods'] = {}
+                processed_course['total_memory_gb'] = 0.0
             else:
                  display_parts = []
+                 calculated_total_deduped_memory = 0.0
                  for h, nums in sorted(host_assignments_detail.items()):
                      nums.sort()
                      ranges = []
+                     pods_on_this_host = len(nums)
+                     memory_on_this_host = 0
+                     if pods_on_this_host > 0:
+                         memory_on_this_host = memory_gb_per_pod + max(0, pods_on_this_host - 1) * memory_gb_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+                     calculated_total_deduped_memory += memory_on_this_host
                      if nums: # Generate compact ranges e.g., 1-3, 5
                          start = end = nums[0]
                          for i in range(1, len(nums)):
                              if nums[i] == end + 1: end = nums[i]
                              else: ranges.append(str(start) if start == end else f"{start}-{end}"); start = end = nums[i]
                          ranges.append(str(start) if start == end else f"{start}-{end}")
-                     display_parts.append(f"{h}: {', '.join(ranges)}")
+                     display_parts.append(f"{h}: Pods {', '.join(ranges)} ({memory_on_this_host:.1f} GB)")
                  processed_course['host_assignments_display'] = "; ".join(display_parts)
                  processed_course['host_assignments_pods'] = dict(host_assignments_detail) # Convert defaultdict back to dict for saving
+                 processed_course['total_memory_gb'] = round(calculated_total_deduped_memory, 2)
 
             processed_courses_for_review.append(processed_course)
             # --- End Course Loop ---
@@ -845,6 +918,7 @@ def intermediate_build_review():
                         "labbuild_course": p_course.get('labbuild_course'), # Ensure final name is set
                         "host_assignments_pods": p_course.get('host_assignments_pods', {}),
                         "host_assignments_display": p_course.get('host_assignments_display', ''),
+                        "total_memory_gb": p_course.get('total_memory_gb'), # *** ADD MEMORY TO SAVE ***
                         "review_timestamp": batch_timestamp,
                         "status": "pending_review"
                      }}
@@ -876,3 +950,161 @@ def intermediate_build_review():
         flash("An unexpected error occurred preparing the build review.", "danger")
         # Redirect back to the page where selection happened
         return redirect(url_for('main.view_upcoming_courses'))
+
+@bp.route('/build-rules/add', methods=['POST'])
+def add_build_rule():
+    """Adds a new build rule to the collection."""
+    if build_rules_collection is None:
+        flash("Build rules database collection is unavailable.", "danger")
+        return redirect(url_for('settings.view_build_rules')) # Redirect to settings blueprint
+
+    try:
+        rule_name = request.form.get('rule_name', '').strip()
+        priority_str = request.form.get('priority', '').strip()
+        conditions_json = request.form.get('conditions', '{}').strip()
+        actions_json = request.form.get('actions', '{}').strip()
+
+        # Basic Validation
+        if not rule_name:
+            flash("Rule Name is required.", "danger")
+            return redirect(url_for('settings.view_build_rules'))
+        try:
+            priority = int(priority_str)
+            if priority < 1: raise ValueError()
+        except (ValueError, TypeError):
+             flash("Priority must be a positive integer.", "danger")
+             return redirect(url_for('settings.view_build_rules'))
+        try:
+            conditions = json.loads(conditions_json)
+            if not isinstance(conditions, dict): raise ValueError()
+        except (json.JSONDecodeError, ValueError):
+             flash("Conditions field contains invalid JSON.", "danger")
+             return redirect(url_for('settings.view_build_rules'))
+        try:
+            actions = json.loads(actions_json)
+            if not isinstance(actions, dict): raise ValueError()
+        except (json.JSONDecodeError, ValueError):
+             flash("Actions field contains invalid JSON.", "danger")
+             return redirect(url_for('settings.view_build_rules'))
+
+        # Prepare document
+        new_rule = {
+            "rule_name": rule_name,
+            "priority": priority,
+            "conditions": conditions,
+            "actions": actions,
+            "created_at": datetime.datetime.now(pytz.utc) # Add timestamp
+        }
+
+        # Insert into database
+        result = build_rules_collection.insert_one(new_rule)
+        logger.info(f"Added new build rule '{rule_name}' with ID: {result.inserted_id}")
+        flash(f"Successfully added build rule '{rule_name}'.", "success")
+
+    except PyMongoError as e:
+        logger.error(f"Database error adding build rule: {e}")
+        flash("Database error adding rule.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error adding build rule: {e}", exc_info=True)
+        flash("An unexpected error occurred.", "danger")
+
+    return redirect(url_for('settings.view_build_rules'))
+
+
+@bp.route('/build-rules/update', methods=['POST'])
+def update_build_rule():
+    """Updates an existing build rule."""
+    if build_rules_collection is None:
+        flash("Build rules database collection is unavailable.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    rule_id_str = request.form.get('rule_id')
+    if not rule_id_str:
+        flash("Rule ID missing for update.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        rule_oid = ObjectId(rule_id_str) # Convert string ID to ObjectId
+    except InvalidId:
+        flash("Invalid Rule ID format.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        rule_name = request.form.get('rule_name', '').strip()
+        priority_str = request.form.get('priority', '').strip()
+        conditions_json = request.form.get('conditions', '{}').strip()
+        actions_json = request.form.get('actions', '{}').strip()
+
+        # Validation (similar to add)
+        if not rule_name: raise ValueError("Rule Name is required.")
+        try: priority = int(priority_str); assert priority >= 1
+        except: raise ValueError("Priority must be a positive integer.")
+        try: conditions = json.loads(conditions_json); assert isinstance(conditions, dict)
+        except: raise ValueError("Conditions field contains invalid JSON.")
+        try: actions = json.loads(actions_json); assert isinstance(actions, dict)
+        except: raise ValueError("Actions field contains invalid JSON.")
+
+        # Prepare update document
+        update_doc = {
+            "$set": {
+                "rule_name": rule_name,
+                "priority": priority,
+                "conditions": conditions,
+                "actions": actions,
+                "updated_at": datetime.datetime.now(pytz.utc) # Add update timestamp
+            }
+        }
+
+        # Perform update
+        result = build_rules_collection.update_one({"_id": rule_oid}, update_doc)
+
+        if result.matched_count == 0:
+            flash(f"Rule with ID {rule_id_str} not found.", "warning")
+        elif result.modified_count == 0:
+             flash(f"Rule '{rule_name}' was not modified (no changes detected).", "info")
+        else:
+            logger.info(f"Updated build rule '{rule_name}' (ID: {rule_id_str})")
+            flash(f"Successfully updated build rule '{rule_name}'.", "success")
+
+    except ValueError as ve: # Catch validation errors
+        flash(f"Invalid input: {ve}", "danger")
+    except PyMongoError as e:
+        logger.error(f"Database error updating build rule {rule_id_str}: {e}")
+        flash("Database error updating rule.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error updating build rule {rule_id_str}: {e}", exc_info=True)
+        flash("An unexpected error occurred while updating.", "danger")
+
+    return redirect(url_for('settings.view_build_rules'))
+
+
+@bp.route('/build-rules/delete/<rule_id>', methods=['POST'])
+def delete_build_rule(rule_id):
+    """Deletes a build rule by its ID."""
+    if build_rules_collection is None:
+        flash("Build rules database collection is unavailable.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        rule_oid = ObjectId(rule_id) # Convert string ID from URL
+    except InvalidId:
+        flash("Invalid Rule ID format for deletion.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        result = build_rules_collection.delete_one({"_id": rule_oid})
+
+        if result.deleted_count == 1:
+            logger.info(f"Deleted build rule with ID: {rule_id}")
+            flash("Successfully deleted build rule.", "success")
+        else:
+            flash(f"Rule with ID {rule_id} not found for deletion.", "warning")
+
+    except PyMongoError as e:
+        logger.error(f"Database error deleting build rule {rule_id}: {e}")
+        flash("Database error deleting rule.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error deleting build rule {rule_id}: {e}", exc_info=True)
+        flash("An unexpected error occurred during deletion.", "danger")
+
+    return redirect(url_for('settings.view_build_rules'))

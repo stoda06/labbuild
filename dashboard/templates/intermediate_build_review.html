@@ -12,7 +12,7 @@
         .host-error { color: var(--bs-danger); font-style: italic; }
         body.dark-mode .host-error { color: var(--status-failed-dark-text); }
         /* Ensure assignment column can wrap */
-        .col-host-assignments { min-width: 250px; white-space: normal; }
+        .col-host-assignments { min-width: 300px; white-space: normal; }
     </style>
 {% endblock %}
 
@@ -41,8 +41,9 @@
                             <th>LabBuild Course</th>
                             <th>Vendor</th>
                             <th>Start Date</th>
+                            <th>End Date</th>
                             <th>Trainer</th>
-                            <th class="col-host-assignments">Assigned Host(s) & Pod(s)</th> {# MODIFIED Header #}
+                            <th class="col-host-assignments">Assigned Host(s), Pod(s) & Memory</th> {# Updated Header Text #}
                         </tr>
                     </thead>
                     <tbody>
@@ -52,16 +53,19 @@
                             <td>{{ course.labbuild_course }}</td>
                             <td>{{ course.vendor | upper }}</td>
                             <td>{{ course.sf_start_date }}</td>
+                            <td>{{ course.sf_end_date }}</td>
                             <td>{{ course.sf_trainer }}</td>
-                            {# --- Display Host Assignments --- #}
-                            <td class="col-host-assignments"> {# Add class for potential styling #}
+                            {# --- Host Assignments Cell (Displays string with memory breakdown) --- #}
+                            <td class="col-host-assignments">
+                                {# Display the generated string which now includes memory #}
                                 {% set display_text = course.get('host_assignments_display', '') %}
-                                {% if display_text and 'Error' in display_text %} {# Check if it's an error message #}
+                                {% if display_text and ('Error:' in display_text or 'Failed' in display_text or 'Insufficient' in display_text) %}
                                     <span class="host-error">{{ display_text }}</span>
                                 {% elif display_text %}
-                                    {{ display_text }} {# Display the generated string like "host1: 1-3, 5; host2: 10-12" #}
+                                    {# Example: host1: Pods 1-2 (~14.0 GB); host2: Pods 3 (~8.0 GB) #}
+                                    {{ display_text }}
                                 {% else %}
-                                    <span class="host-error">Assignment Failed/Pending</span> {# Fallback #}
+                                    <span class="host-error">Assignment Failed/Pending</span>
                                 {% endif %}
                             </td>
                         </tr>

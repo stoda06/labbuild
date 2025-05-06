@@ -390,7 +390,7 @@ def view_upcoming_courses():
 @bp.route('/status/<run_id>')
 def run_status(run_id):
     """API endpoint to get the current status of a run."""
-    if not op_logs_collection:
+    if op_logs_collection is not None:
         return jsonify({"error": "Database unavailable"}), 503
 
     try:

@@ -81,11 +81,12 @@ def create_app():
         app.logger.error(f"Error starting scheduler in app factory: {e}")
 
     # --- Register Blueprints ---
-    from .routes import main, actions, api, sse
+    from .routes import main, actions, api, sse, settings
     app.register_blueprint(main.bp)
     app.register_blueprint(actions.bp)
     app.register_blueprint(api.bp)
     app.register_blueprint(sse.bp)
+    app.register_blueprint(settings.bp)
 
     # --- Register Cleanup ---
     atexit.register(shutdown_resources) # Ensure cleanup happens on exit
