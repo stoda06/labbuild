@@ -13,69 +13,124 @@
   {# Apply class server-side based on cookie #}
   <body class="{{ 'dark-mode' if current_theme == 'dark' else '' }}">
 
+    {# --- Top Navbar --- #}
     <nav class="navbar">
       <div class="container-fluid">
+        {# Navbar Brand on the left #}
         <a class="navbar-brand" href="{{ url_for('main.index') }}">LabBuild Dashboard</a>
-        {# --- Add Allocations Link --- #}
-        <div class="navbar-links">
+
+        {# Main Navbar Links - centered or to the left of settings icon #}
+        <div class="navbar-links mx-auto d-none d-lg-flex"> {# mx-auto to center if space allows, or adjust #}
+             <a href="{{ url_for('main.index') }}" class="nav-link">Dashboard</a>
              <a href="{{ url_for('main.view_allocations') }}" class="nav-link">Allocations</a>
              <a href="{{ url_for('main.view_upcoming_courses') }}" class="nav-link">Upcoming Courses</a>
-             <a href="{{ url_for('main.terminal') }}" class="nav-link">Terminal</a> {# Link to terminal if you kept it #}
-             <a href="{{ url_for('settings.view_build_rules') }}" class="nav-link">Settings</a>
-             {# Add other links here if needed #}
+             <a href="{{ url_for('main.terminal') }}" class="nav-link">Terminal</a>
         </div>
-        {# --- End Allocations Link --- #}
-        <button class="toggle-mode ms-auto" id="darkModeToggle" title="Toggle light/dark mode">
-            <i class="fas"></i> {# Icon set by JS below #}
+
+        {# --- Settings (Sidebar Toggle) Button - MOVED TO THE RIGHT --- #}
+        <button class="btn btn-outline-secondary ms-auto" type="button" id="sidebarToggle" title="Toggle Settings">
+            <i class="fas fa-cog"></i> {# CHANGED ICON to Gear #}
         </button>
       </div>
     </nav>
+    {# --- Sidebar (Initially Hidden) --- #}
+    <div class="sidebar" id="settingsSidebar">
+        <div class="sidebar-header">
+            <h5>Settings</h5>
+            <button type="button" class="btn-close btn-close-white" id="sidebarClose" aria-label="Close"></button>
+        </div>
+        <ul class="nav flex-column">
+            <li class="nav-item">
+                <a class="nav-link" href="{{ url_for('settings.view_build_rules') }}">
+                    <i class="fas fa-cogs me-2"></i>Build Rules
+                </a>
+            </li>
+            {# --- Dark Mode Toggle MOVED INTO SIDEBAR --- #}
+            <li class="nav-item">
+                <a class="nav-link" href="#" id="darkModeToggleSidebar" title="Toggle light/dark mode">
+                     <i class="fas me-2"></i> {# Icon will be set by JS #}
+                     <span id="darkModeToggleSidebarText">Toggle Mode</span>
+                </a>
+            </li>
+            {# --- End Dark Mode Toggle --- #}
+        </ul>
+         {# Links for smaller screens, mirroring navbar-links #}
+        <hr class="d-lg-none">
+        <div class="sidebar-bottom-links d-lg-none">
+             <ul class="nav flex-column">
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('main.index') }}"><i class="fas fa-tachometer-alt me-2"></i>Dashboard</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('main.view_allocations') }}"><i class="fas fa-tasks me-2"></i>Allocations</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('main.view_upcoming_courses') }}"><i class="fas fa-calendar-alt me-2"></i>Upcoming Courses</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('main.terminal') }}"><i class="fas fa-terminal me-2"></i>Terminal</a></li>
+             </ul>
+        </div>
+    </div>
+    {# --- End Sidebar --- #}
 
-    <main class="container mt-4">
-        {# Flash Messages #}
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            <div class="position-relative" style="z-index: 1050;">
-            {% for category, message in messages %}
-              <div class="alert alert-{{ category or 'info' }} alert-dismissible fade show" role="alert">
-                {{ message }} <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-              </div>
-            {% endfor %}
-            </div>
-          {% endif %}
-        {% endwith %}
+    {# --- Main Content Area (Pushes over when sidebar is open) --- #}
+    <div class="main-content" id="mainContent">
+        <main class="container mt-4">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+              {% if messages %}
+                <div class="position-relative" style="z-index: 1050;">
+                {% for category, message in messages %}
+                  <div class="alert alert-{{ category or 'info' }} alert-dismissible fade show" role="alert">
+                    {{ message }} <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                  </div>
+                {% endfor %}
+                </div>
+              {% endif %}
+            {% endwith %}
 
-        {% block content %}{% endblock %}
-    </main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 
     {% block scripts %}
     {# --- Dark Mode JS (Cookie Version) --- #}
     <script>
-        const toggleButton = document.getElementById('darkModeToggle');
-        const body = document.body;
-        const icon = toggleButton.querySelector('i');
+      // Elements for dark mode toggle (now potentially in sidebar)
+      const darkModeButtonSidebar = document.getElementById('darkModeToggleSidebar'); // New ID for sidebar toggle
+      const body = document.body;
 
-        function updateIcon() {
-            if (body.classList.contains('dark-mode')) {
-                icon.classList.remove('fa-moon'); icon.classList.add('fa-sun');
-            } else {
-                icon.classList.remove('fa-sun'); icon.classList.add('fa-moon');
-            }
-        }
-        document.addEventListener('DOMContentLoaded', updateIcon); // Set initial icon
+      function updateDarkModeVisuals() {
+          const isDarkMode = body.classList.contains('dark-mode');
+          if (darkModeButtonSidebar) { // Check if sidebar toggle exists
+              const iconElement = darkModeButtonSidebar.querySelector('i.fas');
+              const textElement = darkModeButtonSidebar.querySelector('span');
+              if (iconElement) {
+                  iconElement.className = 'fas me-2 '; // Base classes
+                  iconElement.classList.add(isDarkMode ? 'fa-sun' : 'fa-moon');
+              }
+              if (textElement) {
+                  textElement.textContent = isDarkMode ? 'Light Mode' : 'Dark Mode';
+              }
+          }
+      }
 
-        toggleButton.addEventListener('click', () => {
-            body.classList.toggle('dark-mode');
-            const isDarkMode = body.classList.contains('dark-mode');
-            const newMode = isDarkMode ? 'dark' : 'light';
-            const maxAge = 365 * 24 * 60 * 60;
-            document.cookie = `theme=${newMode}; path=/; max-age=${maxAge}; SameSite=Lax`;
-            updateIcon(); // Update icon on toggle
-            icon.classList.add('rotate'); setTimeout(() => { icon.classList.remove('rotate'); }, 500);
-        });
-    </script>
+      // Set initial state based on cookie/body class
+      document.addEventListener('DOMContentLoaded', updateDarkModeVisuals);
+
+      if (darkModeButtonSidebar) {
+          darkModeButtonSidebar.addEventListener('click', (event) => {
+              event.preventDefault(); // Prevent navigation if it's an <a> tag
+              body.classList.toggle('dark-mode');
+              const isDarkMode = body.classList.contains('dark-mode');
+              const newMode = isDarkMode ? 'dark' : 'light';
+              const maxAge = 365 * 24 * 60 * 60;
+              document.cookie = `theme=${newMode}; path=/; max-age=${maxAge}; SameSite=Lax`;
+              updateDarkModeVisuals(); // Update icon and text
+              // Optional: Add rotation if icon element exists
+              const iconElement = darkModeButtonSidebar.querySelector('i.fas');
+              if (iconElement) {
+                  iconElement.classList.add('rotate');
+                  setTimeout(() => { iconElement.classList.remove('rotate'); }, 500);
+              }
+          });
+      }
+  </script>
 
     {# --- Client-side Timezone Conversion JS --- #}
     <script>
@@ -87,6 +142,50 @@
             document.querySelectorAll('.local-datetime').forEach(span => { const isoTimestamp = span.dataset.timestamp; if (isoTimestamp && !span.classList.contains('js-formatted-time')) { span.textContent = formatLocalDateTime(isoTimestamp); span.classList.add('js-formatted-time'); } else if (!isoTimestamp && !span.classList.contains('js-formatted-time')) { span.textContent = 'N/A'; span.classList.add('js-formatted-time'); } });
          }
         document.addEventListener('DOMContentLoaded', updateLocalTimes); // Run on initial load
+    </script>
+    {# --- NEW Sidebar Toggle JS --- #}
+    {# --- Sidebar Toggle JS (Logic is the same) --- #}
+    <script>
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const sidebarClose = document.getElementById('sidebarClose');
+        const settingsSidebar = document.getElementById('settingsSidebar');
+        const mainContent = document.getElementById('mainContent');
+        const bodyElement = document.body;
+
+        function openSidebar() {
+            if (settingsSidebar) settingsSidebar.classList.add('open');
+            if (mainContent) mainContent.classList.add('shifted');
+            if (bodyElement) bodyElement.classList.add('sidebar-open-no-scroll');
+        }
+
+        function closeSidebar() {
+            if (settingsSidebar) settingsSidebar.classList.remove('open');
+            if (mainContent) mainContent.classList.remove('shifted');
+            if (bodyElement) bodyElement.classList.remove('sidebar-open-no-scroll');
+        }
+
+        if (sidebarToggle) {
+            sidebarToggle.addEventListener('click', function() {
+                if (settingsSidebar && settingsSidebar.classList.contains('open')) {
+                    closeSidebar();
+                } else {
+                    openSidebar();
+                }
+            });
+        }
+        if (sidebarClose) {
+            sidebarClose.addEventListener('click', closeSidebar);
+        }
+
+        document.addEventListener('click', function(event) {
+            if (settingsSidebar && settingsSidebar.classList.contains('open')) {
+                const isClickInsideSidebar = settingsSidebar.contains(event.target);
+                const isClickOnToggle = sidebarToggle ? sidebarToggle.contains(event.target) : false;
+                if (!isClickInsideSidebar && !isClickOnToggle) {
+                    closeSidebar();
+                }
+            }
+        });
     </script>
     {% endblock %}
   </body>

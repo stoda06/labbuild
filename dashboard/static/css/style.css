@@ -1,14 +1,15 @@
 /* dashboard/static/css/style.css */
 
-/* Import Montserrat font */
+/* --- Google Font Import --- */
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
 
 /*
-   -------------
-   LIGHT MODE (DEFAULT)
-   -------------
+   ========================================
+   1. CSS Variables (Themes & Status Colors)
+   ========================================
 */
-:root { /* Define variables for easier management */
+:root {
+    /* Light Mode Colors */
     --body-bg-light: #ECECEC;
     --body-color-light: #000000;
     --navbar-bg-light: #FFFFFF;
@@ -24,10 +25,13 @@
     --table-border-light: #DDDDDD;
     --table-striped-bg-light: rgba(0, 0, 0, 0.03);
     --table-hover-bg-light: rgba(0, 0, 0, 0.04);
+    --link-color-light: #0d6efd; /* Bootstrap default link blue */
+    --link-hover-color-light: #0a58ca;
 
+    /* Dark Mode Colors */
     --body-bg-dark: #121212;
-    --body-color-dark: #E0E0E0; /* Slightly off-white */
-    --navbar-bg-dark: #1e1e1e; /* Darker navbar */
+    --body-color-dark: #E0E0E0;
+    --navbar-bg-dark: #1e1e1e;
     --navbar-color-dark: #E0E0E0;
     --card-bg-dark: #2A2A2A;
     --card-color-dark: #E0E0E0;
@@ -41,30 +45,31 @@
     --table-border-dark: #3A3A3A;
     --table-striped-bg-dark: rgba(255, 255, 255, 0.05);
     --table-hover-bg-dark: rgba(255, 255, 255, 0.075);
-
-    /* Add specific dark text colors */
-    --text-color-dark: #e0e0e0; /* Main text */
-    --text-muted-dark: #adb5bd; /* Muted text */
-    --table-color-dark: var(--text-color-dark);
-    --table-striped-color-dark: var(--text-color-dark);
-    --table-hover-color-dark: var(--text-color-dark);
-    --link-color-dark: #69a6f3; /* Lighter blue for links */
+    --link-color-dark: #69a6f3; /* Lighter blue for links in dark mode */
     --link-hover-color-dark: #8cbaff;
 
-    --status-running: #fd7e14;
-    --status-completed: #198754;
-    --status-completed_with_errors: #ffc107;
-    --status-failed: #C62828;
-    --status-failed_exception: #C62828;
-    --status-terminated_by_user: #6c757d;
-    --status-unknown: #6c757d;
-    --status-skipped: #adb5bd;
-    --status-success: #198754;
+    /* Status Colors (General) */
+    --status-running: #fd7e14;         /* Orange */
+    --status-completed: #198754;       /* Green */
+    --status-completed_with_errors: #ffc107; /* Yellow */
+    --status-failed: #C62828;          /* Dark Red */
+    --status-failed_exception: #C62828; /* Dark Red */
+    --status-terminated_by_user: #6c757d;/* Grey */
+    --status-unknown: #6c757d;         /* Grey */
+    --status-skipped: #adb5bd;         /* Light Grey */
+    --status-success: #198754;         /* Green */
 
-    --status-failed-dark-text: #ffbabb;
-    --status-success-dark-text: #a6e9a6;
+    /* Status Text Colors for Dark Mode */
+    --status-failed-dark-text: #ffbabb; /* Light red for dark bg */
+    --status-success-dark-text: #a6e9a6;/* Light green for dark bg */
+    --status-warning-dark-text: #ffeeba;/* Light yellow for dark bg */
 }
 
+/*
+   ========================================
+   2. Base Body & Layout Styles
+   ========================================
+*/
 body {
     font-family: 'Montserrat', sans-serif;
     background-color: var(--body-bg-light);
@@ -72,10 +77,21 @@ body {
     margin: 0;
     padding: 0;
     transition: background-color 0.3s ease, color 0.3s ease;
-    padding-top: 70px; /* Adjust based on navbar height */
+    padding-top: 56px; /* Fixed navbar height */
     min-height: 100vh;
 }
 
+.container { /* Main content container */
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+/*
+   ========================================
+   3. Navbar Styles
+   ========================================
+*/
 .navbar {
     background-color: var(--navbar-bg-light);
     padding: 0.5rem 1rem;
@@ -85,44 +101,147 @@ body {
     top: 0;
     right: 0;
     left: 0;
-    z-index: 1030;
-    border-bottom: 1px solid var(--card-border-light); /* Use consistent border */
-    display: flex; /* Ensure flex is enabled */
-    align-items: center; /* Align items vertically */
+    z-index: 1030; /* Below sidebar */
+    border-bottom: 1px solid var(--card-border-light);
+    display: flex;
+    align-items: center;
+    height: 56px; /* Standard height */
 }
 
 .navbar-brand {
-    font-weight: 700; /* Bold brand */
+    font-weight: 700;
     color: inherit !important;
+    margin-right: 1rem;
 }
 
-/* Container for nav links (replaces ul, aligns items) */
-.navbar-links {
+.navbar-links { /* For main links in navbar */
     display: flex;
-    gap: 0.5rem; /* Spacing between links */
-    margin-left: 1rem; /* Space from brand */
+    gap: 0.25rem;
 }
 
-.nav-link {
+.navbar-links a.nav-link {
+    padding: 0.5rem 0.75rem;
     text-decoration: none;
-    color: inherit !important; /* Use !important to override Bootstrap if needed */
+    color: inherit !important;
     font-weight: bold;
-    padding: 0.5rem 1rem;
     border-radius: 0.25rem;
     transition: background-color 0.2s ease;
 }
-
-.nav-link:hover {
-    background-color: rgba(0, 0, 0, 0.05); /* slight highlight */
+.navbar-links a.nav-link:hover {
+    background-color: rgba(0, 0, 0, 0.05);
 }
 
+/* Settings (Sidebar Toggle) Button */
+#sidebarToggle {
+    font-size: 1.1rem;
+    padding: 0.375rem 0.75rem;
+    /* ms-auto in HTML pushes it right */
+}
+
+/*
+   ========================================
+   4. Sidebar Styles (Slides from Right)
+   ========================================
+*/
+.sidebar {
+    height: 100%;
+    width: 280px;
+    position: fixed;
+    z-index: 1031; /* Above navbar */
+    top: 0;
+    right: -280px; /* Initially off-screen to the right */
+    left: auto;
+    background-color: var(--card-bg-light);
+    border-left: 1px solid var(--card-border-light); /* Border on the left */
+    overflow-x: hidden;
+    transition: right 0.3s ease-in-out; /* Animate 'right' property */
+    padding-top: 0; /* Starts from very top */
+    box-shadow: -2px 0 5px rgba(0,0,0,0.1); /* Shadow on the left edge */
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar.open {
+    right: 0; /* Slide in from the right */
+}
+
+.sidebar-header {
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--card-border-light);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 56px; /* Match navbar height */
+    background-color: var(--navbar-bg-light); /* Match navbar for consistency */
+}
+.sidebar-header h5 { margin-bottom: 0; color: inherit; }
+
+.sidebar .nav-link {
+    padding: 0.85rem 1.25rem;
+    color: var(--body-color-light);
+    display: flex;
+    align-items: center;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    text-decoration: none;
+    border-right: 3px solid transparent; /* Active indicator on the right */
+    border-left: none;
+}
+.sidebar .nav-link:hover,
+.sidebar .nav-link.active {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: var(--link-color-light); /* Use light mode link color */
+    border-right-color: var(--link-color-light);
+}
+.sidebar .nav-link i.fas {
+    width: 24px;
+    text-align: center;
+    font-size: 0.9em;
+    margin-right: 0.75rem; /* Space between icon and text */
+}
+
+.sidebar-bottom-links { /* For small screen nav links in sidebar */
+    margin-top: auto;
+    padding-bottom: 1rem;
+    border-top: 1px solid var(--card-border-light);
+}
+.sidebar-bottom-links .nav-link {
+    font-size: 0.9rem;
+}
+
+/*
+   ========================================
+   5. Main Content Area Styles
+   ========================================
+*/
+.main-content {
+    transition: margin-right 0.3s ease-in-out, width 0.3s ease-in-out;
+    padding-top: 56px; /* Adjust to navbar height if navbar is outside main-content */
+    margin-left: 0;
+    margin-right: 0; /* Default no right margin */
+    width: 100%;
+}
+.main-content.shifted { /* When sidebar is open */
+    margin-left: 0;
+    margin-right: 280px; /* Push content by sidebar width */
+    width: calc(100% - 280px); /* Adjust width */
+}
+
+body.sidebar-open-no-scroll { /* Optional: prevent body scroll */
+    overflow: hidden;
+}
+
+/*
+   ========================================
+   6. Card & Form Element Styles
+   ========================================
+*/
 .card {
     border-radius: 0.5rem;
     background-color: var(--card-bg-light);
     color: var(--card-color-light);
     margin-bottom: 2rem;
     transition: background-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10); /* Softer shadow */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
     border: 1px solid var(--card-border-light);
 }
 
@@ -130,18 +249,104 @@ body {
     background-color: var(--card-header-bg-light);
     color: var(--card-header-color-light);
     font-size: 1.2rem;
-    font-weight: 700; /* Bold header */
+    font-weight: 700;
     padding: 1rem 1.5rem;
     border-bottom: 1px solid var(--card-border-light);
-    border-top-left-radius: calc(0.5rem - 1px); /* Adjust for border */
+    border-top-left-radius: calc(0.5rem - 1px);
     border-top-right-radius: calc(0.5rem - 1px);
     transition: background-color 0.3s ease, color 0.3s ease;
 }
 
+.card-body {
+    padding: 1.5rem;
+}
+
+.form-label {
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.form-select,
+.form-control {
+    border-radius: 0.25rem;
+    border: 1px solid var(--form-border-light);
+    padding: 0.5rem 0.75rem;
+    font-size: 1rem;
+    width: 100%;
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+    background-color: var(--form-bg-light);
+    color: var(--form-color-light);
+}
+.form-control::placeholder {
+     color: #6c757d;
+     opacity: 1;
+}
+
 /*
-   -------------
-   DARK MODE OVERRIDES
-   -------------
+   ========================================
+   7. Button Styles
+   ========================================
+*/
+.btn {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: background-color 0.2s ease, opacity 0.2s ease;
+}
+.btn:hover {
+     opacity: 0.85;
+}
+.btn-primary { background-color: #0d6efd; color: #FFFFFF; }
+.btn-secondary { background-color: #6c757d; color: #FFFFFF; }
+.btn-success { background-color: #198754; color: #FFFFFF; }
+.btn-danger { background-color: #C62828; color: #FFFFFF; }
+.btn-danger:hover { background-color: #B71C1C; opacity: 1;}
+.btn-info { background-color: #0dcaf0; color: #000; } /* Bootstrap info */
+.btn-warning { background-color: #ffc107; color: #000; } /* Bootstrap warning */
+
+/* For action buttons in tables (edit, delete, clone) */
+.btn-action-group button, .btn-action-group a {
+    margin-left: 5px;
+}
+
+
+/*
+   ========================================
+   8. Table Styles
+   ========================================
+*/
+.table { /* Bootstrap variable overrides */
+    --bs-table-color: inherit;
+    --bs-table-bg: transparent;
+    --bs-table-border-color: var(--table-border-light);
+    --bs-table-striped-color: inherit;
+    --bs-table-striped-bg: var(--table-striped-bg-light);
+    --bs-table-hover-color: inherit;
+    --bs-table-hover-bg: var(--table-hover-bg-light);
+    margin-bottom: 0; /* Remove default Bootstrap margin */
+}
+.table th, .table td {
+    padding: 0.75rem;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--table-border-light);
+}
+.table thead th {
+     border-bottom-width: 2px;
+     font-weight: 700;
+     border-top: 0;
+}
+.table > :not(caption) > :last-child > * { /* Remove bottom border from last table row */
+     border-bottom-width: 0;
+}
+
+/*
+   ========================================
+   9. Dark Mode Overrides
+   ========================================
 */
 body.dark-mode {
     background-color: var(--body-bg-dark);
@@ -152,13 +357,13 @@ body.dark-mode .navbar {
     color: var(--navbar-color-dark);
     border-bottom: 1px solid var(--card-border-dark);
 }
-body.dark-mode .nav-link:hover {
+body.dark-mode .navbar-links a.nav-link:hover {
     background-color: rgba(255, 255, 255, 0.1);
 }
 body.dark-mode .card {
     background-color: var(--card-bg-dark);
     color: var(--card-color-dark);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25); /* Darker shadow */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
     border: 1px solid var(--card-border-dark);
 }
 body.dark-mode .card-header {
@@ -166,131 +371,16 @@ body.dark-mode .card-header {
     color: var(--card-header-color-dark);
     border-bottom: 1px solid var(--card-border-dark);
 }
-
-/*
-   -------------
-   SHARED STYLES (Integrating with Bootstrap where possible)
-   -------------
-*/
-.toggle-mode {
-    cursor: pointer;
-    padding: 0.5rem 0.75rem; /* Adjust padding */
-    border: none;
-    background: transparent;
-    color: inherit;
-    font-size: 1.2rem; /* Slightly smaller icon */
-    outline: none;
-    line-height: 1;
-    margin-left: auto; /* Pushes toggle to the right */
-    border-radius: 50%; /* Make it circular */
-    transition: background-color 0.2s ease;
-}
-.toggle-mode:hover {
-     background-color: rgba(128, 128, 128, 0.2); /* Subtle hover */
-}
-.toggle-mode i {
-    transition: transform 0.5s ease;
-    display: block; /* Prevents extra space */
-}
-.rotate {
-    transform: rotate(360deg);
-}
-
-/* Use Bootstrap container */
-.container {
-    max-width: 1200px; /* Or your preferred width */
-    margin: 0 auto;
-    padding: 1rem;
-}
-
-.card-body {
-    padding: 1.5rem;
-}
-
-.form-label {
-    font-weight: 600; /* Bold labels */
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem; /* Slightly smaller labels */
-}
-
-.form-select,
-.form-control {
-    border-radius: 0.25rem;
-    border: 1px solid var(--form-border-light);
-    padding: 0.5rem 0.75rem; /* Standard padding */
-    font-size: 1rem;
-    width: 100%;
-    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
-    background-color: var(--form-bg-light);
-    color: var(--form-color-light);
-}
-.form-control::placeholder {
-     color: #6c757d; /* Bootstrap default placeholder color */
-     opacity: 1;
-}
-
 body.dark-mode .form-select,
 body.dark-mode .form-control {
     background-color: var(--form-bg-dark);
     color: var(--form-color-dark);
     border: 1px solid var(--form-border-dark);
 }
-body.dark-mode .form-control::placeholder {
-    color: var(--form-placeholder-dark);
+body.dark-mode .form-control::placeholder { color: var(--form-placeholder-dark); }
+body.dark-mode .form-select { /* SVG arrow for dark mode select */
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23cccccc' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
 }
-body.dark-mode .form-select {
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23cccccc' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e"); /* White arrow for dark select */
-}
-
-/* Buttons - Using reference style for danger, adapt others */
-.btn {
-    padding: 0.5rem 1rem;
-    border: none;
-    border-radius: 0.25rem;
-    cursor: pointer;
-    font-size: 1rem;
-    font-weight: 600; /* Bold buttons */
-    transition: background-color 0.2s ease, opacity 0.2s ease;
-}
-.btn:hover {
-     opacity: 0.85;
-}
-
-.btn-primary { background-color: #0d6efd; color: #FFFFFF; }
-.btn-secondary { background-color: #6c757d; color: #FFFFFF; }
-.btn-success { background-color: #198754; color: #FFFFFF; }
-.btn-danger { background-color: #C62828; color: #FFFFFF; } /* From reference */
-.btn-danger:hover { background-color: #B71C1C; opacity: 1;} /* From reference */
-
-
-/* Tables */
-.table {
-    --bs-table-color: inherit;
-    --bs-table-bg: transparent;
-    --bs-table-border-color: var(--table-border-light);
-    --bs-table-striped-color: inherit;
-    --bs-table-striped-bg: var(--table-striped-bg-light);
-    --bs-table-hover-color: inherit;
-    --bs-table-hover-bg: var(--table-hover-bg-light);
-    margin-bottom: 0;
-    border-collapse: separate; /* Needed for rounded corners if table has border */
-    border-spacing: 0;
-}
-.table th, .table td {
-    padding: 0.75rem;
-    vertical-align: middle;
-    border-bottom: 1px solid var(--table-border-light); /* Add bottom border to cells */
-}
-.table thead th {
-     border-bottom-width: 2px; /* Thicker border for header */
-     font-weight: 700;
-     border-top: 0; /* Remove top border on header */
-}
-/* Remove bottom border from last row's cells */
-.table > :not(caption) > :last-child > * {
-     border-bottom-width: 0;
-}
-
 body.dark-mode .table {
     --bs-table-border-color: var(--table-border-dark);
     --bs-table-striped-bg: var(--table-striped-bg-dark);
@@ -300,65 +390,98 @@ body.dark-mode .table th, body.dark-mode .table td {
      border-bottom: 1px solid var(--table-border-dark);
 }
 
-/* Status Colors */
+/* Dark Mode for Sidebar */
+body.dark-mode .sidebar {
+    background-color: var(--card-bg-dark);
+    border-left: 1px solid var(--card-border-dark); /* Adjusted for right sidebar */
+}
+body.dark-mode .sidebar-header {
+    border-bottom: 1px solid var(--card-border-dark);
+    background-color: var(--navbar-bg-dark);
+}
+body.dark-mode .sidebar .btn-close {
+    filter: invert(1) grayscale(100%) brightness(200%);
+}
+body.dark-mode .sidebar .nav-link { color: var(--body-color-dark); }
+body.dark-mode .sidebar .nav-link:hover,
+body.dark-mode .sidebar .nav-link.active {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: var(--link-color-dark);
+    border-right-color: var(--link-color-dark); /* Adjusted for right sidebar */
+}
+body.dark-mode .sidebar-bottom-links { border-top-color: var(--card-border-dark); }
+
+/*
+   ========================================
+   10. Utility & Specific Component Styles
+   ========================================
+*/
+/* Dark Mode Toggle Button Icon (Originally in navbar, now in sidebar logic) */
+.rotate { transform: rotate(360deg); transition: transform 0.5s ease; }
+
+/* Status Text Colors */
 .status-running { color: var(--status-running); }
 .status-completed { color: var(--status-completed); }
 .status-completed_with_errors { color: var(--status-completed_with_errors); }
-.status-failed { color: var(--status-failed); }
-.status-failed_exception { color: var(--status-failed_exception); }
-.status-terminated_by_user { color: var(--status-terminated_by_user); }
-.status-unknown { color: var(--status-unknown); }
+.status-failed, .status-failed_exception { color: var(--status-failed); }
+.status-terminated_by_user, .status-unknown { color: var(--status-unknown); }
 .status-skipped { color: var(--status-skipped); }
 .status-success { color: var(--status-success); }
 
-/* Row specific text colors for dark mode if needed */
+/* Dark Mode Row Text for Status (if table row classes are used) */
 body.dark-mode .table-danger > :not(caption) > * > * { color: var(--status-failed-dark-text) !important; }
 body.dark-mode .table-success > :not(caption) > * > * { color: var(--status-success-dark-text) !important; }
+body.dark-mode .table-warning > :not(caption) > * > * { color: var(--status-warning-dark-text) !important; }
 
-/* Align spinner */
+
+/* Spinner alignment in status cells */
 .status-cell .spinner-border {
     vertical-align: text-bottom;
-    width: 1rem; /* Smaller spinner */
-    height: 1rem;
-    border-width: 0.15em;
+    width: 1rem; height: 1rem; border-width: 0.15em;
 }
 
 /* Log Detail Page Specifics */
-.run-summary-card p, .pod-status-card p {
-    margin-bottom: 0.6rem;
+.run-summary-card p, .pod-status-card p { margin-bottom: 0.6rem; }
+.pod-status-card pre { /* For pod_statuses in log_detail.html */
+    max-height: 250px; overflow-y: auto; background-color: rgba(0,0,0,0.04);
+    padding: 0.75rem; border-radius: 4px; font-size: 0.85rem;
+    white-space: pre-wrap; word-wrap: break-word;
 }
-.pod-status-card pre {
-    max-height: 250px;
-    overflow-y: auto;
-    background-color: rgba(0,0,0,0.04);
-    padding: 0.75rem;
-    border-radius: 4px;
-    font-size: 0.85rem;
-    white-space: pre-wrap; /* Wrap long lines */
-    word-wrap: break-word;
+body.dark-mode .pod-status-card pre { background-color: rgba(255,255,255,0.06); }
+
+/* Settings Page - Build Rules Table (from settings_build_rules.html) */
+.rules-table th, .rules-table td { vertical-align: middle; font-size: 0.9rem; }
+.rules-table td pre {
+    background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 5px;
+    border-radius: 3px; max-height: 100px; overflow-y: auto;
+    font-size: 0.8rem; margin-bottom: 0; white-space: pre-wrap; word-break: break-word;
 }
-body.dark-mode .pod-status-card pre {
-     background-color: rgba(255,255,255,0.06);
+body.dark-mode .rules-table td pre { background-color: #333; border-color: #555; color: #eee;}
+.modal-body textarea.form-control-sm { font-size: 0.8rem; font-family: monospace; min-height: 150px;}
+
+
+/*
+   ========================================
+   11. Responsive Adjustments
+   ========================================
+*/
+@media (max-width: 991.98px) { /* Bootstrap LG breakpoint down */
+    .navbar-links { /* Hide main nav links in top bar for smaller screens */
+        display: none !important;
+    }
+    #sidebarToggle { /* Ensure settings toggle is always visible */
+        display: inline-block !important;
+    }
+     .main-content.shifted {
+        margin-right: 0; /* Sidebar might overlay on smaller screens, or adjust differently */
+        width: 100%;
+    }
+    /* You might want sidebar to overlay on small screens instead of pushing content */
 }
 
-/* Responsive Adjustments */
-@media (max-width: 768px) {
-    body {
-        padding-top: 60px; /* Adjust if navbar height changes */
-    }
-    .card {
-        padding: 1rem;
-        margin-bottom: 1.5rem;
-    }
-     .card-header {
-         font-size: 1.1rem;
-         padding: 0.8rem 1rem;
-    }
-    .card-body {
-         padding: 1rem;
-    }
-    .toggle-mode {
-         font-size: 1.1rem;
-         padding: 0.4rem 0.6rem;
-    }
+@media (max-width: 768px) { /* MD breakpoint down */
+    body { padding-top: 56px; /* Adjust if navbar height changes */ }
+    .card { padding: 1rem; margin-bottom: 1.5rem; }
+    .card-header { font-size: 1.1rem; padding: 0.8rem 1rem; }
+    .card-body { padding: 1rem; }
 }
