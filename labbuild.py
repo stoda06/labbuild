@@ -22,9 +22,8 @@ from logger.log_config import setup_logger # Setup logger function
 from operation_logger import OperationLogger # Import logger class
 from listing import list_vendor_courses, list_allocations # Import listing functions
 # Import command handlers and the special status constant
-from commands import setup_environment, teardown_environment, manage_environment, COMPONENT_LIST_STATUS
+from commands import setup_environment, teardown_environment, manage_environment, COMPONENT_LIST_STATUS, test_environment
 from config_utils import fetch_and_prepare_course_config # Needed for arg validation
-
 # -----------------------------------------------------------------------------
 # Environment Setup
 # -----------------------------------------------------------------------------
@@ -111,6 +110,16 @@ def main():
     teardown_parser.add_argument('--db-only', action='store_true', help='Only remove database allocation record.')
     teardown_parser.set_defaults(func=teardown_environment)
 
+    # -------------------------------
+    # Test Subcommand
+    # -------------------------------
+    test_parser = subparsers.add_parser("test", help="Run test suite for labs")
+    test_parser.add_argument("-v", "--vendor", required=True, help="Vendor name")
+    test_parser.add_argument("-s", "--start_pod", type=int, required=True, help="Start pod number")
+    test_parser.add_argument("-e", "--end_pod", type=int, required=True, help="End pod number")
+    test_parser.add_argument("-H", "--host", required=True, help="ESXi host name")
+    test_parser.add_argument("-g", "--group", required=True, help="Course group/section") 
+
     argcomplete.autocomplete(parser)
 
     try:
@@ -139,6 +148,10 @@ def main():
         else:
             # No command and not listing
             parser.error("A command (setup, manage, teardown) is required if not using -l.")
+    
+    if args.command == 'test':
+        test_environment(args)
+        exit()
 
     # Ensure --test is not used with commands
     if args.test and args.command:

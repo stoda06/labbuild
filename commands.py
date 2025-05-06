@@ -6,10 +6,11 @@
 import logging
 import sys
 # argparse is no longer directly needed here, keep for type hints if desired
-# import argparse
+import argparse
 from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 from utils import wait_for_tasks
+from labs.test import checkpoint as test_checkpoint 
 
 # Import local utilities and helpers
 from config_utils import fetch_and_prepare_course_config, extract_components, get_host_by_name
@@ -20,7 +21,8 @@ from operation_logger import OperationLogger
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client
 from monitor.prtg import PRTGManager
 
-import labs.setup.checkpoint as checkpoint
+import labs.setup.checkpoint as checkpoint 
+from labs.test import checkpoint as test_checkpoint 
 import labs.manage.vm_operations as vm_operations
 
 logger = logging.getLogger('labbuild.commands')
@@ -28,6 +30,8 @@ logger = logging.getLogger('labbuild.commands')
 # --- Constants for return status ---
 COMPONENT_LIST_STATUS = "component_list_displayed"
 
+def test_environment(args):
+    test_checkpoint.main(args)
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
 def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
