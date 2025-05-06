@@ -1,0 +1,52 @@
+/* dashboard/static/css/settings_course_configs.css */
+
+/* Table styling for course configurations */
+.configs-table th,
+.configs-table td {
+    vertical-align: middle;
+    font-size: 0.9rem;
+}
+
+/* Styling for the <pre> tag showing JSON config */
+.configs-table td pre {
+    background-color: #f8f9fa; /* Light mode background */
+    border: 1px solid #dee2e6; /* Light mode border */
+    padding: 10px;
+    border-radius: 3px;
+    max-height: 200px; /* Limit height and enable scroll */
+    overflow-y: auto;
+    font-size: 0.8rem; /* Smaller font for JSON */
+    margin-bottom: 0;
+    white-space: pre-wrap; /* Allow wrapping */
+    word-break: break-all; /* Break long words/strings */
+}
+
+/* Dark mode styling for <pre> tag */
+body.dark-mode .configs-table td pre {
+    background-color: #333;
+    border-color: #555;
+    color: #eee;
+}
+
+/* Action buttons in the table */
+.btn-action-group button,
+.btn-action-group a {
+    margin-left: 5px; /* Spacing between action buttons */
+}
+
+/* Modal styling */
+.modal-body textarea {
+    min-height: 250px; /* Ensure ample space for JSON editing */
+    font-family: monospace; /* Use monospace font for JSON */
+    font-size: 0.8rem;
+}
+
+.modal-lg { /* Make modals wider for better JSON visibility */
+    max-width: 900px;
+}
+
+/* Helper class for dynamic error messages in modals */
+.dynamic-error-msg {
+    font-size: 0.8rem; /* Smaller error messages */
+    margin-top: 0.25rem; /* Space above the message */
+}

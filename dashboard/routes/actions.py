@@ -1108,3 +1108,172 @@ def delete_build_rule(rule_id):
         flash("An unexpected error occurred during deletion.", "danger")
 
     return redirect(url_for('settings.view_build_rules'))
+
+@bp.route('/course-configs/add', methods=['POST'])
+def add_course_config():
+    """Adds a new course configuration."""
+    if course_config_collection is None:
+        flash("Course config collection unavailable.", "danger")
+        return redirect(url_for('settings.view_course_configs')) # Redirect to settings blueprint
+
+    config_json_str = request.form.get('config_json', '{}').strip()
+    try:
+        new_config_data = json.loads(config_json_str)
+        if not isinstance(new_config_data, dict):
+            raise ValueError("Configuration must be a valid JSON object.")
+
+        # Validate required fields
+        course_name = new_config_data.get('course_name')
+        vendor_shortcode = new_config_data.get('vendor_shortcode')
+        if not course_name or not isinstance(course_name, str) or not course_name.strip():
+            flash("Valid 'course_name' (string) is required in the JSON.", "danger")
+            return redirect(url_for('settings.view_course_configs'))
+        if not vendor_shortcode or not isinstance(vendor_shortcode, str) or not vendor_shortcode.strip():
+            flash("Valid 'vendor_shortcode' (string) is required in the JSON.", "danger")
+            return redirect(url_for('settings.view_course_configs'))
+
+        new_config_data['course_name'] = course_name.strip() # Ensure trimmed
+        new_config_data['vendor_shortcode'] = vendor_shortcode.strip().lower() # Trim & lowercase vendor
+
+        # Add created_at timestamp
+        new_config_data['created_at'] = datetime.datetime.now(pytz.utc)
+
+        # Attempt to insert
+        # Consider adding a unique index on (course_name, vendor_shortcode) in MongoDB
+        # to prevent exact duplicates if course_name itself isn't globally unique.
+        # For now, let's assume course_name should be unique.
+        if course_config_collection.count_documents({"course_name": new_config_data['course_name']}) > 0:
+            flash(f"Course configuration with name '{new_config_data['course_name']}' already exists.", "warning")
+            return redirect(url_for('settings.view_course_configs'))
+
+        result = course_config_collection.insert_one(new_config_data)
+        logger.info(f"Added new course config '{new_config_data['course_name']}' with ID: {result.inserted_id}")
+        flash(f"Successfully added course configuration '{new_config_data['course_name']}'.", "success")
+
+    except json.JSONDecodeError:
+        flash("Invalid JSON format for configuration.", "danger")
+    except ValueError as ve: # Catch our custom validation errors
+        flash(str(ve), "danger")
+    except PyMongoError as e:
+        logger.error(f"Database error adding course config: {e}")
+        if e.code == 11000: # Duplicate key error
+             flash(f"A course configuration with that name or key combination already exists.", "danger")
+        else:
+             flash("Database error adding configuration.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error adding course config: {e}", exc_info=True)
+        flash("An unexpected error occurred.", "danger")
+
+    return redirect(url_for('settings.view_course_configs'))
+
+
+@bp.route('/course-configs/update', methods=['POST'])
+def update_course_config():
+    """Updates an existing course configuration."""
+    if course_config_collection is None:
+        flash("Course config collection unavailable.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    config_id_str = request.form.get('config_id')
+    config_json_str = request.form.get('config_json', '{}').strip()
+
+    if not config_id_str:
+        flash("Configuration ID missing for update.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+    try:
+        config_oid = ObjectId(config_id_str)
+    except InvalidId:
+        flash("Invalid Configuration ID format.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    try:
+        updated_config_data = json.loads(config_json_str)
+        if not isinstance(updated_config_data, dict):
+            raise ValueError("Configuration must be a valid JSON object.")
+
+        # Validate required fields are still present and valid
+        course_name = updated_config_data.get('course_name')
+        vendor_shortcode = updated_config_data.get('vendor_shortcode')
+        if not course_name or not isinstance(course_name, str) or not course_name.strip():
+            raise ValueError("Valid 'course_name' (string) is required.")
+        if not vendor_shortcode or not isinstance(vendor_shortcode, str) or not vendor_shortcode.strip():
+            raise ValueError("Valid 'vendor_shortcode' (string) is required.")
+
+        updated_config_data['course_name'] = course_name.strip()
+        updated_config_data['vendor_shortcode'] = vendor_shortcode.strip().lower()
+
+        # Add updated_at timestamp
+        updated_config_data['updated_at'] = datetime.datetime.now(pytz.utc)
+
+        # Remove _id from update data if it was accidentally included from textarea
+        updated_config_data.pop('_id', None)
+
+        # Check for name collision if course_name is being changed to an existing one
+        # (and it's not the current document being edited)
+        existing_with_new_name = course_config_collection.find_one({
+            "course_name": updated_config_data['course_name'],
+            "_id": {"$ne": config_oid}
+        })
+        if existing_with_new_name:
+             flash(f"Another course configuration with the name '{updated_config_data['course_name']}' already exists.", "danger")
+             return redirect(url_for('settings.view_course_configs'))
+
+
+        result = course_config_collection.update_one(
+            {"_id": config_oid},
+            {"$set": updated_config_data}
+        )
+
+        if result.matched_count == 0:
+            flash(f"Course configuration with ID {config_id_str} not found.", "warning")
+        elif result.modified_count == 0:
+             flash(f"Course configuration '{updated_config_data['course_name']}' was not modified (no changes detected or attempt to change to existing name).", "info")
+        else:
+            logger.info(f"Updated course config '{updated_config_data['course_name']}' (ID: {config_id_str})")
+            flash(f"Successfully updated course configuration '{updated_config_data['course_name']}'.", "success")
+
+    except json.JSONDecodeError:
+        flash("Invalid JSON format for configuration.", "danger")
+    except ValueError as ve:
+        flash(str(ve), "danger")
+    except PyMongoError as e:
+        logger.error(f"Database error updating course config {config_id_str}: {e}")
+        if e.code == 11000: # Duplicate key error
+             flash(f"Update failed: A course configuration with the new name or key combination may already exist.", "danger")
+        else:
+            flash("Database error updating configuration.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error updating course config {config_id_str}: {e}", exc_info=True)
+        flash("An unexpected error occurred.", "danger")
+
+    return redirect(url_for('settings.view_course_configs'))
+
+
+@bp.route('/course-configs/delete/<config_id>', methods=['POST'])
+def delete_course_config(config_id):
+    """Deletes a course configuration by its ID."""
+    if course_config_collection is None:
+        flash("Course config collection unavailable.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    try:
+        config_oid = ObjectId(config_id)
+    except InvalidId:
+        flash("Invalid Configuration ID format for deletion.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    try:
+        result = course_config_collection.delete_one({"_id": config_oid})
+        if result.deleted_count == 1:
+            logger.info(f"Deleted course configuration with ID: {config_id}")
+            flash("Successfully deleted course configuration.", "success")
+        else:
+            flash(f"Course configuration with ID {config_id} not found for deletion.", "warning")
+    except PyMongoError as e:
+        logger.error(f"Database error deleting course config {config_id}: {e}")
+        flash("Database error deleting configuration.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error deleting course config {config_id}: {e}", exc_info=True)
+        flash("An unexpected error occurred during deletion.", "danger")
+
+    return redirect(url_for('settings.view_course_configs'))
