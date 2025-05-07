@@ -40,7 +40,7 @@ except ImportError:
     # Fallback for Python < 3.9 or if zoneinfo data isn't available
     from datetime import timezone as ZoneInfo # Use basic UTC offset if zoneinfo missing
 
-SUBSEQUENT_POD_MEMORY_FACTOR = 0.7
+from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 
 # Define Blueprint
 bp = Blueprint('actions', __name__)
@@ -658,6 +658,9 @@ def intermediate_build_review():
                 for tag_doc in cursor:
                     tag_name = tag_doc.get("tag", "UNKNOWN")
                     logger.info(f"Processing reusable tag: '{tag_name}'")
+                    if tag_name == "UNKNOWN":
+                     logger.error(f"Found document with extend:false but missing 'tag' field! Doc: {tag_doc}")
+                     continue
                     for course_alloc in tag_doc.get("courses", []):
                         vendor = course_alloc.get("vendor")
                         course_name = course_alloc.get("course_name")
@@ -675,9 +678,12 @@ def intermediate_build_review():
                                 try:
                                     pod_num_int = int(pod_num)
                                     # Only add if not already marked as globally assigned (edge case protection)
-                                    if pod_num_int not in globally_assigned_pods_by_vendor.get(vendor, set()):
-                                        if reusable_pods_by_vendor_host[vendor][host].add(pod_num_int): # Add returns True if new
-                                             released_memory_by_host[host] += mem_per_pod
+                                    # 1. Check if pod is NOT already considered reusable for this host/vendor
+                                    if pod_num_int not in reusable_pods_by_vendor_host[vendor][host]:
+                                        # 2. If not present, THEN add it to the set
+                                        reusable_pods_by_vendor_host[vendor][host].add(pod_num_int)
+                                        # 3. Since it was newly added, increment the released memory
+                                        released_memory_by_host[host] += mem_per_pod
                                 except (ValueError, TypeError): pass # Ignore invalid pod numbers
                 # Log summary
                 for host, released_gb in released_memory_by_host.items():
@@ -897,6 +903,11 @@ def intermediate_build_review():
         elif not processed_courses_for_review: flash("No courses processed to save.", "warning")
         else:
             try:
+                # *** STEP 1: Purge existing documents ***
+                logger.info(f"Purging existing documents from '{interim_alloc_collection.name}' collection...")
+                delete_result = interim_alloc_collection.delete_many({}) # Empty filter deletes all
+                logger.info(f"Purged {delete_result.deleted_count} documents from interim collection.")
+                # *** End Purge Step ***
                 batch_timestamp = datetime.datetime.now(pytz.utc); bulk_ops = []
                 for p_course in processed_courses_for_review:
                     # Define filter using SF code and FINAL labbuild course
