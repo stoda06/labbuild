@@ -1288,3 +1288,95 @@ def delete_course_config(config_id):
         flash("An unexpected error occurred during deletion.", "danger")
 
     return redirect(url_for('settings.view_course_configs'))
+
+@bp.route('/toggle-tag-extend', methods=['POST'])
+def toggle_tag_extend():
+    """
+    Toggles the 'extend' field (string "true"/"false") for a given tag
+    in the 'currentallocation' collection based on the current state provided
+    in the form submission.
+
+    Redirects back to the allocations page, preserving any active filters
+    and pagination settings.
+    """
+    tag_name = request.form.get('tag_name')
+    # Get the status *as sent from the form* (state *before* the click)
+    # Default to 'false' string if the input is missing, for safety.
+    current_status_str = request.form.get('current_extend_status', 'false')
+
+    # --- Preserve Filters & Pagination for Redirect ---
+    # Collect all relevant query parameters that might have been passed back
+    # from the allocations page form submission.
+    redirect_args = {}
+    for key in ['filter_tag', 'filter_vendor', 'filter_course', 'filter_host', 'filter_number', 'page', 'per_page']:
+        # Use request.form for POST data, fallback to request.args for GET params if needed
+        # Form submission usually puts everything in request.form for POST
+        value = request.form.get(key)
+        if value is not None: # Only include params that are present
+             # Clean up filter keys if they have the prefix from the form
+             clean_key = key.replace('filter_', '')
+             redirect_args[clean_key] = value
+
+    logger.info(f"Received toggle request for tag: '{tag_name}', current extend status from form: '{current_status_str}'")
+    logger.debug(f"Redirect args collected: {redirect_args}")
+
+    # --- Input Validation ---
+    if not tag_name:
+        flash("Tag name missing for toggle operation.", "danger")
+        return redirect(url_for('main.view_allocations', **redirect_args))
+
+    # --- Database Check ---
+    if alloc_collection is None:
+        flash("Allocation database collection is unavailable.", "danger")
+        logger.error("alloc_collection is None in toggle_tag_extend.")
+        return redirect(url_for('main.view_allocations', **redirect_args))
+
+    # --- Determine the NEW status (opposite of current) ---
+    try:
+        # Convert received string status to boolean for logical flipping
+        current_status_bool = current_status_str.lower() == 'true'
+        # The new state is the opposite boolean
+        new_status_bool = not current_status_bool
+        # Convert the NEW state back to the STRING format ("true" or "false")
+        # This must match the data type expected by DB queries/other logic.
+        new_status_str = "true" if new_status_bool else "false"
+    except Exception as e:
+        logger.error(f"Error determining new status for tag '{tag_name}': {e}")
+        flash("Internal error processing status toggle.", "danger")
+        return redirect(url_for('main.view_allocations', **redirect_args))
+
+    logger.info(f"Attempting to update tag '{tag_name}' extend status to: '{new_status_str}'")
+
+    # --- Perform Database Update ---
+    try:
+        result = alloc_collection.update_one(
+            {"tag": tag_name}, # Filter: Find the document by tag name
+            {"$set": {"extend": new_status_str}} # Update: Set the 'extend' field
+        )
+
+        # --- Check Update Result and Provide Feedback ---
+        logger.debug(f"MongoDB update result for tag '{tag_name}': Matched={result.matched_count}, Modified={result.modified_count}")
+
+        if result.matched_count == 0:
+            flash(f"Tag '{tag_name}' not found in database.", "warning")
+            logger.warning(f"Tag '{tag_name}' not found during extend toggle update.")
+        elif result.modified_count == 0:
+             # Occurs if the document was found but the value was already the target value.
+             flash(f"Tag '{tag_name}' extend status was not changed (already set to '{new_status_str}'?).", "info")
+             logger.warning(f"Tag '{tag_name}' matched but extend status not modified. Value might already be '{new_status_str}'.")
+        else:
+            # Success Case
+            new_status_display = "NO REUSE (Locked)" if new_status_str == "true" else "ALLOW REUSE (Unlocked)"
+            flash(f"Tag '{tag_name}' updated. Pod reuse policy set to: {new_status_display}.", "success")
+            logger.info(f"Successfully toggled extend status for tag '{tag_name}' to '{new_status_str}'.")
+
+    except PyMongoError as e:
+        logger.error(f"Database error toggling extend status for tag '{tag_name}': {e}", exc_info=True)
+        flash("Database error updating tag status.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error toggling extend status for tag '{tag_name}': {e}", exc_info=True)
+        flash("An unexpected error occurred.", "danger")
+
+    # --- Redirect back to the allocations page, preserving filters & pagination ---
+    # The **redirect_args unpacks the dictionary into keyword arguments for url_for
+    return redirect(url_for('main.view_allocations', **redirect_args))

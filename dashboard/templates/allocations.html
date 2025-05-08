@@ -1,332 +1,229 @@
 {# dashboard/templates/allocations.html #}
 {% extends 'base.html' %}
 
-{# Sets the title of the browser tab or window #}
 {% block title %}Current Allocations{% endblock %}
 
+{% block head %}
+    {{ super() }}
+    {# Link specific CSS file or keep styles inline #}
+    {# <link rel="stylesheet" href="{{ url_for('static', filename='css/allocations.css') }}"> #}
+    <style>
+        /* Base styling for table cells */
+        .allocation-table th,
+        .allocation-table td {
+            font-size: 0.85rem;         /* Slightly smaller */
+            vertical-align: middle;
+            padding: 0.4rem 0.5rem;     /* Adjusted padding */
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .allocation-table th {
+            white-space: nowrap;        /* Keep headers on one line */
+        }
+        .allocation-table td {
+            white-space: normal;        /* Allow data cells to wrap */
+            word-break: break-word;     /* Break long words if needed */
+        }
+
+        /* Action forms and buttons */
+        .action-forms form {
+            margin-bottom: 0;
+            display: inline-block;
+            margin-left: 1px; /* Minimal spacing */
+            margin-right: 1px;
+        }
+        .action-btn {
+            background: none; border: none; padding: 0.1rem 0.3rem; /* Smaller padding */
+            line-height: 1; font-size: 0.9rem; /* Smaller icon buttons */
+            opacity: 0.7; /* Slightly more subtle */
+            transition: opacity 0.2s ease, color 0.2s ease;
+            vertical-align: middle; cursor: pointer;
+        }
+        .action-btn:hover { opacity: 1; }
+        .action-btn.text-danger { color: var(--bs-danger); }
+        .action-btn.text-warning { color: var(--bs-warning); }
+        .action-btn.text-secondary { color: #6c757d; }
+        .action-btn.text-info { color: var(--bs-info); }
+        /* Dark mode action button overrides */
+        html.dark-mode .action-btn.text-danger { color: #ff8a80; }
+        html.dark-mode .action-btn.text-warning { color: #ffd76d; }
+        html.dark-mode .action-btn.text-secondary { color: #adb5bd; }
+        html.dark-mode .action-btn.text-info { color: #66d9ef; }
+
+        /* PRTG link */
+        .prtg-link { vertical-align: middle; padding: 0 0.2rem !important; } /* Adjusted padding */
+
+        /* Status Icons Column */
+        .col-status i { margin: 0 0.2rem; } /* Spacing for status icons */
+
+        /* Pagination */
+        .pagination-controls { margin-top: 1rem; }
+
+        /* Power Toggle Button */
+        .power-toggle-btn.text-danger { color: var(--bs-danger); } /* Red when ON */
+        .power-toggle-btn.text-secondary { color: #6c757d; }       /* Grey when OFF */
+        html.dark-mode .power-toggle-btn.text-danger { color: #ff8a80; }
+        html.dark-mode .power-toggle-btn.text-secondary { color: #adb5bd; }
+
+        /* Extend Toggle Button */
+        .extend-toggle-btn.text-success { color: var(--bs-success); } /* Green when UNLOCKED */
+        .extend-toggle-btn.text-danger { color: var(--bs-danger); }   /* Red when LOCKED */
+        html.dark-mode .extend-toggle-btn.text-success { color: var(--status-success-dark-text); }
+        html.dark-mode .extend-toggle-btn.text-danger { color: var(--status-failed-dark-text); }
+
+        /* Specific Column Widths/Alignment */
+        .allocation-table .text-center { text-align: center; }
+        .allocation-table .text-end { text-align: right; }
+        .col-tag { min-width: 150px; }
+        .col-vendor { width: 60px; }
+        .col-type { width: 80px; }
+        .col-number { width: 70px; text-align: center; }
+        .col-course { min-width: 160px; }
+        .col-host { min-width: 130px; }
+        .col-status { width: 85px; text-align: center; white-space: nowrap;}
+        .col-actions { min-width: 150px; /* Adjusted width */ white-space: nowrap; }
+    </style>
+{% endblock %}
+
+
 {% block content %}
-{# Inline styles specific to this page for table layout and appearance #}
-<style>
-    /* Base styling for table cells */
-    .allocation-table th, .allocation-table td {
-        font-size: 0.9rem;      /* Slightly smaller font */
-        vertical-align: middle; /* Center content vertically */
-        padding-top: 0.4rem;    /* Reduce vertical padding */
-        padding-bottom: 0.4rem;
-    }
-    /* Ensure action forms display inline and have slight spacing */
-    .action-forms form {
-        margin-bottom: 0;
-        display: inline-block;
-        margin-left: 2px;
-        margin-right: 2px;
-    }
-    /* Style for delete/action buttons (icons) */
-    .action-btn { /* More generic class */
-        background: none;
-        border: none;
-        padding: 0.1rem 0.4rem;
-        line-height: 1;
-        font-size: 1rem;
-        opacity: 0.65;
-        transition: opacity 0.2s ease, color 0.2s ease;
-        vertical-align: middle;
-        cursor: pointer;
-    }
-    .action-btn:hover {
-        opacity: 1;
-    }
-    .action-btn.text-danger { color: var(--bs-danger); }
-    .action-btn.text-danger:hover { color: var(--bs-danger); } /* Keep color on hover */
-    .action-btn.text-warning { color: var(--bs-warning); }
-    .action-btn.text-warning:hover { color: var(--bs-warning); }
-    .action-btn.text-secondary { color: #6c757d; } /* Neutral grey */
-    .action-btn.text-secondary:hover { color: #5a6268; }
-
-    /* Dark mode overrides for action buttons */
-    html.dark-mode .action-btn.text-danger { color: #ff8a80; }
-    html.dark-mode .action-btn.text-danger:hover { color: #ff5252; }
-    html.dark-mode .action-btn.text-warning { color: #ffd76d; }
-    html.dark-mode .action-btn.text-warning:hover { color: #ffc94a; }
-    html.dark-mode .action-btn.text-secondary { color: #adb5bd; }
-    html.dark-mode .action-btn.text-secondary:hover { color: #ced4da; }
-
-
-    /* Style for PRTG link button */
-    .prtg-link {
-        vertical-align: middle;
-        padding: 0 0.25rem !important;
-    }
-
-    /* Styles for Header Rows - Grouping Visualization */
-    .header-row td {
-        font-weight: bold;
-        background-color: #f1f3f5; /* Light Grey base for headers (Light Mode) */
-        padding-top: 0.6rem;
-        padding-bottom: 0.6rem;
-        border-bottom: 1px solid #dee2e6;
-        border-top: 1px solid #dee2e6;
-    }
-    /* TAG Header - Most prominent */
-    .tag-header td {
-        font-size: 1.05em;
-        color: #212529;     /* Dark standard text */
-    }
-    /* COURSE Header - Indented, slightly less prominent */
-    .course-header td {
-        padding-left: 25px !important;
-        font-style: normal;
-        font-weight: 600;   /* Semi-bold */
-        color: #495057;     /* Darker Grey */
-        background-color: #f8f9fa; /* Very light grey, almost white */
-    }
-    /* HOST Header - Most indented, muted */
-    .host-header td {
-        padding-left: 50px !important;
-        font-weight: 600;
-        color: #6c757d;     /* Muted Grey */
-        background-color: #ffffff; /* White background */
-    }
-
-    /* Dark Mode Header Overrides - Using subtle greys */
-    html.dark-mode .header-row td {
-         background-color: #2c3034; /* Darker base for headers */
-         border-color: #454b50;
-    }
-    html.dark-mode .tag-header td {
-         color: #e9ecef; /* Light text */
-    }
-    html.dark-mode .course-header td {
-         color: #ced4da; /* Lighter grey */
-         background-color: #262a2e; /* Slightly lighter than base header */
-    }
-    html.dark-mode .host-header td {
-         color: #adb5bd; /* Muted light grey */
-         background-color: #212529; /* Match main dark background */
-    }
-
-    /* Data Rows */
-    .data-row td:first-child {
-        padding-left: 75px !important; /* Indent data under host */
-    }
-    .data-row td {
-        font-size: 0.85rem; /* Slightly smaller data font */
-    }
-    /* Ensure data rows get correct dark mode background */
-    html.dark-mode .data-row td {
-         background-color: inherit; /* Should inherit from body/card */
-    }
-    /* Container for pagination controls */
-    .pagination-controls {
-        margin-top: 1rem; /* Space above controls */
-    }
-     /* Power Toggle Button Specifics */
-    .power-toggle-btn {
-        font-size: 1.1rem; /* Slightly larger icon */
-    }
-    .power-toggle-btn.text-danger { color: var(--bs-danger); } /* Red when ON */
-    .power-toggle-btn.text-secondary { color: #6c757d; } /* Grey when OFF */
-    html.dark-mode .power-toggle-btn.text-danger { color: #ff8a80; } /* Lighter red */
-    html.dark-mode .power-toggle-btn.text-secondary { color: #adb5bd; } /* Lighter grey */
-
-</style>
-
 {# --- Page Header --- #}
 <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1>Current Allocations</h1>
-   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+  <h1>Current Allocations</h1>
+  <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
 </div>
 
 {# --- Filter Form --- #}
 <div class="card mb-4">
-    <div class="card-header">Filter Allocations</div>
-    <div class="card-body">
-        <form action="{{ url_for('main.view_allocations') }}" method="GET" class="row g-3">
-             <div class="col-md-3"><label for="filter_tag" class="form-label">Tag (contains)</label><input type="text" class="form-control form-control-sm" id="filter_tag" name="filter_tag" value="{{ current_filters.get('filter_tag', '') }}"></div>
-             <div class="col-md-2"><label for="filter_vendor" class="form-label">Vendor (exact)</label><input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}"></div>
-             <div class="col-md-3"><label for="filter_course" class="form-label">Course (contains)</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
-             <div class="col-md-2"><label for="filter_host" class="form-label">Host (contains)</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
-             <div class="col-md-2"><label for="filter_number" class="form-label">Pod/Class # (exact)</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
-             <div class="col-12"><button type="submit" class="btn btn-primary btn-sm">Filter</button> <a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm">Clear Filters</a></div>
-        </form>
-    </div>
+  <div class="card-header">Filter Allocations</div>
+  <div class="card-body">
+    <form action="{{ url_for('main.view_allocations') }}" method="GET" class="row g-3 align-items-end">
+      {# Filter Inputs - Using current_filters for value persistence #}
+      <div class="col-md-3 col-lg-2"><label for="filter_tag" class="form-label">Tag</label><input type="text" class="form-control form-control-sm" id="filter_tag" name="filter_tag" value="{{ current_filters.get('filter_tag', '') }}"></div>
+      <div class="col-md-3 col-lg-2"><label for="filter_vendor" class="form-label">Vendor</label><input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}"></div>
+      <div class="col-md-3 col-lg-3"><label for="filter_course" class="form-label">Course</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
+      <div class="col-md-3 col-lg-2"><label for="filter_host" class="form-label">Host</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
+      <div class="col-md-3 col-lg-1"><label for="filter_number" class="form-label">Pod/Class</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
+      {# Per Page Selector Removed #}
+      <div class="col-md-6 col-lg-2"> {# Buttons take remaining space #}
+            <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
+            <a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm w-100 mt-1">Clear Filters</a>
+      </div>
+    </form>
+  </div>
 </div>
 
 {# --- Allocation Table Card --- #}
 <div class="card">
-  {# Display total count of actual data items found after filtering #}
-  <div class="card-header">Allocation List ({{ total_data_items }} total pods/classes matching filters)</div>
-  <div class="card-body p-0"> {# Remove padding for table to touch edges #}
-    {# Check if allocation_list (the paginated slice) has items #}
-    {% if allocation_list %}
+  <div class="card-header">
+      Allocation List
+      {# Display counts based on filtering state #}
+      {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
+          (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }})
+      {% else %}
+          (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }})
+      {% endif %}
+  </div>
+  <div class="card-body p-0"> {# No padding for table flushness #}
+    {% if allocation_list %} {# Check the paginated flat list passed from Flask #}
       <div class="table-responsive">
-        {# Use a standard table ID #}
         <table class="table table-sm table-hover mb-0 allocation-table" id="allocations-table">
           <thead class="table-light">
-            {# Define table headers #}
+            {# Define the flat table headers #}
             <tr>
-              <th>Scope / Item</th>
-              <th>Type</th>
-              <th>Number</th>
-              <th>Nested Pods (F5)</th>
-              <th>PRTG</th>
-              <th class="text-end">Actions</th>
+              <th class="col-tag">Tag</th>
+              <th class="col-vendor">Vendor</th>
+              <th class="col-course">Course Name</th>
+              <th class="col-type">Type</th>
+              <th class="col-number">Number</th>
+              <th class="col-host">Host</th>
+              <th class="col-status">Status</th>
+              <th class="col-actions text-end">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {# Loop through the paginated list passed from Flask #}
+            {# Loop through the FLAT allocation list #}
             {% for item in allocation_list %}
-              {# Conditional rendering based on row_type #}
-              {% if item.row_type == 'tag_header' %}
-                {# Render a Tag Header Row #}
-                <tr class="header-row tag-header" data-row-type="tag_header">
-                  {# Span most columns, leave space for actions #}
-                  <td colspan="5"><strong>Tag:</strong> {{ item.tag }}</td>
-                  {# Actions for Tag Row #}
-                  <td class="text-end action-forms">
-                      {# Power Toggle for ENTIRE Tag #}
-                       <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline" onsubmit="return confirm('Toggle power (Start/Stop) for ALL items in Tag \'{{ item.tag }}\'?')">
-                           <input type="hidden" name="scope" value="tag">
-                           <input type="hidden" name="tag" value="{{ item.tag }}">
-                           {# Indicate a 'toggle' action - backend determines start/stop per group #}
-                           <input type="hidden" name="current_state" value="toggle">
-                            {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                           <button type="submit" class="action-btn power-toggle-btn text-secondary" title="Toggle Power for ALL items in Tag '{{ item.tag }}'">
-                               <i class="fas fa-power-off"></i>
-                           </button>
-                       </form>
+              <tr class="data-row"> {# Each row is a data row #}
+                <td class="col-tag" title="{{ item.tag }}">{{ item.tag }}</td> {# Add title for long tags #}
+                <td class="col-vendor">{{ item.vendor | upper }}</td>
+                <td class="col-course" title="{{ item.course_name }}">{{ item.course_name }}</td> {# Add title #}
+                <td class="col-type">
+                    {% if item.type == 'f5_class' %}<span class="badge bg-info text-dark" title="F5 Class">F5 Cls</span>
+                    {% elif item.type == 'pod' %}<span class="badge bg-secondary" title="Pod">Pod</span>
+                    {% else %}<span class="text-muted">?</span>{% endif %}
+                </td>
+                <td class="col-number">{{ item.number }}</td>
+                <td class="col-host" title="{{ item.host }}">{{ item.host }}</td>
+                <td class="col-status text-center">
+                     {# Power Status Icon #}
+                     <i class="fas fa-power-off mx-1 {{ 'text-danger' if item.poweron else 'text-secondary' }}"
+                        title="Power: {{ 'On' if item.poweron else 'Off' }}"></i>
+                     {# Tag Extend Status Icon #}
+                     <i class="fas {{ 'fa-lock' if item.is_extended else 'fa-lock-open' }} mx-1 {{ 'text-danger' if item.is_extended else 'text-success' }}"
+                        title="Tag Pod Reuse: {{ 'Prevented (Locked)' if item.is_extended else 'Allowed (Unlocked)' }}"></i>
+                </td>
+                <td class="col-actions text-end action-forms">
+                    {# PRTG Link #}
+                    {% if item.prtg_url %}
+                        <a href="{{ item.prtg_url }}" target="_blank" class="action-btn prtg-link" title="View PRTG for item {{ item.number }}"><i class="fas fa-chart-line text-info"></i></a>
+                    {% endif %}
 
-                      {# Teardown ENTIRE Tag (Infrastructure) - Use Dumpster Icon #}
-                      <form action="{{ url_for('actions.teardown_tag') }}" method="POST" class="d-inline" onsubmit="return confirm('TEARDOWN ALL resources (VMs, networks, etc.) for Tag \'{{ item.tag }}\'? This affects ALL courses/hosts under this tag and CANNOT be easily undone.')">
-                          <input type="hidden" name="tag" value="{{ item.tag }}">
-                           {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                          <button type="submit" class="action-btn delete-btn text-danger" title="Teardown ALL Resources for Tag '{{ item.tag }}'">
-                              <i class="fas fa-dumpster"></i> {# Dumpster Icon #}
-                          </button>
-                      </form>
+                    {# Power Toggle (Item Scope) #}
+                    <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline power-toggle-form"
+                          data-action="{{ 'Stop' if item.poweron else 'Start' }}" data-item-type="{{ item.type }}" data-item-number="{{ item.number }}">
+                        <input type="hidden" name="scope" value="item"><input type="hidden" name="tag" value="{{ item.tag }}">
+                        <input type="hidden" name="item_type" value="{{ item.type }}"><input type="hidden" name="item_number" value="{{ item.number }}">
+                        <input type="hidden" name="host" value="{{ item.host }}"><input type="hidden" name="vendor" value="{{ item.vendor }}">
+                        <input type="hidden" name="course" value="{{ item.course_name }}">
+                        <input type="hidden" name="current_state" value="{{ 'on' if item.poweron else 'off' }}">
+                        {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}<input type="hidden" name="item_class_number" value="{{ item.class_number }}">{% endif %}
+                        {# Pass filters/page back #}
+                        {% for key, value in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<input type="hidden" name="page" value="{{ current_page }}">
+                        <button type="submit" class="action-btn power-toggle-btn {{ 'text-danger' if item.poweron else 'text-secondary' }}" title="{{ 'Stop' if item.poweron else 'Start' }} Item {{ item.number }}">
+                            <i class="fas fa-power-off"></i>
+                        </button>
+                    </form>
 
-                      {# Delete Tag DB Entry Only #}
-                      <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry for ENTIRE Tag \'{{ item.tag }}\'? This affects all courses and pods under this tag. This CANNOT be undone.')">
-                          <input type="hidden" name="delete_level" value="tag_db">
-                          <input type="hidden" name="tag" value="{{ item.tag }}">
-                           {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                          <button type="submit" class="action-btn delete-btn text-warning" title="Delete ENTIRE Tag '{{ item.tag }}' DB Entry Only">
-                              <i class="fas fa-database"></i><i class="fas fa-times"></i>
-                          </button>
-                      </form>
-                  </td>
-                </tr>
-              {% elif item.row_type == 'course_header' %}
-                {# Render a Course Header Row - No actions typically needed here #}
-                <tr class="header-row course-header" data-row-type="course_header">
-                  <td colspan="6"><strong>Course:</strong> {{ item.course_name }}</td>
-                </tr>
-              {% elif item.row_type == 'host_header' %}
-                 {# Render a Host Header Row - No actions typically needed here #}
-                 <tr class="header-row host-header" data-row-type="host_header">
-                  <td colspan="6"><strong>Host:</strong> {{ item.host }}</td>
-                </tr>
-              {% elif item.row_type == 'data' %}
-                {# Render an actual Data Row #}
-                <tr class="data-row" data-row-type="data">
-                  <td></td> {# Empty first cell for indentation via CSS #}
-                  {# Type Column #}
-                  <td>
-                      {% if item.type == 'f5_class' %}
-                          <span class="badge bg-info text-dark">F5 Class</span>
-                      {% elif item.type == 'pod' %}
-                          <span class="badge bg-secondary">Pod</span>
-                      {% else %}
-                          {{ item.type | capitalize }}
-                      {% endif %}
-                  </td>
-                  {# Number Column #}
-                  <td>{{ item.number }}</td>
-                  {# Nested Pods Column #}
-                  <td>
-                      {% if item.type == 'f5_class' and item.nested_pods %}
-                          {{ item.nested_pods | join(', ') }}
-                      {% else %}
-                          -
-                      {% endif %}
-                  </td>
-                  {# PRTG Column #}
-                  <td>
-                      {% if item.prtg_url %}
-                          <a href="{{ item.prtg_url }}" target="_blank" class="btn btn-outline-info btn-sm p-0 px-1 me-1 prtg-link" title="View PRTG for Item {{ item.number }}"><i class="fas fa-chart-line fa-xs"></i></a>
-                      {% else %}
-                          <span class="text-muted">N/A</span>
-                      {% endif %}
-                  </td>
-                  {# Actions Column #}
-                  <td class="text-end action-forms">
-                        {# Power Toggle for Individual Item #}
-                        <form action="{{ url_for('actions.toggle_power') }}" method="POST"
-                                class="d-inline power-toggle-form"
-                                {# Add data attributes for confirmation message parts #}
-                                data-action="{{ 'Stop' if item.poweron else 'Start' }}"
-                                data-item-type="{{ item.type }}"
-                                data-item-number="{{ item.number }}"
-                                >
-                            <input type="hidden" name="scope" value="item">
-                            <input type="hidden" name="tag" value="{{ item.tag }}">
-                            <input type="hidden" name="item_type" value="{{ item.type }}">
-                            <input type="hidden" name="item_number" value="{{ item.number }}">
-                            <input type="hidden" name="host" value="{{ item.host }}">
-                            <input type="hidden" name="vendor" value="{{ item.vendor }}">
-                            <input type="hidden" name="course" value="{{ item.course_name }}">
-                            <input type="hidden" name="current_state" value="{{ 'on' if item.poweron else 'off' }}">
-                            {# Pass class context if it's an F5 pod #}
-                            {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}
-                                <input type="hidden" name="item_class_number" value="{{ item.class_number }}">
-                            {% endif %}
-                             {# Pass filters back #}
-                            {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                            {# Set icon color based on item.poweron #}
-                            <button type="submit" class="action-btn power-toggle-btn {{ 'text-danger' if item.poweron else 'text-secondary' }}" title="{{ 'Stop' if item.poweron else 'Start' }} Item {{ item.number }}">
-                                <i class="fas fa-power-off"></i>
-                            </button>
-                        </form>
+                    {# Extend Toggle (Tag Scope - appears on each row of the tag) #}
+                    <form action="{{ url_for('actions.toggle_tag_extend') }}" method="POST" class="d-inline"
+                             title="Toggle Pod Reuse for TAG '{{ item.tag }}' (Current: {{ 'No Reuse' if item.is_extended else 'Allow Reuse' }})">
+                        <input type="hidden" name="tag_name" value="{{ item.tag }}">
+                        <input type="hidden" name="current_extend_status" value="{{ 'true' if item.is_extended else 'false' }}">
+                        {% for key, value in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<input type="hidden" name="page" value="{{ current_page }}">
+                        <button type="submit" class="action-btn extend-toggle-btn {{ 'text-danger' if item.is_extended else 'text-success' }}">
+                            <i class="fas {{ 'fa-lock' if item.is_extended else 'fa-lock-open' }}"></i>
+                        </button>
+                   </form>
 
-                        {# Teardown Item Form #}
-                         <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown {{ item.type }} {{ item.number }}? This deletes VMs.')">
-                           <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
-                           {# Pass context #}
-                           <input type="hidden" name="tag" value="{{ item.tag }}">
-                           <input type="hidden" name="host" value="{{ item.host }}">
-                           <input type="hidden" name="vendor" value="{{ item.vendor }}">
-                           <input type="hidden" name="course" value="{{ item.course_name }}">
-                           {% if item.type == 'pod' %} <input type="hidden" name="pod_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'f5_class' %} <input type="hidden" name="class_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
-                           {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                           <button type="submit" class="action-btn delete-btn text-danger" title="Teardown {{ item.type }} {{ item.number }}">
-                               <i class="fas fa-trash-alt"></i>
-                           </button>
-                         </form>
+                    {# Teardown Item (VMs) #}
+                    <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown {{ item.type }} {{ item.number }} in tag {{item.tag}}? This deletes VMs.')">
+                       <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
+                       <input type="hidden" name="tag" value="{{ item.tag }}"><input type="hidden" name="host" value="{{ item.host }}">
+                       <input type="hidden" name="vendor" value="{{ item.vendor }}"><input type="hidden" name="course" value="{{ item.course_name }}">
+                       {% if item.type == 'pod' %}<input type="hidden" name="pod_number" value="{{ item.number }}">{% endif %}
+                       {% if item.type == 'f5_class' %}<input type="hidden" name="class_number" value="{{ item.number }}">{% endif %}
+                       {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
+                       {% for key, value in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<input type="hidden" name="page" value="{{ current_page }}">
+                       <button type="submit" class="action-btn delete-btn text-danger" title="Teardown {{ item.type }} {{ item.number }} Infrastructure">
+                           <i class="fas fa-trash-alt"></i>
+                       </button>
+                    </form>
 
-                        {# DB Delete Item Form #}
-                         <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry ONLY for {{ item.type }} {{ item.number }}?')">
-                           <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
-                           {# Pass context #}
-                           <input type="hidden" name="tag" value="{{ item.tag }}">
-                           <input type="hidden" name="course" value="{{ item.course_name }}">
-                           {% if item.type == 'pod' %} <input type="hidden" name="pod_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'f5_class' %} <input type="hidden" name="class_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
-                            {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                           <button type="submit" class="action-btn delete-btn text-warning" title="Delete DB Entry Only for {{ item.type }} {{ item.number }}">
-                               <i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i>
-                           </button>
-                         </form>
-                  </td>
-                </tr>
-              {% endif %} {# End conditional rendering for item.row_type #}
+                    {# DB Delete Item #}
+                    <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry ONLY for {{ item.type }} {{ item.number }} in tag {{item.tag}}?')">
+                       <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
+                       <input type="hidden" name="tag" value="{{ item.tag }}"><input type="hidden" name="course" value="{{ item.course_name }}">
+                       {# Pass both pod and class numbers if they exist, backend teardown_item can decide which is relevant #}
+                       {% if item.pod_number is not none %}<input type="hidden" name="pod_number" value="{{ item.pod_number }}">{% endif %}
+                       {% if item.class_number is not none %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
+                       {% for key, value in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<input type="hidden" name="page" value="{{ current_page }}">
+                       <button type="submit" class="action-btn delete-btn text-warning" title="Delete DB Entry Only for {{ item.type }} {{ item.number }}">
+                           <i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i>
+                       </button>
+                    </form>
+                </td>
+              </tr>
             {% endfor %} {# End Item Loop #}
           </tbody>
         </table>
@@ -360,10 +257,17 @@
           </ul>
         </nav>
       {% endif %}
-      {# --- End Pagination Controls --- #}
+      {# --- END PAGINATION CONTROLS --- #}
 
     {% else %} {# If allocation_list (paginated slice) is empty #}
-      <p class="p-3">No allocations found matching filters{% if current_page > 1 %} for this page{% endif %}.</p>
+      <p class="p-3 text-muted">
+          No allocations found
+          {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
+               matching your filter criteria. <a href="{{ url_for('main.view_allocations') }}">Clear filters</a>?
+          {% else %}
+               in the database.
+          {% endif %}
+       </p>
     {% endif %}
   </div> {# End card-body #}
 </div> {# End card #}
@@ -371,35 +275,72 @@
 {% endblock %}
 
 {% block scripts %}
-  {{ super() }} {# Include base scripts (dark mode, timezone) #}
+  {{ super() }} {# Include base scripts (dark mode, timezone, etc.) #}
+  {# Keep the confirmation JS if needed for power toggle / teardown #}
   <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const tableBody = document.getElementById('allocations-tbody');
+    document.addEventListener('DOMContentLoaded', function () {
+      const allocationsTable = document.getElementById('allocations-table');
 
-        if (tableBody) {
-            tableBody.addEventListener('submit', function(event) {
-                // Check if the submitted form is one of our power toggle forms
-                if (event.target && event.target.classList.contains('power-toggle-form')) {
-                    const form = event.target;
-                    // Retrieve data from attributes
-                    const action = form.dataset.action || 'Toggle'; // Fallback text
-                    const itemType = form.dataset.itemType || 'item';
-                    const itemNumber = form.dataset.itemNumber || '?';
+      if (allocationsTable) {
+        allocationsTable.addEventListener('submit', function (event) {
+          const form = event.target;
+          let confirmMessage = null;
 
-                    // Construct the confirmation message
-                    const message = `Are you sure you want to ${action} ${itemType} ${itemNumber}?`;
+          // --- Determine Confirmation Message based on Form Action ---
+          // Power Toggle
+          if (form.classList.contains('power-toggle-form') || (form.action && form.action.includes('/toggle_power'))) {
+             // ... (generate power toggle message) ...
+          }
+          // Extend Toggle - NO confirmation needed per request
+          // else if (form.action && form.action.includes('/toggle-tag-extend')) {
+             // NO MESSAGE SET
+          // }
+          // Teardown Tag (Full Infrastructure)
+          else if (form.action && form.action.includes('/teardown_tag')) {
+             const tagName = form.querySelector('input[name="tag"]').value;
+             confirmMessage = `TEARDOWN ALL resources (VMs, etc.) for Tag '${tagName}'? This is IRREVERSIBLE!`;
+          }
+          // Teardown Item (Full Infrastructure or DB only)
+          else if (form.action && form.action.includes('/teardown_item')) {
+                const deleteLevelInput = form.querySelector('input[name="delete_level"]');
+                const tagInput = form.querySelector('input[name="tag"]');
+                const tagName = tagInput ? tagInput.value : '?';
+                let itemIdentifier = "item"; // Default
 
-                    // Show confirmation dialog
-                    if (!confirm(message)) {
-                        event.preventDefault(); // Prevent form submission if user cancels
-                    }
-                    // If user confirms, the form submits normally
+                // Determine item identifier more accurately
+                const itemTypeInput = form.querySelector('input[name="item_type"]'); // From power toggle form if present
+                const itemNumberInput = form.querySelector('input[name="item_number"]');
+                const podNumberInput = form.querySelector('input[name="pod_number"]');
+                const classNumberInput = form.querySelector('input[name="class_number"]');
+
+                let typeDisplay = deleteLevelInput.value.startsWith('class') ? 'Class' : 'Pod';
+                let numberDisplay = '?';
+                if (level === 'class' || level === 'class_db') numberDisplay = classNumberInput ? classNumberInput.value : '?';
+                else if (level === 'pod' || level === 'pod_db') numberDisplay = podNumberInput ? podNumberInput.value : '?';
+                itemIdentifier = `${typeDisplay} ${numberDisplay}`;
+
+                if (deleteLevelInput && !deleteLevelInput.value.endsWith('_db')) { // VM Teardown
+                    confirmMessage = `Teardown infrastructure for ${itemIdentifier} in tag '${tagName}'? This deletes VMs!`;
+                } else if (deleteLevelInput && deleteLevelInput.value === 'tag_db') { // Tag DB Delete
+                     confirmMessage = `DELETE DB entry for ENTIRE Tag '${tagName}'? This affects all courses and pods!`;
+                } else if (deleteLevelInput && deleteLevelInput.value.endsWith('_db')) { // Item DB Delete
+                     confirmMessage = `DELETE DB entry ONLY for ${itemIdentifier} in tag '${tagName}'?`;
                 }
-                // You can add similar logic for other forms if their confirm messages become complex
-            });
-        } else {
-            console.warn("Could not find table body 'allocations-tbody' to attach submit listener.");
-        }
+          }
+
+          // --- Show Confirmation if Message Was Set ---
+          if (confirmMessage) {
+              if (!confirm(confirmMessage)) {
+                  event.preventDefault(); // Prevent submission if user cancels
+              } else {
+                  // Optional: Disable button after confirmation
+                  const submitButton = form.querySelector('button[type="submit"]');
+                  if(submitButton) { submitButton.disabled = true; }
+              }
+          }
+          // If confirmMessage is null (like for extend toggle), submission proceeds directly
+        });
+      }
     });
   </script>
 {% endblock %}
