@@ -426,30 +426,75 @@ def process_salesforce_data_current_week(df: pd.DataFrame) -> Optional[pd.DataFr
     logger.info(f"CURRENT week processing complete. Returning {len(final_df)} rows.")
     return final_df
 
-# --- NEW: Function to Apply Rules on Backend ---
+def _find_all_matching_rules(rules: list, vendor: str, code: str, type_str: str) -> list[dict]:
+    """
+    Finds all build rules matching the course criteria.
+    Assumes input 'rules' list is already sorted by priority (ascending).
+    """
+    matching_rules_list = []
+    cc_lower, ct_lower, v_lower = code.lower(), type_str.lower(), vendor.lower()
+
+    for rule in rules: 
+        conditions = rule.get("conditions", {})
+        is_fallback_conditions = not conditions 
+        
+        match = True 
+
+        rule_vendor_cond = conditions.get("vendor")
+        if rule_vendor_cond and rule_vendor_cond.lower() != v_lower:
+            match = False
+        
+        if match and "course_code_contains" in conditions:
+            terms = conditions["course_code_contains"]
+            terms = [terms] if not isinstance(terms, list) else terms
+            if not any(str(t).lower() in cc_lower for t in terms):
+                match = False
+        
+        if match and "course_code_not_contains" in conditions:
+            terms = conditions["course_code_not_contains"]
+            terms = [terms] if not isinstance(terms, list) else terms
+            if any(str(t).lower() in cc_lower for t in terms):
+                match = False
+
+        if match and "course_type_contains" in conditions:
+            terms = conditions["course_type_contains"]
+            terms = [terms] if not isinstance(terms, list) else terms
+            if not any(str(t).lower() in ct_lower for t in terms):
+                match = False
+        
+        # A rule matches if all its conditions are met, OR if it's a fallback rule
+        # (empty conditions) and any top-level vendor condition (if present) also matches.
+        # If a fallback has a vendor condition, that must still match.
+        if match:
+            matching_rules_list.append(rule)
+            
+    return matching_rules_list
+
 def apply_build_rules_to_courses(
     courses_df: pd.DataFrame,
-    build_rules: list, # Takes the merged build_rules
-    course_configs_list: list, # Needed to check if LabBuild course exists
-    hosts_list: list # Needed to check if host exists
+    build_rules: list, 
+    course_configs_list: list, 
+    hosts_list: list 
 ) -> list:
     """
     Applies build rules (including LabBuild course selection) to course data.
+    Actions from higher-priority rules override those from lower-priority rules
+    if they target the same action key.
 
     Args:
         courses_df: DataFrame from process_salesforce_data functions.
-        build_rules: List of rule documents from MongoDB build_rules collection.
+        build_rules: List of rule documents from MongoDB build_rules collection,
+                     expected to be pre-sorted by priority (ascending, lowest number first).
         course_configs_list: List of available LabBuild course configs.
         hosts_list: List of available host names.
 
     Returns:
-        List of course dictionaries augmented with preselect keys.
+        List of course dictionaries augmented with preselect_* keys.
     """
     if courses_df is None or courses_df.empty:
         return []
 
     output_list = []
-    # Helper set for quick course name existence check per vendor
     available_lab_courses_by_vendor = defaultdict(set)
     for cfg in course_configs_list:
         vendor = cfg.get('vendor_shortcode', '').lower()
@@ -457,91 +502,102 @@ def apply_build_rules_to_courses(
         if vendor and name:
             available_lab_courses_by_vendor[vendor].add(name)
 
-    # Find matching rule helper (can be nested or imported)
-    # Simplified version for use here:
-    def _find_rule(rules: list, vendor: str, code: str, type: str) -> dict | None:
-        cc_lower, ct_lower, v_lower = code.lower(), type.lower(), vendor.lower()
-        for rule in rules: # Assumes rules are pre-sorted by priority
-            cond = rule.get("conditions", {})
-            match = True
-            if cond.get("vendor") and cond["vendor"].lower() != v_lower: match = False; continue
-            if match and cond.get("course_code_contains"):
-                terms = cond["course_code_contains"]; terms = [terms] if not isinstance(terms, list) else terms
-                if not any(str(t).lower() in cc_lower for t in terms): match = False; continue
-            if match and cond.get("course_code_not_contains"):
-                terms = cond["course_code_not_contains"]; terms = [terms] if not isinstance(terms, list) else terms
-                if any(str(t).lower() in cc_lower for t in terms): match = False; continue
-            if match and cond.get("course_type_contains"):
-                terms = cond["course_type_contains"]; terms = [terms] if not isinstance(terms, list) else terms
-                if not any(str(t).lower() in ct_lower for t in terms): match = False; continue
-            if match: return rule # Return first match
-        return None
-
-
     for index, course_row in courses_df.iterrows():
         course_info = course_row.to_dict()
         sf_course_code = course_info.get('Course Code', '')
-        sf_course_type = course_info.get('Course Type', '')
+        sf_course_type = course_info.get('Course Type', '') # Original SF Course Type
         required_pods = int(course_info.get('Pods Req.', 0)) or 1
         derived_vendor = sf_course_code[:2].lower() if sf_course_code else ''
 
-        # Initialize Preselections
-        preselect = { "labbuild_course": None, "host": None, "max_pods": None,
-                      "start_pod": 1, "end_pod": required_pods }
+        preselect = {
+            "labbuild_course": None, "host": None, "host_priority_list": [],
+            "allow_spillover": True, "max_pods": None, "start_pod": 1,
+            "end_pod": required_pods 
+        }
+        action_set_flags = {k: False for k in preselect.keys()} # Track if an action was set
 
-        # Find matching rule
-        matched_rule = _find_rule(build_rules, derived_vendor, sf_course_code, sf_course_type)
+        # Get all matching rules (already sorted by priority by MongoDB query)
+        all_matching_rules = _find_all_matching_rules(build_rules, derived_vendor, sf_course_code, sf_course_type)
 
-        if matched_rule:
-            actions = matched_rule.get("actions", {})
+        if not all_matching_rules:
+            logger.warning(f"No rules matched for SF Course '{sf_course_code}' (Vendor: {derived_vendor}). Using defaults.")
+        else:
+            logger.info(f"Applying {len(all_matching_rules)} matching rules for SF Course '{sf_course_code}'...")
+            for rule in all_matching_rules: # Rules are Prio 1, Prio 5, Prio 10...
+                actions = rule.get("actions", {})
+                rule_name_log = rule.get('rule_name', str(rule.get('_id')))
+                rule_prio_log = rule.get('priority', 'N/A')
 
-            # --- Apply LabBuild Course Action ---
-            rule_lab_course = actions.get("set_labbuild_course")
-            if rule_lab_course:
-                # Check if the course actually exists for the vendor
-                if rule_lab_course in available_lab_courses_by_vendor.get(derived_vendor, set()):
-                     preselect["labbuild_course"] = rule_lab_course
-                else:
-                     logger.warning(f"Rule '{matched_rule.get('rule_name')}' specified LabBuild course '{rule_lab_course}' which is NOT FOUND for vendor '{derived_vendor}'.")
-            # --- Removed pattern logic - use separate rules ---
+                # --- LabBuild Course ---
+                if not action_set_flags["labbuild_course"] and "set_labbuild_course" in actions:
+                    lb_course_action = actions["set_labbuild_course"]
+                    if lb_course_action and isinstance(lb_course_action, str):
+                        if lb_course_action in available_lab_courses_by_vendor.get(derived_vendor, set()):
+                            preselect["labbuild_course"] = lb_course_action
+                            action_set_flags["labbuild_course"] = True
+                            logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET LabBuild Course: {lb_course_action}")
+                        else:
+                            logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) specified LabBuild course '{lb_course_action}' which is NOT FOUND for vendor '{derived_vendor}'.")
+                    elif lb_course_action is not None : # e.g. empty string or non-string
+                         logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'set_labbuild_course' value: {lb_course_action}")
 
-            # --- Apply Host Action ---
-            rule_host_priority = actions.get("host_priority")
-            if isinstance(rule_host_priority, list):
-                # Find first preferred host that actually exists
-                chosen_host = next((h for h in rule_host_priority if h in hosts_list), None)
-                if chosen_host:
-                    preselect["host"] = chosen_host
-                else:
-                    logger.warning(f"Rule '{matched_rule.get('rule_name')}' host preferences {rule_host_priority} not found in available hosts {hosts_list}.")
-                    # Optionally try a default host if primary fails? Or leave as None? Leaving as None.
+                # --- Host Priority & Host ---
+                if not action_set_flags["host"] and "host_priority" in actions:
+                    rule_hp_list = actions["host_priority"]
+                    if isinstance(rule_hp_list, list) and rule_hp_list:
+                        chosen_host = next((h for h in rule_hp_list if h in hosts_list), None)
+                        if chosen_host:
+                            preselect["host"] = chosen_host
+                            preselect["host_priority_list"] = rule_hp_list # Store the list that led to this host
+                            action_set_flags["host"] = True
+                            logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Host: {chosen_host} (from list: {rule_hp_list})")
+                        else: # No available host from this rule's priority list
+                            logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) host preferences {rule_hp_list} are not available/valid. Host not set by this rule.")
+                    elif rule_hp_list is not None: # e.g. empty list or non-list
+                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'host_priority' value: {rule_hp_list}")
 
-            # --- Apply Max Pods Action ---
-            if actions.get("set_max_pods") is not None:
-                try: preselect["max_pods"] = max(1, int(actions["set_max_pods"]))
-                except: logger.warning(f"Invalid max_pods '{actions['set_max_pods']}' in rule '{matched_rule.get('rule_name')}'.")
+                # --- Allow Spillover ---
+                if not action_set_flags["allow_spillover"] and "allow_spillover" in actions:
+                    # Ensure it's a boolean
+                    if isinstance(actions["allow_spillover"], bool):
+                        preselect["allow_spillover"] = actions["allow_spillover"]
+                        action_set_flags["allow_spillover"] = True
+                        logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Allow Spillover: {preselect['allow_spillover']}")
+                    else:
+                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'allow_spillover' value (must be boolean): {actions['allow_spillover']}")
+                
+                # --- Max Pods ---
+                if not action_set_flags["max_pods"] and "set_max_pods" in actions and actions["set_max_pods"] is not None:
+                    try:
+                        preselect["max_pods"] = max(1, int(actions["set_max_pods"]))
+                        action_set_flags["max_pods"] = True
+                        logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Max Pods: {preselect['max_pods']}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'set_max_pods' value: {actions['set_max_pods']}.")
+                
+                # --- Start Pod Number ---
+                if not action_set_flags["start_pod"] and "start_pod_number" in actions and actions["start_pod_number"] is not None:
+                    try:
+                        preselect["start_pod"] = max(1, int(actions["start_pod_number"]))
+                        action_set_flags["start_pod"] = True
+                        logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Start Pod: {preselect['start_pod']}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'start_pod_number' value: {actions['start_pod_number']}.")
 
-            # --- Apply Start Pod Action ---
-            if actions.get("start_pod_number") is not None:
-                try: preselect["start_pod"] = max(1, int(actions["start_pod_number"]))
-                except: logger.warning(f"Invalid start_pod_number '{actions['start_pod_number']}' in rule '{matched_rule.get('rule_name')}'.")
-
-        # --- Calculate final End Pod (after potentially applying max_pods and start_pod) ---
-        effective_required = required_pods
+        # Calculate final End Pod based on potentially modified start_pod and max_pods
+        effective_pods_needed = required_pods
         if preselect["max_pods"] is not None:
-            effective_required = min(preselect["max_pods"], required_pods)
+            effective_pods_needed = min(preselect["max_pods"], required_pods)
+        preselect["end_pod"] = max(preselect["start_pod"], preselect["start_pod"] + effective_pods_needed - 1)
 
-        # End pod calculation needs start pod: End = Start + Count - 1
-        # Make sure end pod is at least start pod
-        preselect["end_pod"] = max(preselect["start_pod"], preselect["start_pod"] + effective_required - 1)
-
-
-        # --- Add preselection info to the course data ---
         course_info['preselect_labbuild_course'] = preselect["labbuild_course"]
         course_info['preselect_host'] = preselect["host"]
         course_info['preselect_start_pod'] = preselect["start_pod"]
         course_info['preselect_end_pod'] = preselect["end_pod"]
-
+        # Store these for potential use in intermediate_build_review or logging
+        course_info['preselect_allow_spillover'] = preselect["allow_spillover"]
+        course_info['preselect_host_priority_list'] = preselect["host_priority_list"]
+        
         output_list.append(course_info)
 
     return output_list
