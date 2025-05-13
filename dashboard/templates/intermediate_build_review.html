@@ -1,24 +1,64 @@
 {# dashboard/templates/intermediate_build_review.html #}
 {% extends 'base.html' %}
 
-{% block title %}Review Courses for Build{% endblock %}
+{% block title %}Review & Assign Courses for Build{% endblock %}
 
 {% block head %}
     {{ super() }}
     <style>
-        .review-table th, .review-table td { font-size: 0.9rem; vertical-align: middle; }
+        /* CSS from your last preferred version - no changes needed here for this fix */
+        .review-table th, .review-table td { 
+            font-size: 0.85rem; 
+            vertical-align: middle; 
+        }
         .warning-message { font-weight: bold; color: var(--bs-danger); }
         body.dark-mode .warning-message { color: var(--status-failed-dark-text); }
         .host-error { color: var(--bs-danger); font-style: italic; }
         body.dark-mode .host-error { color: var(--status-failed-dark-text); }
-        /* Ensure assignment column can wrap */
-        .col-host-assignments { min-width: 300px; white-space: normal; }
+        
+        .col-sf-code { width: 130px; }
+        .col-lb-course { width: 160px; }
+        .col-vendor { width: 60px; text-align: center; }
+        .col-interactive-assignments { min-width: 350px; }
+        .col-total-interactive-memory { width: 110px; text-align: right; font-weight: bold; }
+        .col-host-assignments-auto { min-width: 230px; white-space: normal; font-size: 0.8rem; } 
+
+        .review-table input[type="number"].form-control-sm,
+        .review-table select.form-select-sm {
+            font-size: 0.75rem; padding: 0.15rem 0.3rem; height: auto; 
+            display: inline-block; width: 100%; box-sizing: border-box;
+        }
+        .review-table td { padding-top: 0.3rem; padding-bottom: 0.3rem; } 
+        .table-sm th, .table-sm td { padding: 0.3rem; } 
+        .form-control.is-invalid, .form-select.is-invalid { border-color: var(--bs-danger); }
+
+        .assignment-sub-row {
+            display: flex; align-items: center; gap: 0.4rem; 
+            margin-bottom: 0.25rem; padding: 0.1rem 0; 
+        }
+        .assignment-sub-row:last-of-type { margin-bottom: 0; }
+        
+        .sub-host-select { flex: 2; min-width: 120px; max-width: 150px; } 
+        .sub-pod-input { flex: 0.8; min-width: 55px; max-width: 65px; text-align: center;} 
+        .sub-row-actions { flex-shrink: 0; display: flex; align-items: center; }
+        .sub-row-actions .btn { 
+            padding: 0.1rem 0.2rem; font-size: 1rem; line-height: 1;
+            border: none; background: none; cursor: pointer; 
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .sub-row-actions .btn + .btn { margin-left: 0.2rem; }
+        .remove-assignment-btn .fa-circle-xmark { color: var(--bs-danger); }
+        body.dark-mode .remove-assignment-btn .fa-circle-xmark { color: #ff8a80; } 
+        .add-assignment-btn-inline .fa-circle-plus { color: var(--bs-success); }
+        body.dark-mode .add-assignment-btn-inline .fa-circle-plus { color: #81c784; } 
+        .add-assignment-btn-inline:hover .fa-circle-plus,
+        .remove-assignment-btn:hover .fa-circle-xmark { opacity: 0.7; }
     </style>
 {% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1>Review Courses for Build</h1>
+   <h1>Review & Assign Courses for Build</h1>
    <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-sm btn-outline-secondary">Back to Upcoming Courses</a>
 </div>
 
@@ -29,43 +69,92 @@
 {% endif %}
 
 <div class="card">
-    <div class="card-header">Confirm Build Selection</div>
+    <div class="card-header">Define Build Assignments</div>
     <div class="card-body">
         {% if selected_courses %}
-            <p>Please review the {{ selected_courses|length }} course(s) and their assigned hosts/pods:</p>
+            <p>Review {{ selected_courses|length }} course(s). Auto-assignments are pre-filled. Modify or add host/pod ranges. "Total Est. Memory" updates dynamically.</p>
             <div class="table-responsive">
-                <table class="table table-sm table-striped table-bordered review-table">
+                <table class="table table-sm table-striped table-bordered review-table" id="reviewCoursesTable">
                     <thead class="table-light">
                         <tr>
-                            <th>SF Course Code</th>
-                            <th>LabBuild Course</th>
-                            <th>Vendor</th>
-                            <th>Start Date</th>
-                            <th>End Date</th>
-                            <th>Trainer</th>
-                            <th class="col-host-assignments">Assigned Host(s), Pod(s) & Memory</th> {# Updated Header Text #}
+                            <th class="col-sf-code">SF Course Code</th>
+                            <th class="col-lb-course">LabBuild Course</th>
+                            <th class="col-vendor">Vendor</th>
+                            <th class="col-interactive-assignments">Interactive Host & Pod Assignments</th>
+                            <th class="col-total-interactive-memory">Total Est. Memory (GB)</th> 
+                            <th class="col-host-assignments-auto">Original Auto-Assignment (Read-only)</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for course in selected_courses %}
-                        <tr>
-                            <td>{{ course.sf_course_code }}</td>
-                            <td>{{ course.labbuild_course }}</td>
-                            <td>{{ course.vendor | upper }}</td>
-                            <td>{{ course.sf_start_date }}</td>
-                            <td>{{ course.sf_end_date }}</td>
-                            <td>{{ course.sf_trainer }}</td>
-                            {# --- Host Assignments Cell (Displays string with memory breakdown) --- #}
-                            <td class="col-host-assignments">
-                                {# Display the generated string which now includes memory #}
-                                {% set display_text = course.get('host_assignments_display', '') %}
-                                {% if display_text and ('Error:' in display_text or 'Failed' in display_text or 'Insufficient' in display_text) %}
-                                    <span class="host-error">{{ display_text }}</span>
-                                {% elif display_text %}
-                                    {# Example: host1: Pods 1-2 (~14.0 GB); host2: Pods 3 (~8.0 GB) #}
-                                    {{ display_text }}
+                        <tr data-course-index="{{ loop.index0 }}" 
+                            data-labbuild-course="{{ course.labbuild_course }}" 
+                            data-memory-one-pod="{{ course.memory_gb_one_pod | default(0.0) }}"
+                            data-sf-course-code="{{ course.sf_course_code }}"
+                            data-sf-pods-req="{{ course.sf_pods_req | default(1) }}" 
+                            data-vendor="{{ course.vendor }}">
+
+                            <td class="col-sf-code" title="{{ course.sf_course_code }}">{{ course.sf_course_code }}</td>
+                            <td class="col-lb-course" title="{{ course.labbuild_course }}">{{ course.labbuild_course }}</td>
+                            <td class="col-vendor">{{ course.vendor | upper }}</td>
+                            
+                            <td class="col-interactive-assignments interactive-assignments-cell">
+                                <div class="assignment-sub-rows-container">
+                                    {# --- Loop through pre-processed initial_interactive_sub_rows --- #}
+                                    {% for sub_row_data in course.initial_interactive_sub_rows %}
+                                    <div class="assignment-sub-row">
+                                        <select name="host_assignment_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_{{ loop.index0 }}" class="form-select form-select-sm sub-host-select">
+                                            <option value="">-- Host --</option>
+                                            {% for host_name_opt in all_hosts %}
+                                            <option value="{{ host_name_opt }}" {% if sub_row_data.host == host_name_opt %}selected{% endif %}>
+                                                {{ host_name_opt }}
+                                            </option>
+                                            {% endfor %}
+                                        </select>
+                                        <input type="number" name="start_pod_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_{{ loop.index0 }}" 
+                                               class="form-control form-control-sm sub-pod-input start-pod-input" 
+                                               value="{{ sub_row_data.start_pod }}" min="1" placeholder="Start">
+                                        <input type="number" name="end_pod_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_{{ loop.index0 }}" 
+                                               class="form-control form-control-sm sub-pod-input end-pod-input" 
+                                               value="{{ sub_row_data.end_pod }}" min="1" placeholder="End">
+                                        <div class="sub-row-actions">
+                                            <button type="button" class="btn remove-assignment-btn" title="Remove this assignment">
+                                                <i class="fa-solid fa-circle-xmark"></i>
+                                            </button>
+                                            <button type="button" class="btn add-assignment-btn-inline" title="Add another assignment for this course">
+                                                <i class="fa-solid fa-circle-plus"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {% else %} {# Fallback if course.initial_interactive_sub_rows is empty for some reason #}
+                                    <div class="assignment-sub-row">
+                                        <select name="host_assignment_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_0" class="form-select form-select-sm sub-host-select">
+                                            <option value="">-- Host --</option>
+                                            {% for host_name_opt in all_hosts %}<option value="{{ host_name_opt }}">{{ host_name_opt }}</option>{% endfor %}
+                                        </select>
+                                        <input type="number" name="start_pod_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_0" class="form-control form-control-sm sub-pod-input start-pod-input" value="1" min="1" placeholder="Start">
+                                        <input type="number" name="end_pod_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_0" class="form-control form-control-sm sub-pod-input end-pod-input" value="1" min="1" placeholder="End">
+                                        <div class="sub-row-actions">
+                                            <button type="button" class="btn remove-assignment-btn" title="Remove this assignment" style="display:none;"><i class="fa-solid fa-circle-xmark"></i></button>
+                                            <button type="button" class="btn add-assignment-btn-inline" title="Add another assignment for this course"><i class="fa-solid fa-circle-plus"></i></button>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div> 
+                            </td>
+
+                            <td class="col-total-interactive-memory">
+                                <span class="total-course-memory-display">0.00</span> GB
+                            </td>
+                            
+                            <td class="col-host-assignments-auto">
+                                {% set display_text_auto = course.get('host_assignments_display_auto', '') %}
+                                {% if display_text_auto and ('Error:' in display_text_auto or 'Failed' in display_text_auto or 'Insufficient' in display_text_auto) %}
+                                    <span class="host-error">{{ display_text_auto }}</span>
+                                {% elif display_text_auto %}
+                                    {{ display_text_auto }}
                                 {% else %}
-                                    <span class="host-error">Assignment Failed/Pending</span>
+                                    <span class="text-muted">N/A</span>
                                 {% endif %}
                             </td>
                         </tr>
@@ -74,12 +163,13 @@
                 </table>
             </div>
 
-            {# --- Placeholder for Final Build Trigger --- #}
             <div class="mt-4">
-                <p class="warning-message">Warning: The "Confirm Build" functionality is not yet implemented.</p>
+                <p class="warning-message">Warning: The "Confirm Build" functionality is not yet implemented. Review your multi-assignments; data will be logged to console upon clicking "Review & Prepare".</p>
                 <form action="#" method="POST" id="confirmBuildForm">
-                     <button type="submit" class="btn btn-lg btn-success" disabled title="Confirm Build Action Not Implemented Yet">
-                         <i class="fas fa-check-circle"></i> Confirm and Start Build (DISABLED)
+                     <input type="hidden" name="final_build_plan" id="finalBuildPlanInput">
+                     <button type="submit" class="btn btn-lg btn-success" 
+                             title="This will collect your choices. Actual build execution is a future step.">
+                         <i class="fas fa-tasks"></i> Review & Prepare Build Plan
                      </button>
                      <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-lg btn-secondary ms-2">Cancel</a>
                 </form>
@@ -89,11 +179,240 @@
             <div class="alert alert-warning"> No courses were processed for review. </div>
              <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary">Back to Upcoming Courses</a>
         {% endif %}
-    </div> {# End card-body #}
-</div> {# End card #}
+    </div> 
+</div> 
+
+{# Embedded data for JavaScript #}
+<script id="allHostsData" type="application/json">
+    {{ all_hosts | tojson | safe }}
+</script>
+<script id="courseMemoryData" type="application/json">
+    {{ course_configs_for_memory | tojson | safe }}
+</script>
+<script id="memoryFactorData" type="application/json">
+    {{ {"factor": subsequent_pod_memory_factor} | tojson | safe }}
+</script>
+
 {% endblock %}
 
 {% block scripts %}
     {{ super() }}
-    {# No specific JS needed for this static review page yet #}
+    {# The JavaScript from the previous response (handling dynamic rows, memory calc, button visibility) #}
+    {# should largely work with this new Jinja structure. The key change is that Jinja now #}
+    {# renders multiple initial sub-rows if `course.initial_interactive_sub_rows` dictates it. #}
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const reviewTableElement = document.getElementById('reviewCoursesTable');
+            if (!reviewTableElement) {
+                console.error("Review table element ('reviewCoursesTable') not found.");
+                return;
+            }
+
+            let ALL_HOSTS_LIST = []; 
+            let COURSE_MEMORY_STORE = []; 
+            let MEMORY_FACTOR = 0.5; 
+
+            try { 
+                ALL_HOSTS_LIST = JSON.parse(document.getElementById('allHostsData')?.textContent || '[]');
+                COURSE_MEMORY_STORE = JSON.parse(document.getElementById('courseMemoryData')?.textContent || '[]');
+                MEMORY_FACTOR = JSON.parse(document.getElementById('memoryFactorData')?.textContent || '{"factor":0.5}').factor;
+            } catch (e) { console.error("Error parsing embedded data:", e); }
+
+            function getLabbuildCourseMemory(labbuildCourseName) {
+                if (!labbuildCourseName || !COURSE_MEMORY_STORE.length) return 0;
+                const config = COURSE_MEMORY_STORE.find(c => c.course_name === labbuildCourseName);
+                if (config) {
+                    const memVal = config.memory_gb_per_pod !== undefined ? config.memory_gb_per_pod : config.memory;
+                    const parsedMem = parseFloat(memVal);
+                    return !isNaN(parsedMem) && parsedMem >= 0 ? parsedMem : 0;
+                }
+                return 0;
+            }
+
+            function calculateSubRowMemory(subRowElement) {
+                const mainRow = subRowElement.closest('tr');
+                if (!mainRow) return 0; 
+                const memoryPerSinglePod = parseFloat(mainRow.dataset.memoryOnePod);
+                const startPodInput = subRowElement.querySelector('.start-pod-input');
+                const endPodInput = subRowElement.querySelector('.end-pod-input');
+                
+                if (!startPodInput || !endPodInput || isNaN(memoryPerSinglePod) || memoryPerSinglePod <= 0) return 0;
+
+                let startVal = parseInt(startPodInput.value, 10);
+                let endVal = parseInt(endPodInput.value, 10);
+                let isValid = true;
+                
+                startPodInput.classList.toggle('is-invalid', isNaN(startVal) || startVal < 1);
+                if (isNaN(startVal) || startVal < 1) isValid = false;
+                
+                endPodInput.classList.toggle('is-invalid', isNaN(endVal) || endVal < 1 || (!isNaN(startVal) && endVal < startVal));
+                if (isNaN(endVal) || endVal < 1 || (!isNaN(startVal) && endVal < startVal)) isValid = false;
+
+                if (!isValid) return 0;
+                const numPods = endVal - startVal + 1;
+                return numPods >= 1 ? (memoryPerSinglePod + (numPods - 1) * memoryPerSinglePod * MEMORY_FACTOR) : 0;
+            }
+
+            function updateTotalCourseMemory(mainRowElement) {
+                let totalCourseMemory = 0;
+                mainRowElement.querySelectorAll('.assignment-sub-row').forEach(subRow => {
+                    totalCourseMemory += calculateSubRowMemory(subRow); 
+                });
+                const totalDisplay = mainRowElement.querySelector('.total-course-memory-display');
+                if (totalDisplay) totalDisplay.textContent = totalCourseMemory.toFixed(2);
+            }
+
+            function updateActionButtonsVisibility(interactiveCell) {
+                const subRows = interactiveCell.querySelectorAll('.assignment-sub-row');
+                if (subRows.length === 0) {
+                    // This case should be less likely if JS always ensures at least one row when empty
+                    // But if it happens, you might want a master "Add" button for the cell.
+                    return;
+                }
+
+                subRows.forEach((subRow, index) => {
+                    const removeBtn = subRow.querySelector('.remove-assignment-btn');
+                    const addBtnInline = subRow.querySelector('.add-assignment-btn-inline');
+                    if (removeBtn) removeBtn.style.display = subRows.length > 1 ? 'inline-flex' : 'none';
+                    if (addBtnInline) addBtnInline.style.display = (index === subRows.length - 1) ? 'inline-flex' : 'none';
+                });
+            }
+
+            function addSubRowListeners(subRowElement) {
+                subRowElement.querySelectorAll('.sub-pod-input, .sub-host-select').forEach(input => {
+                    input.addEventListener('input', () => {
+                        const mainTr = subRowElement.closest('tr');
+                        if (mainTr) updateTotalCourseMemory(mainTr);
+                    });
+                });
+                
+                const removeBtn = subRowElement.querySelector('.remove-assignment-btn');
+                if (removeBtn) {
+                    removeBtn.addEventListener('click', function() {
+                        const mainTr = this.closest('tr'); 
+                        const interactiveCell = this.closest('.interactive-assignments-cell');
+                        this.closest('.assignment-sub-row').remove(); 
+                        if (mainTr && interactiveCell) {
+                            updateTotalCourseMemory(mainTr); 
+                            updateActionButtonsVisibility(interactiveCell);
+                        }
+                    });
+                }
+
+                const addBtnInline = subRowElement.querySelector('.add-assignment-btn-inline');
+                if (addBtnInline) {
+                    addBtnInline.addEventListener('click', function() {
+                        const mainTr = this.closest('tr');
+                        const interactiveCell = this.closest('.interactive-assignments-cell');
+                        const subRowsContainer = interactiveCell.querySelector('.assignment-sub-rows-container');
+                        // Clone the first sub-row in the container to use as a template.
+                        // This ensures all necessary elements and classes are copied.
+                        const templateSubRow = subRowsContainer.querySelector('.assignment-sub-row'); 
+                        
+                        if (!templateSubRow || !mainTr) {
+                            console.error("Could not find template sub-row to clone.");
+                            return; // Should not happen if Jinja always renders at least one
+                        }
+                        const newSubRow = templateSubRow.cloneNode(true);
+                        
+                        // Generate unique names for the new row's inputs
+                        const mainCourseSFCodeClean = mainTr.dataset.sfCourseCode.replace(/\W/g, ''); // Sanitize
+                        const newSubRowIndex = subRowsContainer.querySelectorAll('.assignment-sub-row').length; // New index
+
+                        const newHostSelect = newSubRow.querySelector('.sub-host-select');
+                        if (newHostSelect) {
+                            newHostSelect.selectedIndex = 0; // Default to "-- Host --"
+                            newHostSelect.name = `host_assignment_${mainCourseSFCodeClean}_${newSubRowIndex}`;
+                        }
+                        
+                        const newStartPod = newSubRow.querySelector('.start-pod-input');
+                        if (newStartPod) {
+                            newStartPod.value = '1'; 
+                            newStartPod.name = `start_pod_${mainCourseSFCodeClean}_${newSubRowIndex}`;
+                        }
+                        
+                        const newEndPod = newSubRow.querySelector('.end-pod-input');
+                        if (newEndPod) {
+                            newEndPod.value = '1'; 
+                            newEndPod.name = `end_pod_${mainCourseSFCodeClean}_${newSubRowIndex}`;
+                        }
+                        
+                        newSubRow.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
+                        
+                        subRowsContainer.appendChild(newSubRow); // Append the new sub-row
+                        addSubRowListeners(newSubRow); // Add listeners to inputs of the new row
+                        updateTotalCourseMemory(mainTr); // Recalculate total memory for the course
+                        updateActionButtonsVisibility(interactiveCell); // Update all buttons in this cell
+                    });
+                }
+            }
+            
+            // Initial setup for each main course row
+            reviewTableElement.querySelectorAll('tbody tr').forEach(mainRow => {
+                const interactiveCell = mainRow.querySelector('.interactive-assignments-cell');
+                if (!interactiveCell) return;
+                const subRowsContainer = interactiveCell.querySelector('.assignment-sub-rows-container');
+                if (!subRowsContainer) return;
+
+                // Attach listeners to all initially rendered sub-rows by Jinja
+                subRowsContainer.querySelectorAll('.assignment-sub-row').forEach(subRow => {
+                    addSubRowListeners(subRow);
+                });
+                updateTotalCourseMemory(mainRow);
+                updateActionButtonsVisibility(interactiveCell); // Set initial button visibility
+            });
+
+            // Confirm Build Form Logic (remains the same as previous version)
+            const confirmBuildFormElement = document.getElementById('confirmBuildForm');
+            if (confirmBuildFormElement) {
+                confirmBuildFormElement.addEventListener('submit', function(event) {
+                    event.preventDefault(); 
+                    // ... (data collection and validation logic as before) ...
+                    const finalBuildPlanPayload = [];
+                    let isOverallFormValid = true;
+                    reviewTableElement.querySelectorAll('tbody tr').forEach(mainRow => {
+                        if (!isOverallFormValid) return;
+                        const sfCourseCode = mainRow.dataset.sfCourseCode;
+                        const courseInteractiveAssignments = [];
+                        mainRow.querySelectorAll('.assignment-sub-row').forEach(subRow => {
+                            if (!isOverallFormValid) return;
+                            const hostSelect = subRow.querySelector('.sub-host-select');
+                            const startPodInput = subRow.querySelector('.start-pod-input');
+                            const endPodInput = subRow.querySelector('.end-pod-input');
+                            if (!hostSelect.value) {
+                                alert(`Host not selected for an assignment in SF Course: ${sfCourseCode}`);
+                                hostSelect.focus(); isOverallFormValid = false; return;
+                            }
+                            calculateSubRowMemory(subRow); // Re-run validation which sets is-invalid
+                            if (startPodInput.classList.contains('is-invalid') || endPodInput.classList.contains('is-invalid')) {
+                                alert(`Invalid pod range for an assignment in SF Course: ${sfCourseCode}.`);
+                                if (startPodInput.classList.contains('is-invalid')) startPodInput.focus();
+                                else if (endPodInput.classList.contains('is-invalid')) endPodInput.focus();
+                                isOverallFormValid = false; return;
+                            }
+                             const startVal = parseInt(startPodInput.value, 10); 
+                             const endVal = parseInt(endPodInput.value, 10);
+                            courseInteractiveAssignments.push({ host: hostSelect.value, start_pod: startVal, end_pod: endVal });
+                        });
+                        if (isOverallFormValid && courseInteractiveAssignments.length > 0) {
+                             finalBuildPlanPayload.push({
+                                sf_course_code: sfCourseCode,
+                                labbuild_course: mainRow.dataset.labbuildCourse,
+                                vendor: mainRow.dataset.vendor,
+                                memory_gb_one_pod: parseFloat(mainRow.dataset.memoryOnePod),
+                                interactive_assignments: courseInteractiveAssignments
+                            });
+                        } else if (isOverallFormValid && courseInteractiveAssignments.length === 0) {
+                            console.warn(`No interactive assignments for SF Course: ${sfCourseCode}.`);
+                        }
+                    });
+                    if (!isOverallFormValid) { console.warn("Validation errors."); return; }
+                    if (finalBuildPlanPayload.length === 0) { alert("No assignments defined."); return; }
+                    console.log("Final Build Plan:", finalBuildPlanPayload);
+                    document.getElementById('finalBuildPlanInput').value = JSON.stringify(finalBuildPlanPayload);
+                    alert("Build Plan prepared (console). Submission not implemented.");
+                });
+            }
+        });
+    </script>
 {% endblock %}
