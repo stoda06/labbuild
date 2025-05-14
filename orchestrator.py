@@ -198,6 +198,7 @@ def vendor_setup(
     end_pod = args_dict.get('end_pod')     # Already int or None
     class_number = args_dict.get('class_number') # Already int or None
     memory = args_dict.get('memory') # Already int or None
+    clonefrom_pod_number = args_dict.get('clonefrom') 
 
     logger.info(f"Dispatching setup for vendor '{vendor_shortcode}'. RunID: {operation_logger.run_id}")
     data_accumulator = {"tag": tag, "course_name": course_name, "vendor": vendor_shortcode, "pod_details": []}
@@ -310,6 +311,34 @@ def vendor_setup(
         futures = []
         pod_configs_map = {} # Store prepared config per pod for later DB update
 
+        source_pod_vms_map = None
+        if vendor_shortcode == "cp" and clonefrom_pod_number is not None:
+            logger.info(f"CloneFrom active for CP: Source Pod {clonefrom_pod_number}. Preparing source VM map...")
+            try:
+                # Fetch the config for the *source* pod to determine its VM names
+                # Assumes the course_name is the same for the source and target.
+                source_pod_config_raw = fetch_and_prepare_course_config(course_name, pod=clonefrom_pod_number)
+                source_pod_vms_map = {}
+                # This logic needs to correctly derive VM names based on how 'build_cp_pod' names them
+                # For CP, it's typically component['clone_name'] with {X} replaced by pod_number
+                for comp_template in source_pod_config_raw.get("components", []):
+                    original_comp_name = comp_template.get("component_name")
+                    # Use the 'clone_name' from the config as the pattern for the source VM.
+                    clone_name_pattern = comp_template.get("clone_name")
+                    if original_comp_name and clone_name_pattern:
+                        source_vm_name = clone_name_pattern.replace("{X}", str(clonefrom_pod_number))
+                        source_pod_vms_map[original_comp_name] = source_vm_name
+                if not source_pod_vms_map:
+                    logger.error(f"Could not determine source VM names for pod {clonefrom_pod_number} from its config. Aborting CloneFrom.")
+                    # You might want to return an error result here
+                    return [{"identifier": f"clonefrom_prep_failed_pod_{clonefrom_pod_number}", "status": "failed", "error_message": f"Could not map source VMs for pod {clonefrom_pod_number}"}]
+                else:
+                    logger.info(f"Source VM map for pod {clonefrom_pod_number}: {source_pod_vms_map}")
+            except Exception as e_src_cfg:
+                logger.error(f"Failed to prepare source pod VM map for pod {clonefrom_pod_number}: {e_src_cfg}. CloneFrom will likely fail.")
+                source_pod_vms_map = None # Ensure it's None on error
+                # Potentially return error here as well.
+
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
             for pod in range(start_pod, end_pod + 1):
                 pod_id_str = str(pod)
@@ -350,6 +379,8 @@ def vendor_setup(
                     # Adjust args for specific vendors/courses if needed
                     if vendor_shortcode == "cp":
                         build_args["thread"] = thread_count # CP function takes thread count
+                        build_args["clonefrom"] = clonefrom_pod_number
+                        build_args["source_pod_vms"] = source_pod_vms_map
                     if vendor_shortcode == "pa" and ("1100" in course_name_lower or "cortex" in course_name_lower):
                         # 1100/Cortex build functions might need host_details directly
                         build_args["host_details"] = host_details

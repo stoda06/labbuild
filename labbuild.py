@@ -97,6 +97,8 @@ def main():
     setup_parser.add_argument('--prtg-server', help='Specify target PRTG server for monitoring.')
     setup_parser.add_argument('--perm', action='store_true', help='Only apply permissions (specific vendors).')
     setup_parser.add_argument('--db-only', action='store_true', help='Only update the database allocation record.')
+    setup_parser.add_argument('--clonefrom', type=int, metavar='SOURCE_POD',
+                            help='Source pod number to clone VMs from (primarily for Checkpoint).')
     setup_parser.set_defaults(func=setup_environment)
 
     manage_parser = subparsers.add_parser('manage', help='Manage VM power states.',
