@@ -49,27 +49,36 @@ VENDOR_MONITOR_MAP: Dict[str, Callable] = {
 # --- Monitor and DB Update Helper ---
 # Updated signature to accept args_dict
 def update_monitor_and_database(
-    config: Dict[str, Any],
-    args_dict: Dict[str, Any], # Changed from args: argparse.Namespace
-    data: Dict[str, Any],
+    config: Dict[str, Any], # This will be class_config or pod_config
+    args_dict: Dict[str, Any],
+    data: Dict[str, Any], # The accumulator for DB update
     extra_details: Optional[Dict[str, Any]] = None,
-    max_retries: int = 3,         # Max attempts for monitor action
-    retry_delay_seconds: int = 10 # Delay between retries
-    
+    max_retries: int = 3,
+    retry_delay_seconds: int = 10
 ):
     """Add PRTG monitor and update database allocation."""
-    vendor_shortcode = config.get("vendor_shortcode", "ot") # Default to 'ot' if missing
+    vendor_shortcode = config.get("vendor_shortcode", "ot")
+    # Use the VENDOR_MONITOR_MAP to get the correct add_monitor function
     add_monitor_func = VENDOR_MONITOR_MAP.get(vendor_shortcode, PRTGManager.add_monitor)
+    
     prtg_url = None
-    # Extract prtg_server preference from args_dict
-    prtg_server_preference = args_dict.get('prtg_server')
-    monitor_identifier = f"Pod {config.get('pod_number', '')}" if config.get('pod_number') else f"Class {config.get('class_number', '')}"
+    prtg_server_preference = args_dict.get('prtg_server') # From CLI args
+
+    # Determine identifier for logging
+    if config.get('pod_number') is not None: # Pod-specific context
+        monitor_identifier = f"Pod {config.get('pod_number')}"
+        if config.get('class_number') is not None: # F5 Pod within a class
+            monitor_identifier += f" in Class {config.get('class_number')}"
+    elif config.get('class_number') is not None: # Class-level context (e.g., F5 class itself)
+        monitor_identifier = f"Class {config.get('class_number')}"
+    else: # Fallback if no pod or class number (should ideally not happen for monitored items)
+        monitor_identifier = "Unknown Entity"
     monitor_identifier += f" (Course: {config.get('course_name', 'N/A')})"
 
-    logger.info(f"Attempting to add/update PRTG monitor for {monitor_identifier}...")
+    logger.info(f"Attempting to add/update PRTG monitor for {monitor_identifier} using function '{add_monitor_func.__name__}'...")
 
     for attempt in range(1, max_retries + 1):
-        prtg_url = None # Reset prtg_url for each attempt
+        prtg_url = None 
         monitor_success = False
 
         try:
@@ -77,96 +86,103 @@ def update_monitor_and_database(
                 if not client:
                     logger.error(f"[Attempt {attempt}/{max_retries}] Cannot add monitor for {monitor_identifier}: DB connection failed.")
                 else:
-                    # Pass the preference to the vendor-specific function if it accepts it
-                    # Checkpoint's add_monitor accepts it, others might need adaptation
+                    # --- Call the appropriate add_monitor function ---
+                    # Check if the function expects prtg_server_preference
+                    # Based on previous f5.add_monitor, it accepts it.
+                    # Checkpoint and Palo also accept it. Others might use default.
                     if vendor_shortcode in ["cp", "pa", "f5"]:
                          prtg_url = add_monitor_func(config, client, prtg_server_preference)
-                    else: # Default call for others
-                         prtg_url = add_monitor_func(config, client) # Assumes default doesn't need preference
+                    else: # For av, pr, nu, ot (using PRTGManager.add_monitor by default)
+                         # PRTGManager.add_monitor in monitor/prtg.py also needs adaptation if it should take preference
+                         # For now, assuming the generic one doesn't.
+                         prtg_url = add_monitor_func(config, client) 
 
             if prtg_url:
-                logger.info(f"[Attempt {attempt}/{max_retries}] PRTG monitor added/updated successfully for {monitor_identifier}. URL: {prtg_url}")
+                logger.info(f"[Attempt {attempt}/{max_retries}] PRTG monitor added/updated for {monitor_identifier}. URL: {prtg_url}")
                 monitor_success = True
-                break # Exit retry loop on success
+                break 
             else:
-                # The add_monitor function should log its specific failure reason
                 logger.warning(f"[Attempt {attempt}/{max_retries}] Failed to add/update PRTG monitor for {monitor_identifier} (check specific add_monitor logs).")
 
         except Exception as e:
-            logger.error(f"[Attempt {attempt}/{max_retries}] Error adding PRTG monitor for {monitor_identifier}: {e}", exc_info=True)
+            logger.error(f"[Attempt {attempt}/{max_retries}] Error during PRTG monitor action for {monitor_identifier}: {e}", exc_info=True)
         
-        # If not successful and not the last attempt, wait before retrying
         if not monitor_success and attempt < max_retries:
             logger.info(f"Waiting {retry_delay_seconds}s before retrying PRTG monitor action...")
             time.sleep(retry_delay_seconds)
     
-    # Log final failure if all retries failed
     if not prtg_url:
          logger.error(f"Failed to add/update PRTG monitor for {monitor_identifier} after {max_retries} attempts.")
-         # Proceed to DB update anyway, but prtg_url will be None
 
     # --- Update Data Accumulator (Database structure) ---
-    # Get host from args_dict
-    host_value = args_dict.get('host', 'unknown_host') # Use fallback
+    host_value = args_dict.get('host', 'unknown_host') # From CLI args
     record = {"host": host_value, "poweron": "True", "prtg_url": prtg_url}
     if extra_details:
         record.update(extra_details)
 
+    # --- F5 Specific DB Update Logic ---
     if vendor_shortcode == "f5":
         class_number = config.get("class_number")
         if class_number is None:
-            logger.error("F5 configuration missing class_number during DB update.")
-            return # Cannot proceed without class number for F5
+            logger.error("F5 configuration missing class_number during DB update. Cannot proceed.")
+            return 
 
-        is_class_build = "pod_number" not in config # If only class_number is present, it's the class build
+        # Check if this 'config' is for the class itself or for a pod within the class
+        is_class_level_config = "pod_number" not in config 
 
-        # Find or create the entry for this class number
+        # Find or create the entry for this class number in the data accumulator
         class_entry = next((e for e in data["pod_details"] if isinstance(e, dict) and e.get("class_number") == class_number), None)
         if not class_entry:
-            class_entry = {"class_number": class_number, "host": host_value, "pods": []} # Initialize common fields
+            # Initialize class entry with common fields if it's new
+            class_entry = {"class_number": class_number, "host": host_value, "vendor": vendor_shortcode, "pods": []}
             data["pod_details"].append(class_entry)
 
-        if is_class_build:
-            # Update the class-level details (host, prtg_url)
-            class_entry.update(record)
-            class_entry.setdefault("pods", []) # Ensure pods list exists
+        if is_class_level_config:
+            # This 'config' is for the F5 class itself. Update class-level details.
+            class_entry.update(record) # Adds host, poweron (for class), prtg_url (for class VR)
+            class_entry.setdefault("pods", []) # Ensure 'pods' list exists
+            logger.debug(f"Updated/Created DB entry for F5 Class {class_number} with PRTG URL: {prtg_url}")
         else:
-            # This is a pod build within the class
+            # This 'config' is for a specific pod within the F5 class.
             pod_number = config.get("pod_number")
             if pod_number is None:
-                 logger.error("F5 pod configuration missing pod_number during DB update.")
-                 return # Cannot proceed without pod number
+                 logger.error("F5 pod configuration missing pod_number during DB update. Cannot proceed.")
+                 return
 
-            record["pod_number"] = pod_number # Add pod number to the record
-            # Find or create the entry for this specific pod within the class's pods list
-            pod_entry = next((p for p in class_entry.get("pods", []) if isinstance(p, dict) and p.get("pod_number") == pod_number), None)
-            if pod_entry:
-                pod_entry.update(record) # Update existing pod entry
+            record["pod_number"] = pod_number # Add pod number to the record for this pod
+            
+            # Find or create the entry for this specific pod within the class's 'pods' list
+            pod_list_in_class_entry = class_entry.setdefault("pods", [])
+            pod_entry_in_list = next((p for p in pod_list_in_class_entry if isinstance(p, dict) and p.get("pod_number") == pod_number), None)
+            
+            if pod_entry_in_list:
+                pod_entry_in_list.update(record) # Update existing pod entry
             else:
-                class_entry.setdefault("pods", []).append(record) # Add new pod entry
-            # Ensure class entry has a host if it wasn't set during class build
+                pod_list_in_class_entry.append(record) # Add new pod entry
+            
+            # Ensure the main class entry has a host if it wasn't set during a class-level build
             if "host" not in class_entry or not class_entry["host"]:
                  class_entry["host"] = host_value
-    else:
-        # Non-F5: Add pod details directly
+            logger.debug(f"Updated/Created DB entry for F5 Pod {pod_number} in Class {class_number} with PRTG URL: {prtg_url}")
+    else: # --- Non-F5 DB Update Logic ---
         pod_number = config.get("pod_number")
         if pod_number is None:
-            logger.error(f"{vendor_shortcode.upper()} config missing pod_number during DB update.")
-            return # Cannot proceed without pod number
+            logger.error(f"{vendor_shortcode.upper()} config missing pod_number during DB update. Cannot proceed.")
+            return 
         record["pod_number"] = pod_number
-        # Avoid duplicates - check if pod already exists
+        # Avoid duplicates for non-F5 - check if pod already exists in data["pod_details"]
         existing_pod_entry = next((p for p in data["pod_details"] if isinstance(p,dict) and p.get("pod_number") == pod_number), None)
         if existing_pod_entry:
             existing_pod_entry.update(record) # Update if exists
         else:
             data["pod_details"].append(record) # Add if new
+        logger.debug(f"Updated/Created DB entry for {vendor_shortcode.upper()} Pod {pod_number} with PRTG URL: {prtg_url}")
 
-    # --- Update Database ---
+
+    # --- Update Database (common for all) ---
     try:
-        logger.info(f"Updating database allocation record...")
-        # Log details carefully if needed, potentially large structure
-        # logger.debug(f"Database update data: {json.dumps(data, indent=2)}")
-        update_database(data) # Call imported function
+        logger.info(f"Updating database allocation record for tag '{data.get('tag')}'...")
+        update_database(data)
         logger.info(f"Database successfully updated for tag '{data.get('tag')}', course '{data.get('course_name')}'.")
     except Exception as e:
         logger.error(f"Failed during final database update: {e}", exc_info=True)
