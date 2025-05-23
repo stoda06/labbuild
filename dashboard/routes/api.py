@@ -253,6 +253,8 @@ def api_propose_build_assignments():
         trainer_name = course_in_data.get('Trainer', 'N/A') # Get from the data
         start_date = course_in_data.get('sf_start_date', 'N/A')
         end_date = course_in_data.get('sf_end_date', 'N/A')
+        sf_course_type = course_in_data.get('sf_course_type', '')
+        pax_num = course_in_data.get('pax_number', 0)
 
 
         assigned_map_student = defaultdict(list)
@@ -358,12 +360,14 @@ def api_propose_build_assignments():
 
         course_api_result = {
             "sf_course_code": sf_code,
+            "sf_course_type": sf_course_type,
             "final_labbuild_course": final_lb_course,
             "vendor": vendor,
             "trainer": trainer_name,
             "sf_start_date": start_date, # <<< ADDED START DATE
             "sf_end_date": end_date,     # <<< ADDED END DATE
             "effective_pods_req_student": eff_pods_req,
+            "pax": pax_num,
             "memory_gb_one_student_pod": mem_per_pod,
             "proposed_assignments": [],
             "assignment_warning": student_warn_msg

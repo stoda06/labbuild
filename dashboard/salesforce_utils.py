@@ -505,6 +505,14 @@ def apply_build_rules_to_courses(
     for index, course_row in courses_df.iterrows():
         course_info = course_row.to_dict()
         sf_course_code = course_info.get('Course Code', '')
+        cal_desc = course_info.get('Cal Desc', '')
+        # Assuming 'Pax' is the final calculated Pax number column from SF processing
+        pax_number = course_info.get('Pax', 0) 
+        try:
+            pax_number = int(pax_number) if pd.notna(pax_number) else 0
+        except ValueError:
+            pax_number = 0
+        # --- END CAL DESC AND PAX EXTRACTION ---
         sf_course_type = course_info.get('Course Type', '') # Original SF Course Type
         trainer_name = course_info.get('Trainer', 'N/A') # Get trainer name, default to N/A
         sf_start_date = course_info.get('Start Date', 'N/A') # Assumes column name is 'Start Date'
@@ -512,6 +520,8 @@ def apply_build_rules_to_courses(
         required_pods = int(course_info.get('Pods Req.', 0)) or 1
         derived_vendor = sf_course_code[:2].lower() if sf_course_code and len(sf_course_code) >= 2 else ''
         course_info['vendor'] = derived_vendor
+        course_info['sf_course_type'] = sf_course_type
+        course_info['pax_number'] = pax_number
         course_info['Trainer'] = trainer_name
         course_info['sf_start_date'] = sf_start_date # Using a consistent key
         course_info['sf_end_date'] = sf_end_date   # Using a consistent key
