@@ -507,7 +507,8 @@ def apply_build_rules_to_courses(
         sf_course_code = course_info.get('Course Code', '')
         sf_course_type = course_info.get('Course Type', '') # Original SF Course Type
         required_pods = int(course_info.get('Pods Req.', 0)) or 1
-        derived_vendor = sf_course_code[:2].lower() if sf_course_code else ''
+        derived_vendor = sf_course_code[:2].lower() if sf_course_code and len(sf_course_code) >= 2 else ''
+        course_info['vendor'] = derived_vendor
 
         preselect = {
             "labbuild_course": None, "host": None, "host_priority_list": [],

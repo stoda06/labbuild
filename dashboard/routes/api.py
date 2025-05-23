@@ -205,7 +205,7 @@ def api_propose_build_assignments():
     # --- 2. Fetch Upcoming Salesforce Courses ---
     try:
         course_configs_list_api: List[Dict] = []
-        if course_config_collection:
+        if course_config_collection is not None:
             course_configs_list_api = list(course_config_collection.find(
                 {}, {"course_name": 1, "vendor_shortcode": 1, "_id": 0}
             ))
@@ -213,6 +213,11 @@ def api_propose_build_assignments():
         upcoming_courses_raw = get_upcoming_courses_data(
             build_rules, course_configs_list_api, all_available_host_names
         )
+        if upcoming_courses_raw: # Add check
+            logger.debug(f"API: First raw upcoming course data: {upcoming_courses_raw[0]}")
+        else:
+            logger.debug("API: upcoming_courses_raw is empty or None.")
+
         if upcoming_courses_raw is None:
             return jsonify({"error": "Failed to get upcoming course data"}), 500
     except Exception as e_sf:
