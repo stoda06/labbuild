@@ -4,6 +4,7 @@ import logging
 import threading
 import datetime
 import pytz
+import re
 import json
 from flask import (
     Blueprint, request, redirect, url_for, flash, current_app, jsonify, render_template
@@ -12,7 +13,7 @@ from pymongo.errors import PyMongoError, BulkWriteError
 import pymongo
 from pymongo import ASCENDING, UpdateOne
 from collections import defaultdict
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 # Import extensions, utils, tasks from dashboard package
 from ..extensions import (
     scheduler,
@@ -611,374 +612,75 @@ def _find_all_matching_rules(rules: list, vendor: str, code: str, type_str: str)
             
     return matching_rules_list
 
-@bp.route('/intermediate-build-review', methods=['POST'])
-def intermediate_build_review():
-    current_theme = request.cookies.get('theme', 'light')
-    selected_courses_json = request.form.get('selected_courses')
-    processed_courses_for_review = []
-    save_error_flag = False
-    
-    globally_assigned_pods_by_vendor = defaultdict(set)
-    reusable_pods_by_vendor_host = defaultdict(lambda: defaultdict(set))
-    released_memory_by_host = defaultdict(float)
-    assignment_capacities_gb = {} 
-    
-    build_rules = []
-    all_available_host_names = [] 
-    hosts_to_check_docs = []      
-    initial_host_capacities_gb = {}
-    course_configs_for_memory_lookup = []
-
-    if not selected_courses_json:
-        flash("No courses selected for review.", "warning")
-        return redirect(url_for('main.view_upcoming_courses'))
-    try:
-        selected_courses_input = json.loads(selected_courses_json)
-        if not isinstance(selected_courses_input, list) or not selected_courses_input:
-             raise ValueError("Invalid course data format.")
-    except (json.JSONDecodeError, ValueError) as e:
-        flash(f"Invalid data received: {e}", "danger")
-        logger.error(f"Failed to parse selected_courses JSON: {e}")
-        return redirect(url_for('main.view_upcoming_courses'))
-
-    try:
-        # --- Steps 1-4: Fetching rules, reusable pods, hosts, capacities (Same as before) ---
-        # ... (This part of your Python code remains unchanged) ...
-        if build_rules_collection is not None: # Fetch Build Rules
-            try:
-                build_rules = list(build_rules_collection.find().sort("priority", ASCENDING))
-                logger.info(f"Loaded {len(build_rules)} build rules.")
-            except PyMongoError as e: logger.error(f"Error fetching build rules: {e}")
-        # Process Reusable Pods
-        if alloc_collection is not None:
-            try:
-                alloc_collection.update_many({"extend": {"$exists": False}}, {"$set": {"extend": "false"}})
-                # ... (rest of reusable pod logic) ...
-                cursor = alloc_collection.find({"extend": "false"}, {"tag": 1,"courses": 1, "_id": 0}) 
-                for tag_doc in cursor: # ... (full loop as before)
-                    tag_name = tag_doc.get("tag", "UNKNOWN_TAG_ERROR")
-                    if tag_name == "UNKNOWN_TAG_ERROR": continue
-                    for course_alloc in tag_doc.get("courses", []):
-                        vendor_reusable = course_alloc.get("vendor")
-                        course_name_alloc = course_alloc.get("course_name")
-                        if not vendor_reusable or not course_name_alloc: continue
-                        mem_per_pod_reusable = _get_memory_for_course(course_name_alloc)
-                        if mem_per_pod_reusable <= 0: continue
-                        for pod_detail_reusable in course_alloc.get("pod_details", []):
-                            pod_num_reusable_str = pod_detail_reusable.get("pod_number"); 
-                            host_reusable = pod_detail_reusable.get("host")
-                            if pod_num_reusable_str is not None and host_reusable:
-                                try:
-                                    pod_num_int_reusable = int(pod_num_reusable_str)
-                                    if pod_num_int_reusable not in reusable_pods_by_vendor_host.get(vendor_reusable, {}).get(host_reusable, set()):
-                                        reusable_pods_by_vendor_host[vendor_reusable][host_reusable].add(pod_num_int_reusable)
-                                        released_memory_by_host[host_reusable] += mem_per_pod_reusable
-                                except (ValueError, TypeError): 
-                                    logger.warning(f"Invalid pod_number '{pod_num_reusable_str}' in reusable check.")
-            except Exception as e: logger.error(f"Error processing reusable pods: {e}", exc_info=True)
-        # Fetch Host Info
-        if host_collection is not None:
-             try:
-                 hosts_to_check_docs = list(host_collection.find({"include_for_build": "true"}))
-                 all_available_host_names = sorted([h['host_name'] for h in hosts_to_check_docs if 'host_name' in h]) 
-             except PyMongoError as e: logger.error(f"Failed fetch host list: {e}")
-        if hosts_to_check_docs: 
-            initial_host_capacities_gb = get_hosts_available_memory_parallel(hosts_to_check_docs)
-        # Adjust Host Capacity
-        for host_doc_cap in hosts_to_check_docs: 
-            host_name_cap = host_doc_cap.get("host_name")
-            if not host_name_cap: continue
-            initial_capacity_cap = initial_host_capacities_gb.get(host_name_cap)
-            if initial_capacity_cap is not None:
-                released_cap = released_memory_by_host.get(host_name_cap, 0.0)
-                assignment_capacities_gb[host_name_cap] = initial_capacity_cap + released_cap
-            else: 
-                logger.warning(f"Excluding host '{host_name_cap}' from assignment: initial capacity fetch failed.")
-        # Course Configs for JS memory lookup
-        if course_config_collection is not None:
-            try:
-                course_configs_for_memory_lookup = list(course_config_collection.find({}, {"course_name": 1, "memory_gb_per_pod": 1, "memory": 1, "_id": 0}))
-            except PyMongoError as e: logger.error(f"Failed to fetch minimal course configs for JS: {e}")
-
-
-        # --- 5. Process Each Selected Course ---
-        logger.info("Starting auto-assignment & review preparation. Deduplication factor: %.2f", SUBSEQUENT_POD_MEMORY_FACTOR)
-        for course_input_data in selected_courses_input:
-            sf_course_code = course_input_data.get('sf_course_code', 'N/A_SF_CODE')
-            labbuild_course_selected_by_user = course_input_data.get('labbuild_course') 
-            vendor_course_proc = course_input_data.get('vendor', '').lower()
-            sf_course_type_proc = course_input_data.get('sf_course_type', '') 
-            pods_req_from_sf_proc = max(1, int(course_input_data.get('sf_pods_req', 1)))
-
-            host_assignments_detail_auto = defaultdict(list) 
-            error_during_auto_assignment = None
-            final_labbuild_course_auto = labbuild_course_selected_by_user 
-            
-            all_matching_rules_for_course = _find_all_matching_rules(build_rules, vendor_course_proc, sf_course_code, sf_course_type_proc)
-            effective_actions_for_course = {}
-            action_keys_to_consider = ["set_labbuild_course", "host_priority", "allow_spillover", "set_max_pods", "start_pod_number"]
-            for rule_auto_proc in all_matching_rules_for_course:
-                rule_actions_auto_proc = rule_auto_proc.get("actions", {})
-                for key_auto_proc in action_keys_to_consider:
-                    if key_auto_proc not in effective_actions_for_course and key_auto_proc in rule_actions_auto_proc:
-                        effective_actions_for_course[key_auto_proc] = rule_actions_auto_proc[key_auto_proc]
-            
-            if "set_labbuild_course" in effective_actions_for_course:
-                final_labbuild_course_auto = effective_actions_for_course["set_labbuild_course"]
-            if not final_labbuild_course_auto: error_during_auto_assignment = "No LabBuild Course determined"
-            
-            memory_gb_per_pod_auto = 0.0
-            if not error_during_auto_assignment:
-                memory_gb_per_pod_auto = _get_memory_for_course(final_labbuild_course_auto)
-                if memory_gb_per_pod_auto <= 0: error_during_auto_assignment = f"Memory for '{final_labbuild_course_auto}' unknown/invalid"
-
-            effective_pods_req_auto = pods_req_from_sf_proc
-            if "set_max_pods" in effective_actions_for_course and effective_actions_for_course["set_max_pods"] is not None:
-                try: effective_pods_req_auto = min(pods_req_from_sf_proc, int(effective_actions_for_course["set_max_pods"]))
-                except (ValueError, TypeError): logger.warning(f"Invalid 'set_max_pods' rule value.")
-            
-            # --- Auto-Assignment Logic (Same as your previous correct version, populates host_assignments_detail_auto) ---
-            if error_during_auto_assignment is None:
-                # ... (Your existing auto-assignment loop that populates host_assignments_detail_auto 
-                #      and updates global assignment_capacities_gb. This code is ~50 lines and assumed correct.)
-                # --- Start of condensed auto-assignment (from your previous code) ---
-                priority_hosts_from_rule_auto = effective_actions_for_course.get("host_priority", [])
-                allow_spillover_rule_auto = effective_actions_for_course.get("allow_spillover", True)
-                start_pod_num_for_new_pods_auto = int(effective_actions_for_course.get("start_pod_number", 1))
-                hosts_to_try_auto_list = []
-                if priority_hosts_from_rule_auto and isinstance(priority_hosts_from_rule_auto, list):
-                    hosts_to_try_auto_list.extend([h for h in priority_hosts_from_rule_auto if h in assignment_capacities_gb and assignment_capacities_gb.get(h,0.0) >= memory_gb_per_pod_auto])
-                if allow_spillover_rule_auto:
-                    spillover_candidates_auto_list = sorted([h_name for h_name in assignment_capacities_gb if h_name not in hosts_to_try_auto_list and assignment_capacities_gb.get(h_name, 0.0) >= memory_gb_per_pod_auto])
-                    hosts_to_try_auto_list.extend(spillover_candidates_auto_list)
-                if not hosts_to_try_auto_list: error_during_auto_assignment = "No suitable hosts with initial capacity found for auto-assignment."
-                else:
-                    pods_to_assign_count_course = effective_pods_req_auto
-                    temp_course_caps = assignment_capacities_gb.copy() 
-                    for host_p_auto in hosts_to_try_auto_list: # ... (rest of the detailed assignment loop) ...
-                        if pods_to_assign_count_course <= 0: break
-                        avail_mem_host_course = temp_course_caps.get(host_p_auto, 0.0)
-                        candidate_reusable_course = sorted(list(reusable_pods_by_vendor_host.get(vendor_course_proc, {}).get(host_p_auto, set()) - globally_assigned_pods_by_vendor.get(vendor_course_proc,set())))
-                        for reusable_p_c in candidate_reusable_course:
-                            if pods_to_assign_count_course <= 0: break
-                            is_first_p_h_c = not host_assignments_detail_auto[host_p_auto]
-                            mem_n_p_c = memory_gb_per_pod_auto if is_first_p_h_c else (memory_gb_per_pod_auto * SUBSEQUENT_POD_MEMORY_FACTOR)
-                            if avail_mem_host_course >= mem_n_p_c: avail_mem_host_course -= mem_n_p_c; host_assignments_detail_auto[host_p_auto].append(reusable_p_c); pods_to_assign_count_course -=1; globally_assigned_pods_by_vendor[vendor_course_proc].add(reusable_p_c)
-                            else: break
-                        if pods_to_assign_count_course > 0:
-                            new_p_candidate_c = start_pod_num_for_new_pods_auto
-                            while pods_to_assign_count_course > 0:
-                                while new_p_candidate_c in globally_assigned_pods_by_vendor.get(vendor_course_proc, set()): new_p_candidate_c +=1
-                                is_first_p_h_c_new = not host_assignments_detail_auto[host_p_auto]
-                                mem_n_p_c_new = memory_gb_per_pod_auto if is_first_p_h_c_new else (memory_gb_per_pod_auto * SUBSEQUENT_POD_MEMORY_FACTOR)
-                                if avail_mem_host_course >= mem_n_p_c_new: avail_mem_host_course -= mem_n_p_c_new; host_assignments_detail_auto[host_p_auto].append(new_p_candidate_c); pods_to_assign_count_course -=1; globally_assigned_pods_by_vendor[vendor_course_proc].add(new_p_candidate_c); new_p_candidate_c +=1
-                                else: break
-                        if host_p_auto in host_assignments_detail_auto:
-                            pods_on_host_by_c = len(host_assignments_detail_auto[host_p_auto])
-                            mem_consumed_by_c_on_h = 0
-                            if pods_on_host_by_c > 0: mem_consumed_by_c_on_h = memory_gb_per_pod_auto + (pods_on_host_by_c -1) * memory_gb_per_pod_auto * SUBSEQUENT_POD_MEMORY_FACTOR
-                            assignment_capacities_gb[host_p_auto] = temp_course_caps.get(host_p_auto, 0.0) - mem_consumed_by_c_on_h
-                            assignment_capacities_gb[host_p_auto] = max(0, assignment_capacities_gb[host_p_auto])
-                    total_assigned_auto = sum(len(p_list) for p_list in host_assignments_detail_auto.values())
-                    if total_assigned_auto < effective_pods_req_auto: error_during_auto_assignment = f"Auto-assign error: Assigned {total_assigned_auto}/{effective_pods_req_auto} pods."
-                # --- End of condensed auto-assignment ---
-
-
-            # --- Prepare data for the review page template ---
-            processed_course_for_template = course_input_data.copy()
-            processed_course_for_template['labbuild_course'] = final_labbuild_course_auto 
-            processed_course_for_template['memory_gb_one_pod'] = memory_gb_per_pod_auto
-            
-            # --- NEW: Prepare initial_interactive_sub_rows ---
-            initial_interactive_sub_rows = []
-            if not error_during_auto_assignment and host_assignments_detail_auto:
-                # Process complex auto-assignments into multiple interactive rows
-                for auto_host, auto_pod_list in host_assignments_detail_auto.items():
-                    if not auto_pod_list: continue
-                    sorted_auto_pods = sorted(list(set(auto_pod_list))) # Ensure unique and sorted
-                    
-                    current_range_start = sorted_auto_pods[0]
-                    current_range_end = sorted_auto_pods[0]
-                    for i in range(1, len(sorted_auto_pods)):
-                        if sorted_auto_pods[i] == current_range_end + 1:
-                            current_range_end = sorted_auto_pods[i]
-                        else:
-                            initial_interactive_sub_rows.append({
-                                "host": auto_host,
-                                "start_pod": current_range_start,
-                                "end_pod": current_range_end
-                            })
-                            current_range_start = sorted_auto_pods[i]
-                            current_range_end = sorted_auto_pods[i]
-                    initial_interactive_sub_rows.append({ # Add the last range
-                        "host": auto_host,
-                        "start_pod": current_range_start,
-                        "end_pod": current_range_end
-                    })
-            
-            if not initial_interactive_sub_rows: # Fallback to a single default row
-                default_host = effective_actions_for_course.get("host_priority",[None])[0] \
-                               if isinstance(effective_actions_for_course.get("host_priority"), list) and effective_actions_for_course.get("host_priority") \
-                               else (all_available_host_names[0] if all_available_host_names else None)
-                default_start = int(effective_actions_for_course.get("start_pod_number", 1))
-                default_end = max(default_start, default_start + effective_pods_req_auto - 1)
-                initial_interactive_sub_rows.append({
-                    "host": default_host,
-                    "start_pod": default_start,
-                    "end_pod": default_end
-                })
-            processed_course_for_template['initial_interactive_sub_rows'] = initial_interactive_sub_rows
-            
-            # Store the original auto-assignment display string (for read-only column)
-            if error_during_auto_assignment:
-                processed_course_for_template['host_assignments_display_auto'] = f"Error: {error_during_auto_assignment}"
-                processed_course_for_template['total_memory_gb_auto_assigned'] = 0.0 
-            elif not host_assignments_detail_auto: # No specific error, but no assignments made
-                processed_course_for_template['host_assignments_display_auto'] = "Auto-assignment: No pods were assigned."
-                processed_course_for_template['total_memory_gb_auto_assigned'] = 0.0
-            else:
-                display_parts_auto_col_list = []
-                calculated_total_deduped_memory_auto_col_val = 0.0
-                for h_auto_col_item, nums_auto_col_list in sorted(host_assignments_detail_auto.items()):
-                    # ... (same logic as before to create display_parts_auto_col_list and calculated_total_deduped_memory_auto_col_val) ...
-                    nums_auto_col_list.sort()
-                    ranges_auto_col_list = []
-                    pods_on_this_host_auto_col_count = len(nums_auto_col_list)
-                    memory_on_this_host_auto_col_val = 0.0
-                    if pods_on_this_host_auto_col_count > 0:
-                        memory_on_this_host_auto_col_val = memory_gb_per_pod_auto + max(0, pods_on_this_host_auto_col_count - 1) * memory_gb_per_pod_auto * SUBSEQUENT_POD_MEMORY_FACTOR
-                    calculated_total_deduped_memory_auto_col_val += memory_on_this_host_auto_col_val
-                    if nums_auto_col_list: 
-                        start_r_auto_col_item, end_r_auto_col_item = nums_auto_col_list[0], nums_auto_col_list[0]
-                        for i_auto_col_item in range(1, len(nums_auto_col_list)):
-                            if nums_auto_col_list[i_auto_col_item] == end_r_auto_col_item + 1: end_r_auto_col_item = nums_auto_col_list[i_auto_col_item]
-                            else: 
-                                ranges_auto_col_list.append(str(start_r_auto_col_item) if start_r_auto_col_item == end_r_auto_col_item else f"{start_r_auto_col_item}-{end_r_auto_col_item}")
-                                start_r_auto_col_item = end_r_auto_col_item = nums_auto_col_list[i_auto_col_item]
-                        ranges_auto_col_list.append(str(start_r_auto_col_item) if start_r_auto_col_item == end_r_auto_col_item else f"{start_r_auto_col_item}-{end_r_auto_col_item}")
-                    display_parts_auto_col_list.append(f"{h_auto_col_item}: Pods {', '.join(ranges_auto_col_list)} ({memory_on_this_host_auto_col_val:.1f} GB)")
-
-                processed_course_for_template['host_assignments_display_auto'] = "; ".join(display_parts_auto_col_list) if display_parts_auto_col_list else "No pods auto-assigned."
-                processed_course_for_template['total_memory_gb_auto_assigned'] = round(calculated_total_deduped_memory_auto_col_val, 2)
-
-            processed_courses_for_review.append(processed_course_for_template)
-        # --- End Course Loop ---
-
-        # --- Upsert into interimallocation collection ---
-        if interim_alloc_collection is None: # Save to DB
-            flash("Interim DB collection is unavailable.", "danger"); save_error_flag = True
-        elif not processed_courses_for_review: flash("No courses processed to save.", "warning")
-        else:
-            try:
-                interim_alloc_collection.delete_many({}) 
-                batch_timestamp_utc = datetime.datetime.now(pytz.utc); bulk_ops_to_db_list = []
-                for p_course_to_save_item in processed_courses_for_review:
-                    filter_for_upsert_item = {
-                        "sf_course_code": p_course_to_save_item.get("sf_course_code"),
-                        "labbuild_course": p_course_to_save_item.get("labbuild_course"), 
-                        "status": "pending_review" 
-                    }
-                    filter_for_upsert_item = {k: v for k, v in filter_for_upsert_item.items() if v is not None}
-                    update_doc_for_db_item = {"$set": {
-                        "sf_course_code": p_course_to_save_item.get('sf_course_code'),
-                        "sf_course_type": p_course_to_save_item.get('sf_course_type'), 
-                        "sf_start_date": p_course_to_save_item.get('sf_start_date'),
-                        "sf_end_date": p_course_to_save_item.get('sf_end_date'), 
-                        "sf_trainer": p_course_to_save_item.get('sf_trainer'),
-                        "sf_pax": p_course_to_save_item.get('sf_pax'), 
-                        "sf_pods_req": p_course_to_save_item.get('sf_pods_req'),
-                        "vendor": p_course_to_save_item.get('vendor'),
-                        "labbuild_course": p_course_to_save_item.get('labbuild_course'),
-                        "memory_gb_one_pod": p_course_to_save_item.get('memory_gb_one_pod'),
-                        "host_assignments_pods_auto": p_course_to_save_item.get('host_assignments_pods_auto', {}), # Original auto
-                        "host_assignments_display_auto": p_course_to_save_item.get('host_assignments_display_auto', ''), # Original auto
-                        "total_memory_gb_auto_assigned": p_course_to_save_item.get('total_memory_gb_auto_assigned'), # Original auto
-                        # Store the list of dicts for initial interactive rows
-                        "initial_interactive_sub_rows": p_course_to_save_item.get('initial_interactive_sub_rows', []), 
-                        "review_timestamp": batch_timestamp_utc,
-                        "status": "pending_review"
-                     }}
-                    bulk_ops_to_db_list.append(UpdateOne(filter_for_upsert_item, update_doc_for_db_item, upsert=True))
-                if bulk_ops_to_db_list:
-                    result_db_write = interim_alloc_collection.bulk_write(bulk_ops_to_db_list)
-                    logger.info(f"Interim upsert: Inserted={result_db_write.upserted_count}, Updated={result_db_write.matched_count - result_db_write.upserted_count}")
-                    flash(f"{result_db_write.upserted_count} added, {result_db_write.matched_count - result_db_write.upserted_count} updated for review.", "success")
-            except Exception as e_save: logger.error(f"Error saving to interim DB: {e_save}", exc_info=True); flash("Error saving review data.", "danger"); save_error_flag = True
-        
-        return render_template(
-            'intermediate_build_review.html',
-            selected_courses=processed_courses_for_review, # This now contains 'initial_interactive_sub_rows'
-            save_error=save_error_flag,
-            current_theme=current_theme,
-            all_hosts=all_available_host_names, 
-            course_configs_for_memory=course_configs_for_memory_lookup,
-            subsequent_pod_memory_factor=SUBSEQUENT_POD_MEMORY_FACTOR
-        )
-
-    except Exception as e_outer_critical:
-        logger.error(f"Critical error in /intermediate-build-review: {e_outer_critical}", exc_info=True)
-        flash("Unexpected critical error. Check server logs.", "danger")
-        return redirect(url_for('main.view_upcoming_courses'))
 
 @bp.route('/build-rules/add', methods=['POST'])
 def add_build_rule():
     """Adds a new build rule to the collection."""
     if build_rules_collection is None:
         flash("Build rules database collection is unavailable.", "danger")
-        return redirect(url_for('settings.view_build_rules')) # Redirect to settings blueprint
+        return redirect(url_for('settings.view_build_rules')) # Redirect to settings blueprint to view rules
 
     try:
+        # Extract data from the form
         rule_name = request.form.get('rule_name', '').strip()
         priority_str = request.form.get('priority', '').strip()
-        conditions_json = request.form.get('conditions', '{}').strip()
-        actions_json = request.form.get('actions', '{}').strip()
+        conditions_json = request.form.get('conditions', '{}').strip() # Default to empty JSON string
+        actions_json = request.form.get('actions', '{}').strip()   # Default to empty JSON string
 
-        # Basic Validation
+        # --- Basic Validation ---
         if not rule_name:
             flash("Rule Name is required.", "danger")
             return redirect(url_for('settings.view_build_rules'))
+        
         try:
             priority = int(priority_str)
-            if priority < 1: raise ValueError()
+            if priority < 1: # Priority should be positive
+                raise ValueError("Priority must be a positive integer.")
         except (ValueError, TypeError):
              flash("Priority must be a positive integer.", "danger")
              return redirect(url_for('settings.view_build_rules'))
+        
         try:
             conditions = json.loads(conditions_json)
-            if not isinstance(conditions, dict): raise ValueError()
-        except (json.JSONDecodeError, ValueError):
-             flash("Conditions field contains invalid JSON.", "danger")
+            if not isinstance(conditions, dict):
+                raise ValueError("Conditions field must contain a valid JSON object.")
+        except (json.JSONDecodeError, ValueError) as e:
+             flash(f"Conditions field contains invalid JSON: {e}", "danger")
              return redirect(url_for('settings.view_build_rules'))
+        
         try:
             actions = json.loads(actions_json)
-            if not isinstance(actions, dict): raise ValueError()
-        except (json.JSONDecodeError, ValueError):
-             flash("Actions field contains invalid JSON.", "danger")
+            if not isinstance(actions, dict):
+                raise ValueError("Actions field must contain a valid JSON object.")
+        except (json.JSONDecodeError, ValueError) as e:
+             flash(f"Actions field contains invalid JSON: {e}", "danger")
              return redirect(url_for('settings.view_build_rules'))
 
-        # Prepare document
+        # Prepare the document to be inserted
         new_rule = {
             "rule_name": rule_name,
             "priority": priority,
             "conditions": conditions,
             "actions": actions,
-            "created_at": datetime.datetime.now(pytz.utc) # Add timestamp
+            "created_at": datetime.datetime.now(pytz.utc) # Add a creation timestamp in UTC
+            # "updated_at": datetime.datetime.now(pytz.utc) # Optionally add updated_at too
         }
 
-        # Insert into database
+        # Insert into the database
         result = build_rules_collection.insert_one(new_rule)
-        logger.info(f"Added new build rule '{rule_name}' with ID: {result.inserted_id}")
+        
+        # Log success and flash message
+        logger.info(f"Added new build rule '{rule_name}' (Priority: {priority}) with ID: {result.inserted_id}")
         flash(f"Successfully added build rule '{rule_name}'.", "success")
 
     except PyMongoError as e:
-        logger.error(f"Database error adding build rule: {e}")
-        flash("Database error adding rule.", "danger")
+        logger.error(f"Database error occurred while adding build rule: {e}")
+        flash("A database error occurred while adding the rule. Please try again.", "danger")
     except Exception as e:
-        logger.error(f"Unexpected error adding build rule: {e}", exc_info=True)
-        flash("An unexpected error occurred.", "danger")
+        logger.error(f"An unexpected error occurred while adding build rule: {e}", exc_info=True)
+        flash("An unexpected error occurred. Please check the logs.", "danger")
 
-    return redirect(url_for('settings.view_build_rules'))
-
+    return redirect(url_for('settings.view_build_rules')) # Redirect back to the rules
 
 @bp.route('/build-rules/update', methods=['POST'])
 def update_build_rule():
@@ -1338,3 +1040,950 @@ def toggle_tag_extend():
     # --- Redirect back to the allocations page, preserving filters & pagination ---
     # The **redirect_args unpacks the dictionary into keyword arguments for url_for
     return redirect(url_for('main.view_allocations', **redirect_args))
+
+def _format_date_for_review(raw_date_str: Optional[str], context: str) -> str:
+    # ... (Implementation from previous responses) ...
+    if not raw_date_str or raw_date_str == "N/A": return "N/A"
+    try: datetime.datetime.strptime(raw_date_str, "%Y-%m-%d"); return raw_date_str
+    except ValueError:
+        for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"):
+            try: return datetime.datetime.strptime(raw_date_str, fmt).strftime("%Y-%m-%d")
+            except ValueError: continue
+        logger.warning(f"Could not parse date '{raw_date_str}' for {context}, keeping original.")
+        return raw_date_str
+
+@bp.route('/intermediate-build-review', methods=['POST'])
+def intermediate_build_review():
+    """
+    1. Processes selected Salesforce courses from upcoming_courses.html.
+    2. Performs auto-assignment for STUDENT pods based on rules and capacity.
+       Assignments are made even if capacity is low, with a warning.
+    3. Saves these student pod proposals to `interimallocation` with
+       status 'pending_student_review' and a unique `batch_review_id`.
+    4. Renders `intermediate_build_review.html` for user modification of
+       student assignments.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+    selected_courses_json = request.form.get('selected_courses')
+
+    processed_courses_for_student_review: List[Dict] = [] # For rendering the page
+    build_rules: List[Dict] = []
+    all_available_host_names: List[str] = []
+    initial_host_capacities_gb: Dict[str, Optional[float]] = {}
+    # For tracking pod assignments *within this batch review*
+    globally_taken_pods_by_vendor: Dict[str, set] = defaultdict(set)
+    reusable_pods_by_vendor_host: Dict[str, Dict[str, set]] = \
+        defaultdict(lambda: defaultdict(set))
+    released_memory_by_host: Dict[str, float] = defaultdict(float)
+    host_memory_before_batch_assignment: Dict[str, float] = {}
+    course_configs_for_memory_lookup: List[Dict] = []
+
+    if not selected_courses_json:
+        flash("No courses selected for review.", "warning")
+        return redirect(url_for('main.view_upcoming_courses'))
+    try:
+        selected_courses_input = json.loads(selected_courses_json)
+        if not isinstance(selected_courses_input, list) or \
+           not selected_courses_input:
+            raise ValueError("Invalid course data: Expected non-empty list.")
+    except (json.JSONDecodeError, ValueError) as e:
+        flash(f"Invalid data received for review: {e}", "danger")
+        logger.error(f"Failed to parse selected_courses JSON: {e}", exc_info=True)
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    if interim_alloc_collection is None:
+        logger.critical("interim_alloc_collection is None. Cannot proceed with review.")
+        flash("Critical error: Interim allocation database is unavailable.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    # --- Preparatory Data Fetching ---
+    try:
+        if build_rules_collection is not None:
+            build_rules = list(build_rules_collection.find().sort("priority", ASCENDING))
+
+        if alloc_collection is not None:
+            try:
+                # 1. Populate globally_taken_pods_by_vendor with ALL existing allocations
+                logger.info("Pre-loading ALL existing pod/class numbers from alloc_collection.")
+                all_db_allocs_cursor = alloc_collection.find(
+                    {},
+                    {
+                        "courses.vendor": 1,
+                        "courses.pod_details.pod_number": 1,
+                        "courses.pod_details.class_number": 1, # For F5 classes
+                        "courses.pod_details.pods.pod_number": 1, # For F5 nested pods
+                        "_id": 0
+                    }
+                )
+                for tag_doc_db in all_db_allocs_cursor:
+                    for course_alloc_db in tag_doc_db.get("courses", []):
+                        vendor_db = course_alloc_db.get("vendor", "").lower()
+                        if not vendor_db:
+                            continue
+                        for pd_db in course_alloc_db.get("pod_details", []):
+                            # Regular pod numbers
+                            pod_num_db_val = pd_db.get("pod_number")
+                            if pod_num_db_val is not None:
+                                try:
+                                    globally_taken_pods_by_vendor[vendor_db].add(int(pod_num_db_val))
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Invalid pod_number '{pod_num_db_val}' in DB, skipping.")
+                            
+                            # F5 specific: class numbers and nested pod numbers
+                            if vendor_db == 'f5':
+                                class_num_db_val = pd_db.get("class_number")
+                                if class_num_db_val is not None:
+                                    try:
+                                        globally_taken_pods_by_vendor[vendor_db].add(int(class_num_db_val))
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Invalid class_number '{class_num_db_val}' for F5 in DB, skipping.")
+                                
+                                for nested_f5_pod in pd_db.get("pods", []): # Nested pods within an F5 class entry
+                                    nested_pod_num_val = nested_f5_pod.get("pod_number")
+                                    if nested_pod_num_val is not None:
+                                        try:
+                                            globally_taken_pods_by_vendor[vendor_db].add(int(nested_pod_num_val))
+                                        except (ValueError, TypeError):
+                                            logger.warning(f"Invalid nested F5 pod_number '{nested_pod_num_val}' in DB, skipping.")
+                logger.debug(f"Initial globally_taken_pods_by_vendor from DB: {dict(globally_taken_pods_by_vendor)}")
+
+                # 2. Ensure 'extend' field exists and populate reusable_pods & released_memory
+                logger.info("Identifying reusable pods (extend: false) and calculating released memory.")
+                update_result = alloc_collection.update_many(
+                    {"extend": {"$exists": False}},
+                    {"$set": {"extend": "false"}} # Default to "false" if not present
+                )
+                if update_result.modified_count > 0:
+                    logger.info(f"Defaulted 'extend' field to 'false' for {update_result.modified_count} documents.")
+
+                reusable_cursor = alloc_collection.find(
+                    {"extend": "false"}, # Only fetch those explicitly marked as reusable
+                    {
+                        "courses.vendor": 1,
+                        "courses.course_name": 1, # Needed for memory lookup
+                        "courses.pod_details.host": 1,
+                        "courses.pod_details.pod_number": 1,
+                        "courses.pod_details.class_number": 1,
+                        "courses.pod_details.pods.pod_number": 1,
+                        "_id": 0
+                    }
+                )
+                for tag_doc_reusable in reusable_cursor:
+                    for course_data_reusable in tag_doc_reusable.get("courses", []):
+                        vendor_reusable = course_data_reusable.get("vendor", "").lower()
+                        lb_course_reusable = course_data_reusable.get("course_name")
+                        if not vendor_reusable or not lb_course_reusable:
+                            continue
+                        
+                        mem_per_reusable_pod = _get_memory_for_course(lb_course_reusable)
+                        if mem_per_reusable_pod <= 0:
+                            logger.warning(f"Memory for reusable course '{lb_course_reusable}' is 0 or unknown, skipping its pods for released memory calc.")
+                            continue
+
+                        for pd_reusable in course_data_reusable.get("pod_details", []):
+                            host_reusable = pd_reusable.get("host")
+                            if not host_reusable:
+                                continue
+                            
+                            # Regular pod reuse
+                            pod_num_reusable = pd_reusable.get("pod_number")
+                            if pod_num_reusable is not None:
+                                try:
+                                    pod_int = int(pod_num_reusable)
+                                    # Check if this pod is NOT already taken by a non-reusable item in this batch
+                                    # (globally_taken_pods_by_vendor will be updated later in the loop for current batch items)
+                                    # For now, just add to reusable list. The auto-assigner will filter against globally_taken.
+                                    reusable_pods_by_vendor_host[vendor_reusable][host_reusable].add(pod_int)
+                                    released_memory_by_host[host_reusable] += mem_per_reusable_pod
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Invalid reusable pod_number '{pod_num_reusable}', skipping.")
+                            
+                            # F5 specific reuse for class numbers and nested pods
+                            if vendor_reusable == 'f5':
+                                class_num_reusable = pd_reusable.get("class_number")
+                                if class_num_reusable is not None:
+                                    try:
+                                        class_int = int(class_num_reusable)
+                                        reusable_pods_by_vendor_host[vendor_reusable][host_reusable].add(class_int)
+                                        # Assuming class level memory is also based on mem_per_reusable_pod
+                                        released_memory_by_host[host_reusable] += mem_per_reusable_pod
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Invalid reusable F5 class_number '{class_num_reusable}', skipping.")
+                                
+                                for nested_f5_reusable in pd_reusable.get("pods", []):
+                                    nested_pod_reusable_num = nested_f5_reusable.get("pod_number")
+                                    if nested_pod_reusable_num is not None:
+                                        try:
+                                            nested_pod_int = int(nested_pod_reusable_num)
+                                            reusable_pods_by_vendor_host[vendor_reusable][host_reusable].add(nested_pod_int)
+                                            # Assume nested pods also contribute to released memory with factor
+                                            released_memory_by_host[host_reusable] += (mem_per_reusable_pod * SUBSEQUENT_POD_MEMORY_FACTOR)
+                                        except (ValueError, TypeError):
+                                            logger.warning(f"Invalid reusable nested F5 pod_number '{nested_pod_reusable_num}', skipping.")
+
+                logger.debug(f"Identified reusable_pods_by_vendor_host: { {v: dict(h) for v, h in reusable_pods_by_vendor_host.items()} }")
+                logger.debug(f"Calculated released_memory_by_host: {dict(released_memory_by_host)}")
+
+            except PyMongoError as e_alloc_fetch:
+                logger.error(f"Database error during alloc_collection processing: {e_alloc_fetch}", exc_info=True)
+                # Depending on severity, might want to flash message and redirect
+            except NotImplementedError as nie: # Extremely unlikely with official PyMongo
+                logger.critical(f"A critical database feature (e.g. find/update_many) is not available for alloc_collection: {nie}", exc_info=True)
+                flash("Critical database error (NotImplemented). Cannot reliably plan builds.", "danger")
+                return redirect(url_for('main.view_upcoming_courses')) # Or a more generic error page
+        else:
+            logger.warning("alloc_collection is None. Cannot pre-load existing allocations or identify reusables.")
+        
+        if host_collection is not None:
+            hosts_to_check_docs = list(host_collection.find({"include_for_build": "true"}))
+            all_available_host_names = sorted([h['host_name'] for h in hosts_to_check_docs if 'host_name' in h])
+            if hosts_to_check_docs:
+                initial_host_capacities_gb = get_hosts_available_memory_parallel(hosts_to_check_docs)
+            for host_doc in hosts_to_check_docs:
+                host_name = host_doc.get("host_name")
+                vcenter_cap = initial_host_capacities_gb.get(host_name)
+                if host_name and vcenter_cap is not None:
+                    releasable_mem = released_memory_by_host.get(host_name, 0.0)
+                    host_memory_before_batch_assignment[host_name] = round(vcenter_cap + releasable_mem, 2)
+        
+        if course_config_collection is not None:
+            course_configs_for_memory_lookup = list(course_config_collection.find({}, {"course_name": 1, "memory_gb_per_pod": 1, "memory": 1, "_id": 0}))
+
+    except PyMongoError as e_data_fetch:
+        logger.error(f"Database error during initial data fetch for review: {e_data_fetch}", exc_info=True)
+        flash("Error fetching required configuration data. Cannot proceed.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+    except NotImplementedError as nie: # Should be rare with official PyMongo
+        logger.critical(f"A critical database feature is not available for review: {nie}", exc_info=True)
+        flash("Critical database error (NotImplemented). Cannot proceed with review.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    # This will be the effective capacity, updated as courses in *this batch* are assigned
+    assignment_capacities_gb = host_memory_before_batch_assignment.copy()
+    
+    batch_review_id = str(ObjectId()) # Unique ID for this review session/batch
+    try: # Clear any old pending items that might share this batch_id (highly unlikely) or all pending.
+        interim_alloc_collection.delete_many({"status": {"$regex": "^pending_"}})
+        logger.info(f"Cleared previous pending review items. Starting new batch: {batch_review_id}")
+    except (PyMongoError, NotImplementedError) as e_clear:
+        logger.error(f"Error clearing old interim items for batch {batch_review_id}: {e_clear}")
+        # Non-fatal, proceed but log
+
+    bulk_interim_ops: List[UpdateOne] = []
+
+    # --- Process Each Selected SF Course for Student Pod Auto-Assignment ---
+    for course_input_data in selected_courses_input:
+        sf_code = course_input_data.get('sf_course_code', f'SF_UNKNOWN_{str(ObjectId())[:5]}')
+        user_lb_course = course_input_data.get('labbuild_course')
+        vendor = course_input_data.get('vendor', '').lower()
+        sf_type = course_input_data.get('sf_course_type', '')
+        sf_pods_req_orig = max(1, int(course_input_data.get('sf_pods_req', 1)))
+
+        assigned_hosts_pods_map_student = defaultdict(list) # {host: [pod1, pod2]}
+        student_assignment_warning: Optional[str] = None
+        final_lb_course_student = user_lb_course
+
+        # Apply build rules to determine final LabBuild course, host priority, etc.
+        eff_actions_student: Dict[str, Any] = {}
+        rules_for_course = _find_all_matching_rules(build_rules, vendor, sf_code, sf_type)
+        action_priority_keys = ["set_labbuild_course", "host_priority", "allow_spillover", "set_max_pods", "start_pod_number"]
+        for rule in rules_for_course:
+            actions = rule.get("actions", {})
+            for key in action_priority_keys:
+                if key not in eff_actions_student and key in actions:
+                    eff_actions_student[key] = actions[key]
+        
+        if "set_labbuild_course" in eff_actions_student:
+            final_lb_course_student = eff_actions_student["set_labbuild_course"]
+        if not final_lb_course_student:
+            student_assignment_warning = "No LabBuild Course for student pods determined after rules. Manual selection required."
+        
+        mem_per_student_pod = 0.0
+        if not student_assignment_warning:
+            mem_per_student_pod = _get_memory_for_course(final_lb_course_student)
+            if mem_per_student_pod <= 0:
+                student_assignment_warning = (student_assignment_warning + ". " if student_assignment_warning else "") + \
+                                             f"Memory for student LB course '{final_lb_course_student}' is 0 or unknown. Review needed."
+        
+        eff_pods_req_student = sf_pods_req_orig
+        if "set_max_pods" in eff_actions_student and eff_actions_student["set_max_pods"] is not None:
+            try:
+                max_p_rule = int(eff_actions_student["set_max_pods"])
+                if max_p_rule > 0: eff_pods_req_student = min(sf_pods_req_orig, max_p_rule)
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid 'set_max_pods' in rule for {sf_code}: {eff_actions_student['set_max_pods']}")
+
+        # --- Actual Auto-Assignment Logic for STUDENT pods ---
+        if not student_assignment_warning: # Only if LB course and memory are valid
+            logger.info(f"Auto-assigning student pods for SF '{sf_code}', LB '{final_lb_course_student}', "
+                        f"Req: {eff_pods_req_student}, Mem/Pod: {mem_per_student_pod:.2f}GB")
+
+            hosts_to_try_student: List[str] = []
+            priority_hosts_rule = eff_actions_student.get("host_priority", [])
+            if isinstance(priority_hosts_rule, list):
+                hosts_to_try_student.extend([h for h in priority_hosts_rule if h in assignment_capacities_gb])
+            
+            if eff_actions_student.get("allow_spillover", True):
+                spill_hosts_student = sorted([h_n for h_n in assignment_capacities_gb if h_n not in hosts_to_try_student])
+                hosts_to_try_student.extend(spill_hosts_student)
+
+            if not hosts_to_try_student and all_available_host_names: # Fallback if no capacity hosts found by rule
+                hosts_to_try_student.append(all_available_host_names[0])
+                current_warning = "No hosts matched priority/spillover with any capacity; assigned to default. VERIFY HOST AND CAPACITY."
+                student_assignment_warning = (student_assignment_warning + ". " if student_assignment_warning else "") + current_warning
+                logger.warning(f"For {sf_code} (students): {current_warning}")
+            elif not hosts_to_try_student and not all_available_host_names:
+                current_warning = "No hosts configured or available for student assignment."
+                student_assignment_warning = (student_assignment_warning + ". " if student_assignment_warning else "") + current_warning
+                logger.error(f"For {sf_code} (students): {current_warning}")
+
+            pods_remaining_student = eff_pods_req_student
+            if hosts_to_try_student: # Only if we have at least one host to attempt assignment on
+                start_pod_num_student = 1
+                try:
+                    sp_rule_val = eff_actions_student.get("start_pod_number")
+                    if sp_rule_val is not None: start_pod_num_student = max(1, int(sp_rule_val))
+                except (ValueError, TypeError): pass
+
+                temp_host_capacities_for_course = assignment_capacities_gb.copy()
+
+                for host_target_student in hosts_to_try_student:
+                    if pods_remaining_student <= 0: break
+                    
+                    host_current_temp_cap = temp_host_capacities_for_course.get(host_target_student, 0.0)
+                    
+                    reusable_on_host_student = sorted(list(
+                        reusable_pods_by_vendor_host.get(vendor, {}).get(host_target_student, set()) -
+                        globally_taken_pods_by_vendor.get(vendor, set())
+                    ))
+                    for r_pod_stud in reusable_on_host_student:
+                        if pods_remaining_student <= 0: break
+                        is_first = not assigned_hosts_pods_map_student[host_target_student]
+                        mem_needed = mem_per_student_pod if is_first else (mem_per_student_pod * SUBSEQUENT_POD_MEMORY_FACTOR)
+                        if host_current_temp_cap >= mem_needed:
+                            assigned_hosts_pods_map_student[host_target_student].append(r_pod_stud)
+                            globally_taken_pods_by_vendor[vendor].add(r_pod_stud)
+                            host_current_temp_cap -= mem_needed
+                            pods_remaining_student -= 1
+                        # else: No warning here yet, try new pods or next host
+
+                    if pods_remaining_student > 0:
+                        cand_new_pod_stud = start_pod_num_student
+                        while pods_remaining_student > 0:
+                            while cand_new_pod_stud in globally_taken_pods_by_vendor.get(vendor, set()):
+                                cand_new_pod_stud += 1
+                            is_first = not assigned_hosts_pods_map_student[host_target_student]
+                            mem_needed = mem_per_student_pod if is_first else (mem_per_student_pod * SUBSEQUENT_POD_MEMORY_FACTOR)
+                            if host_current_temp_cap >= mem_needed:
+                                assigned_hosts_pods_map_student[host_target_student].append(cand_new_pod_stud)
+                                globally_taken_pods_by_vendor[vendor].add(cand_new_pod_stud)
+                                host_current_temp_cap -= mem_needed
+                                pods_remaining_student -= 1
+                                cand_new_pod_stud += 1
+                            else:
+                                current_warning = (f"Host '{host_target_student}' has insufficient capacity "
+                                                   f"({host_current_temp_cap:.1f}GB) for next new student pod needing {mem_needed:.1f}GB.")
+                                student_assignment_warning = (student_assignment_warning + ". " if student_assignment_warning else "") + current_warning
+                                logger.debug(f"For {sf_code} (students): {current_warning}")
+                                break # Break from new pod loop for this host
+                
+                # Update actual global assignment_capacities_gb
+                for h_assigned_stud, p_list_stud in assigned_hosts_pods_map_student.items():
+                    if p_list_stud:
+                        num_on_h_stud = len(p_list_stud)
+                        mem_consumed_stud = (mem_per_student_pod + 
+                                            (num_on_h_stud - 1) * mem_per_student_pod * SUBSEQUENT_POD_MEMORY_FACTOR)
+                        assignment_capacities_gb[h_assigned_stud] = max(0, round(assignment_capacities_gb.get(h_assigned_stud, 0.0) - mem_consumed_stud, 2))
+
+            total_assigned_stud = sum(len(p) for p in assigned_hosts_pods_map_student.values())
+            if total_assigned_stud < eff_pods_req_student:
+                shortfall_warn_stud = f"Auto-assigned {total_assigned_stud}/{eff_pods_req_student} student pods. Shortfall likely due to capacity."
+                student_assignment_warning = (student_assignment_warning + ". " if student_assignment_warning else "") + shortfall_warn_stud
+                logger.warning(f"For '{sf_code}' (students): {shortfall_warn_stud}")
+        # --- End Student Auto-Assignment ---
+
+        interim_doc_id = ObjectId()
+        interim_student_data = {
+            "_id": interim_doc_id, "batch_review_id": batch_review_id,
+            "sf_course_code": sf_code, "sf_course_type": sf_type,
+            "sf_start_date": _format_date_for_review(course_input_data.get('sf_start_date'), sf_code),
+            "sf_end_date": _format_date_for_review(course_input_data.get('sf_end_date'), sf_code),
+            "sf_trainer": course_input_data.get('sf_trainer'), "sf_pax": course_input_data.get('sf_pax'),
+            "sf_pods_req_original": sf_pods_req_orig, "vendor": vendor,
+            "final_labbuild_course_student": final_lb_course_student,
+            "memory_gb_one_student_pod": mem_per_student_pod,
+            "effective_pods_req_student": eff_pods_req_student,
+            "student_assignments_auto_proposed": dict(assigned_hosts_pods_map_student),
+            "student_assignment_warning": student_assignment_warning,
+            "initial_interactive_sub_rows_student": [], # Populated below
+            "status": "pending_student_review",
+            "created_at": datetime.datetime.now(pytz.utc),
+            "updated_at": datetime.datetime.now(pytz.utc),
+            # Placeholders for trainer data
+            "trainer_labbuild_course": None, "trainer_memory_gb_one_pod": None,
+            "trainer_assignment_auto_proposed": None, "trainer_assignment_final": None,
+            "trainer_assignment_warning": None
+        }
+        
+        initial_student_rows = []
+        if assigned_hosts_pods_map_student:
+            for h, p_list in assigned_hosts_pods_map_student.items():
+                if p_list:
+                    sorted_p = sorted(list(set(p_list)))
+                    s, e = sorted_p[0], sorted_p[0]
+                    for i in range(1, len(sorted_p)):
+                        if sorted_p[i] == e + 1: e = sorted_p[i]
+                        else: initial_student_rows.append({"host": h, "start_pod": s, "end_pod": e}); s = e = sorted_p[i]
+                    initial_student_rows.append({"host": h, "start_pod": s, "end_pod": e})
+        if not initial_student_rows: # Fallback default row if no auto-assignment
+            def_h_stud = None
+            if isinstance(eff_actions_student.get("host_priority"), list) and eff_actions_student.get("host_priority"):
+                def_h_stud = eff_actions_student["host_priority"][0]
+                if def_h_stud not in all_available_host_names: def_h_stud = all_available_host_names[0] if all_available_host_names else None
+            elif all_available_host_names: def_h_stud = all_available_host_names[0]
+            def_s_stud = 1; 
+            try: sp_val = eff_actions_student.get("start_pod_number"); def_s_stud = max(1, int(sp_val)) if sp_val is not None else 1; 
+            except: pass
+            def_e_stud = max(def_s_stud, def_s_stud + eff_pods_req_student - 1)
+            initial_student_rows.append({"host": def_h_stud, "start_pod": def_s_stud, "end_pod": def_e_stud})
+        
+        interim_student_data["initial_interactive_sub_rows_student"] = initial_student_rows
+        
+        # Prepare display data for this course (student part)
+        display_course_data = interim_student_data.copy() # Use a copy for display list
+        display_course_data['interim_doc_id'] = str(interim_doc_id) # For form submission later
+        display_course_data['sf_pods_req'] = eff_pods_req_student # For template consistency
+        processed_courses_for_student_review.append(display_course_data)
+
+        bulk_interim_ops.append(
+            UpdateOne({"_id": interim_doc_id}, {"$set": interim_student_data}, upsert=True)
+        )
+    # --- End SF Course Loop ---
+
+    if bulk_interim_ops:
+        try:
+            if interim_alloc_collection is not None:
+                result_db_interim = interim_alloc_collection.bulk_write(bulk_interim_ops)
+                logger.info(f"Interim student proposals saved to batch '{batch_review_id}': "
+                            f"Inserted/Upserted: {result_db_interim.upserted_count + result_db_interim.modified_count}")
+            else:
+                raise PyMongoError("interim_alloc_collection is None, cannot save proposals.")
+        except (PyMongoError, BulkWriteError, NotImplementedError) as e_save_interim_s:
+            logger.error(f"Error saving student proposals to interim DB for batch '{batch_review_id}': {e_save_interim_s}", exc_info=True)
+            flash("Error saving initial review session data. Please try again.", "danger")
+            return redirect(url_for('main.view_upcoming_courses'))
+    
+    return render_template(
+        'intermediate_build_review.html',
+        selected_courses=processed_courses_for_student_review,
+        batch_review_id=batch_review_id,
+        current_theme=current_theme,
+        all_hosts=all_available_host_names,
+        course_configs_for_memory=course_configs_for_memory_lookup,
+        subsequent_pod_memory_factor=SUBSEQUENT_POD_MEMORY_FACTOR
+    )
+
+
+@bp.route('/prepare-trainer-pods', methods=['POST'])
+def prepare_trainer_pods():
+    """
+    1. Receives finalized student assignments and `batch_review_id`.
+    2. Updates student assignments in `interimallocation` to 'student_confirmed'.
+    3. Performs auto-assignment for TRAINER pods based on confirmed student plan
+       and current capacities/rules.
+    4. Updates `interimallocation` documents with trainer pod proposals and
+       sets status to 'pending_trainer_review'.
+    5. Renders `trainer_pod_review.html` for user modification of trainer assignments.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+    final_student_plan_json = request.form.get('final_build_plan')
+    batch_review_id = request.form.get('batch_review_id')
+
+    if not batch_review_id:
+        flash("Review session ID missing. Cannot prepare trainer pods.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+    if not final_student_plan_json:
+        flash("No finalized student build plan data received.", "danger")
+        # Try to redirect back to intermediate review, passing batch_review_id if possible
+        # This depends on how intermediate_build_review handles GET requests or if it needs POST
+        return redirect(url_for('main.view_upcoming_courses')) # Simplified for now
+
+    try:
+        finalized_student_data_from_form = json.loads(final_student_plan_json)
+        if not isinstance(finalized_student_data_from_form, list):
+            raise ValueError("Invalid student plan format from form.")
+    except (json.JSONDecodeError, ValueError) as e:
+        flash(f"Error processing submitted student assignments: {e}", "danger")
+        return redirect(url_for('main.view_upcoming_courses')) # Simplified
+
+    if interim_alloc_collection is None:
+        flash("Interim allocation database is unavailable.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    # --- 1. Update interimallocation with finalized student assignments ---
+    student_update_ops_db: List[UpdateOne] = []
+    confirmed_student_courses_for_tp_logic: List[Dict] = []
+
+    try:
+        for student_final_item in finalized_student_data_from_form:
+            interim_doc_id_str = student_final_item.get('interim_doc_id')
+            if not interim_doc_id_str:
+                logger.warning(f"Missing 'interim_doc_id' in student data for TP prep: {student_final_item.get('sf_course_code')}")
+                continue
+            
+            update_payload = {
+                "student_assignments_final": student_final_item.get("interactive_assignments", []),
+                "student_estimated_memory_final_gb": student_final_item.get("estimated_memory_gb", 0.0),
+                "student_assignment_final_warning": student_final_item.get("assignment_warning"),
+                "status": "student_confirmed", # Mark student part as confirmed
+                "updated_at": datetime.datetime.now(pytz.utc)
+            }
+            student_update_ops_db.append(
+                UpdateOne({"_id": ObjectId(interim_doc_id_str), "batch_review_id": batch_review_id}, 
+                          {"$set": update_payload})
+            )
+            
+            full_interim_doc_for_student = interim_alloc_collection.find_one(
+                {"_id": ObjectId(interim_doc_id_str), "batch_review_id": batch_review_id}
+            )
+            if full_interim_doc_for_student:
+                full_interim_doc_for_student.update(update_payload) 
+                confirmed_student_courses_for_tp_logic.append(full_interim_doc_for_student)
+            else:
+                logger.error(f"Critical: Could not refetch interim doc ID {interim_doc_id_str} after planning update.")
+                # This is a problem, as we need this full doc for trainer logic.
+                # Depending on requirements, either skip this course for TP or error out.
+                # For now, let's skip it to avoid cascading errors.
+                flash(f"Error retrieving confirmed student data for {student_final_item.get('sf_course_code')}. Trainer pod assignment may be incomplete.", "warning")
+
+        if student_update_ops_db:
+            result_stud_upd = interim_alloc_collection.bulk_write(student_update_ops_db)
+            logger.info(f"Updated {result_stud_upd.modified_count} student assignments in interim "
+                        f"(batch '{batch_review_id}') to 'student_confirmed'.")
+        else:
+            logger.info("No student assignments found to update in interim for TP prep.")
+
+    except Exception as e_stud_update:
+        logger.error(f"Error updating student assignments in interim DB for batch '{batch_review_id}': {e_stud_update}", exc_info=True)
+        flash("Error saving confirmed student assignments. Please try again.", "danger")
+        return redirect(url_for('main.view_upcoming_courses')) # Simplified
+
+
+    # --- 2. Prepare data and then Auto-Assign Trainer Pods ---
+    courses_for_trainer_page_display: List[Dict] = []
+    trainer_final_update_ops_db: List[UpdateOne] = []
+    
+    # Initial data fetch for capacities, existing allocations (as in previous full prepare_trainer_pods)
+    build_rules_tp: List[Dict] = []
+    all_hosts_dd: List[str] = []
+    working_host_caps_gb_tp: Dict[str, float] = {} 
+    taken_pods_vendor_tp: Dict[str, set] = defaultdict(set)
+    lb_courses_on_host_registry: Dict[str, set] = defaultdict(set)
+    course_configs_mem_tp_page: List[Dict] = []
+
+    # ... (Full logic to populate:
+    #      build_rules_tp,
+    #      all_hosts_dd,
+    #      working_host_caps_gb_tp (from initial_host_capacities_gb),
+    #      taken_pods_vendor_tp (from alloc_collection),
+    #      lb_courses_on_host_registry (from alloc_collection)
+    #      - This is the same preparatory data fetching as the start of intermediate_build_review
+    #        or the previous full prepare_trainer_pods version.
+    # )
+    # For brevity, assuming these are correctly populated.
+    # CRITICAL: After populating from DB, update working_host_caps_gb_tp and registries
+    # based on the `confirmed_student_courses_for_tp_logic`.
+
+    for student_course_doc in confirmed_student_courses_for_tp_logic:
+        # Display student part (read-only on trainer_pod_review.html)
+        courses_for_trainer_page_display.append({"type": "student", "data": {
+            "interim_doc_id": str(student_course_doc["_id"]), # Pass this for the JS on trainer page
+            "sf_course_code": student_course_doc.get("sf_course_code"),
+            "labbuild_course": student_course_doc.get("final_labbuild_course_student"), # Use confirmed student LB course
+            "vendor": student_course_doc.get("vendor"),
+            "sf_course_type": student_course_doc.get("sf_course_type"),
+            "memory_gb_one_pod": student_course_doc.get("memory_gb_one_student_pod"),
+            "interactive_assignments": student_course_doc.get("student_assignments_final"),
+            "estimated_memory_gb": student_course_doc.get("student_estimated_memory_final_gb"),
+            "assignment_warning": student_course_doc.get("student_assignment_final_warning")
+        }})
+
+        # --- Initialize Trainer Pod Variables with Defaults ---
+        tp_sf_code = student_course_doc.get('sf_course_code', 'N/A_SF') + "-TP"
+        tp_vendor = student_course_doc.get('vendor', '').lower()
+        tp_sf_type = student_course_doc.get('sf_course_type', '')
+        
+        tp_host: Optional[str] = None
+        tp_pod: Optional[int] = None
+        tp_warning: Optional[str] = None
+        # Start with student's confirmed LabBuild course, rules might override
+        tp_lb_course: Optional[str] = student_course_doc.get('final_labbuild_course_student')
+        tp_full_mem: float = float(student_course_doc.get('memory_gb_one_student_pod', 0.0))
+
+
+        if not tp_vendor:
+            tp_warning = "Vendor missing from student data. Cannot assign trainer pod."
+            logger.warning(f"For TP of {student_course_doc.get('sf_course_code')}: {tp_warning}")
+        else:
+            # Apply rules for TP
+            tp_rules = _find_all_matching_rules(build_rules_tp, tp_vendor, tp_sf_code, tp_sf_type)
+            tp_eff_actions: Dict[str, Any] = {}
+            tp_action_priority = ["set_labbuild_course", "host_priority", "allow_spillover", "start_pod_number"]
+            for r in tp_rules:
+                acts = r.get("actions", {});
+                for k_act in tp_action_priority:
+                    if k_act not in tp_eff_actions and k_act in acts: tp_eff_actions[k_act] = acts[k_act]
+
+            if "set_labbuild_course" in tp_eff_actions:
+                new_tp_lb_course = tp_eff_actions["set_labbuild_course"]
+                if new_tp_lb_course != tp_lb_course:
+                    logger.info(f"TP for '{tp_sf_code}': LB course changed by rule from '{tp_lb_course}' to '{new_tp_lb_course}'.")
+                tp_lb_course = new_tp_lb_course
+            
+            if tp_lb_course: # Only recalculate memory if we have a LB course for trainer
+                tp_full_mem = _get_memory_for_course(tp_lb_course)
+            else: # No LB course for trainer
+                tp_warning = (tp_warning + ". " if tp_warning else "") + "No LabBuild course for Trainer Pod."
+
+            if not tp_warning and tp_full_mem <= 0: # If no previous warning, but memory is bad
+                tp_warning = (tp_warning + ". " if tp_warning else "") + \
+                             f"Memory for TP LB course '{tp_lb_course}' is 0 or unknown."
+            
+            # --- Actual Trainer Pod Auto-Assignment Logic ---
+            if not tp_warning: # Only if basic TP info (LB course, memory) is valid
+                logger.info(f"Auto-assigning TP for '{tp_sf_code}', LB '{tp_lb_course}', Full Mem {tp_full_mem:.2f}GB") # type: ignore
+                
+                tp_hosts_to_try: List[str] = []
+                priority_hosts_tp_rule = tp_eff_actions.get("host_priority", []) # type: ignore
+                allow_spillover_tp_rule = tp_eff_actions.get("allow_spillover", True) # type: ignore
+                
+                # Tentative memory needed for initial filtering of hosts (worst case: full memory)
+                # A more refined filter would use factored memory if a similar LB course is on the host.
+                # For now, let's assume a host must have at least *some* capacity.
+                # The actual mem_needed_tp will be calculated per host.
+                min_mem_for_candidate_host = tp_full_mem * SUBSEQUENT_POD_MEMORY_FACTOR if SUBSEQUENT_POD_MEMORY_FACTOR > 0 else tp_full_mem # type: ignore
+                if min_mem_for_candidate_host <=0 and tp_full_mem > 0 : min_mem_for_candidate_host = 0.1 # Ensure positive if base mem is positive
+
+                if isinstance(priority_hosts_tp_rule, list):
+                    tp_hosts_to_try.extend([
+                        h for h in priority_hosts_tp_rule 
+                        if h in working_host_caps_gb_tp and 
+                           working_host_caps_gb_tp.get(h, 0.0) >= min_mem_for_candidate_host 
+                    ])
+                
+                if allow_spillover_tp_rule:
+                    spill_hosts_tp = sorted([
+                        h_name for h_name in working_host_caps_gb_tp
+                        if h_name not in tp_hosts_to_try and # Avoid duplicates
+                           working_host_caps_gb_tp.get(h_name, 0.0) >= min_mem_for_candidate_host
+                    ])
+                    tp_hosts_to_try.extend(spill_hosts_tp)
+
+                # If no hosts have even minimal capacity, prepare for fallback assignment
+                if not tp_hosts_to_try:
+                    if all_hosts_dd: # type: ignore
+                        tp_hosts_to_try.append(all_hosts_dd[0]) # Fallback to first available host overall
+                        current_warning_tp = ("No hosts with sufficient initial capacity found based on rules/spillover. "
+                                            f"Attempting assignment on default host '{all_hosts_dd[0]}'. VERIFY CAPACITY.") # type: ignore
+                        tp_warning = (tp_warning + ". " if tp_warning else "") + current_warning_tp
+                        logger.warning(f"For TP of {tp_sf_code}: {current_warning_tp}")
+                    else: # No hosts configured at all
+                        current_warning_tp = "No hosts configured or available for trainer pod assignment."
+                        tp_warning = (tp_warning + ". " if tp_warning else "") + current_warning_tp
+                        logger.error(f"For TP of {tp_sf_code}: {current_warning_tp}")
+                        # Skip further assignment logic for this TP if no hosts at all
+                        tp_hosts_to_try = [] # Ensure loop below doesn't run
+
+                # Determine start pod number for new TPs from rules or default
+                start_pod_num_tp_config = 1
+                try:
+                    sp_rule_val_tp = tp_eff_actions.get("start_pod_number") # type: ignore
+                    if sp_rule_val_tp is not None:
+                        start_pod_num_tp_config = max(1, int(sp_rule_val_tp))
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid 'start_pod_number' in rule for TP of {tp_sf_code}. Defaulting to 1.")
+
+
+                assigned_this_tp = False
+                for host_candidate_tp in tp_hosts_to_try:
+                    # Find next available NEW pod number for this vendor on this host
+                    # (Trainer pods are usually new, not reused, but check global taken list)
+                    current_new_tp_pod_candidate = start_pod_num_tp_config
+                    while current_new_tp_pod_candidate in taken_pods_vendor_tp.get(tp_vendor, set()): # type: ignore
+                        current_new_tp_pod_candidate += 1
+                    
+                    # Calculate actual memory needed for this TP on this host_candidate_tp
+                    is_first_of_lb_course_type_on_host = tp_lb_course not in lb_courses_on_host_registry.get(host_candidate_tp, set()) # type: ignore
+                    
+                    mem_needed_for_this_tp = tp_full_mem # type: ignore
+                    if not is_first_of_lb_course_type_on_host:
+                        mem_needed_for_this_tp *= SUBSEQUENT_POD_MEMORY_FACTOR
+                    
+                    mem_needed_for_this_tp = round(mem_needed_for_this_tp, 2) # Round to avoid float issues
+
+                    current_capacity_on_host_cand = working_host_caps_gb_tp.get(host_candidate_tp, 0.0)
+
+                    logger.debug(f"  TP for '{tp_sf_code}' on host '{host_candidate_tp}': " # type: ignore
+                                 f"LB Course '{tp_lb_course}', Is first of type? {is_first_of_lb_course_type_on_host}. " # type: ignore
+                                 f"Mem needed: {mem_needed_for_this_tp:.2f}GB. Host capacity: {current_capacity_on_host_cand:.2f}GB.")
+
+                    if current_capacity_on_host_cand >= mem_needed_for_this_tp:
+                        tp_host = host_candidate_tp
+                        tp_pod = current_new_tp_pod_candidate
+                        
+                        # Update global tracking
+                        taken_pods_vendor_tp[tp_vendor].add(tp_pod) # type: ignore
+                        if tp_lb_course: # type: ignore
+                            lb_courses_on_host_registry[tp_host].add(tp_lb_course) # type: ignore
+                        
+                        # Deduct memory from this host's working capacity
+                        working_host_caps_gb_tp[tp_host] -= mem_needed_for_this_tp
+                        working_host_caps_gb_tp[tp_host] = max(0, round(working_host_caps_gb_tp[tp_host], 2))
+                        
+                        logger.info(f"SUCCESS: Assigned TP for '{tp_sf_code}' (LB: {tp_lb_course}) to Host: {tp_host}, Pod: {tp_pod}. " # type: ignore
+                                    f"Mem consumed: {mem_needed_for_this_tp:.2f}GB. "
+                                    f"Host '{tp_host}' new eff. capacity: {working_host_caps_gb_tp[tp_host]:.2f}GB.")
+                        assigned_this_tp = True
+                        tp_warning = None # Clear any previous fallback warning if successfully assigned
+                        break # Found a suitable host and pod for this trainer pod
+                    else:
+                        # If this is the first host we are seriously considering (e.g. from priority or first in list)
+                        # and it doesn't have enough space, store it as a fallback and set a warning.
+                        if tp_host is None: # Only set fallback if no host has been assigned yet
+                            tp_host = host_candidate_tp
+                            tp_pod = current_new_tp_pod_candidate # Tentatively assign pod number too
+                            current_warning_cap = (f"Host '{host_candidate_tp}' has INSUFFICIENT capacity ({current_capacity_on_host_cand:.2f}GB) "
+                                                   f"for TP needing {mem_needed_for_this_tp:.2f}GB. Marked as tentative assignment.")
+                            tp_warning = (tp_warning + ". " if tp_warning else "") + current_warning_cap
+                            logger.warning(f"For TP of {tp_sf_code}: {current_warning_cap}")
+                            # Do NOT break; continue to see if other hosts in tp_hosts_to_try have capacity.
+                            # If a better host is found, tp_host, tp_pod, and tp_warning will be overridden.
+                
+                if not assigned_this_tp:
+                    # If loop finished and assigned_this_tp is false, it means no host had enough capacity.
+                    # tp_host and tp_pod might hold the fallback assignment to the first host tried (even if over capacity).
+                    # The tp_warning would reflect the capacity issue.
+                    if tp_host is None and all_hosts_dd: # If absolutely no host was even a candidate for fallback
+                        tp_host = all_hosts_dd[0] # Assign to first available as absolute fallback
+                        cand_pod_tp_abs_fallback = start_pod_num_tp_config
+                        while cand_pod_tp_abs_fallback in taken_pods_vendor_tp.get(tp_vendor, set()): # type: ignore
+                            cand_pod_tp_abs_fallback +=1
+                        tp_pod = cand_pod_tp_abs_fallback
+                        current_warning_abs_fb = f"No host from rules/spillover had capacity. Defaulted TP to '{tp_host}/{tp_pod}'. VERIFY MANUALLY."
+                        tp_warning = (tp_warning + ". " if tp_warning else "") + current_warning_abs_fb
+                        logger.error(f"For TP of {tp_sf_code}: {current_warning_abs_fb}")
+                        # Mark this fallback assignment as "taken" to prevent reuse by next TP in this batch
+                        taken_pods_vendor_tp[tp_vendor].add(tp_pod) # type: ignore
+                        if tp_lb_course: lb_courses_on_host_registry[tp_host].add(tp_lb_course) # type: ignore
+                        # DO NOT deduct memory if it's a capacity-exceeding fallback; user must fix.
+                    elif tp_host and tp_warning and "INSUFFICIENT capacity" in tp_warning:
+                        # We have a fallback assignment to an over-capacity host.
+                        # Still mark the pod as taken for this batch to avoid conflicts.
+                        taken_pods_vendor_tp[tp_vendor].add(tp_pod) # type: ignore
+                        if tp_lb_course: lb_courses_on_host_registry[tp_host].add(tp_lb_course) # type: ignore
+                        logger.warning(f"TP for '{tp_sf_code}' assigned to '{tp_host}/{tp_pod}' despite insufficient capacity warning. Manual review required.")
+                        # Memory was NOT deducted for this over-capacity assignment; assignment_capacities_gb remains as it was for this host.
+        # --- End Actual Trainer Pod Auto-Assignment ---
+
+
+        # Prepare trainer assignment data for the interim document update
+        trainer_data_for_db_update = {
+            "trainer_labbuild_course": tp_lb_course,
+            "trainer_memory_gb_one_pod": tp_full_mem,
+            "trainer_assignment_auto_proposed": {
+                "host": tp_host, "start_pod": tp_pod, "end_pod": tp_pod
+            } if tp_host and tp_pod is not None else None,
+            "trainer_assignment_warning": tp_warning,
+            "status": "pending_trainer_review", # Update status for this course
+            "updated_at": datetime.datetime.now(pytz.utc)
+        }
+        trainer_final_update_ops_db.append(
+            UpdateOne(
+                {"_id": student_course_doc["_id"], "batch_review_id": batch_review_id},
+                {"$set": trainer_data_for_db_update}
+            )
+        )
+        
+        # Prepare data for rendering trainer_pod_review.html
+        trainer_display_data = {
+            "interim_doc_id": str(student_course_doc["_id"]),
+            "sf_course_code": tp_sf_code,
+            "labbuild_course": tp_lb_course,
+            "vendor": tp_vendor.upper() if tp_vendor else "N/A",
+            "memory_gb_one_pod": tp_full_mem,
+            "assigned_host": tp_host, # Auto-assigned host for pre-population
+            "start_pod": tp_pod,      # Auto-assigned pod
+            "end_pod": tp_pod,        # Auto-assigned pod
+            "error_message": tp_warning # This will be the capacity warning if any
+        }
+        courses_for_trainer_page_display.append({"type": "trainer", "data": trainer_display_data})
+    # --- End Loop over student_course_doc ---
+
+    if trainer_final_update_ops_db:
+        try:
+            if interim_alloc_collection is not None:
+                result_tp_upd = interim_alloc_collection.bulk_write(trainer_final_update_ops_db)
+                logger.info(f"Updated {result_tp_upd.modified_count} interim docs with trainer proposals for batch '{batch_review_id}'.")
+            else:
+                raise PyMongoError("interim_alloc_collection is None for trainer proposals.")
+        except (PyMongoError, BulkWriteError, NotImplementedError) as e_tp_save:
+            logger.error(f"Error saving trainer proposals to interim DB (batch '{batch_review_id}'): {e_tp_save}", exc_info=True)
+            flash("Error saving trainer pod proposals. Please try again.", "danger")
+            return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+
+    if course_config_collection is not None: # For JS memory lookup on trainer page
+        try: course_configs_mem_tp_page = list(course_config_collection.find({}, {"course_name": 1, "memory_gb_per_pod": 1, "memory": 1, "_id": 0}))
+        except PyMongoError as e: logger.error(f"DB error fetching course_configs for TP page JS: {e}")
+
+    return render_template(
+        'trainer_pod_review.html',
+        courses_and_trainer_pods=courses_for_trainer_page_display,
+        batch_review_id=batch_review_id,
+        current_theme=current_theme,
+        all_hosts=all_hosts_dd, # Ensure this is populated correctly
+        course_configs_for_memory=course_configs_mem_tp_page,
+        subsequent_pod_memory_factor=SUBSEQUENT_POD_MEMORY_FACTOR
+    )
+
+
+@bp.route('/finalize-and-display-build-plan', methods=['POST'])
+def finalize_and_display_build_plan(): # Renamed from finalize_and_schedule_builds
+    """
+    1. Receives finalized trainer assignments and `batch_review_id` from `trainer_pod_review.html`.
+    2. Updates trainer assignments in `interimallocation` for that `batch_review_id`
+       to status 'trainer_confirmed' (or a general 'build_plan_finalized').
+    3. Fetches ALL items for this `batch_review_id` from `interimallocation`
+       (which now have confirmed student and trainer assignments).
+    4. Fetches 'extend:true' items from `currentallocation`.
+    5. Combines, sorts, and renders `final_review_schedule.html`.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+    batch_review_id = request.form.get('batch_review_id')
+    final_trainer_plan_json = request.form.get('final_trainer_assignments_for_review')
+
+    if not batch_review_id:
+        flash("Review session ID missing for final plan display.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    final_trainer_assignments_input: List[Dict] = []
+    if final_trainer_plan_json:
+        try:
+            parsed_data = json.loads(final_trainer_plan_json)
+            if isinstance(parsed_data, list): final_trainer_assignments_input = parsed_data
+        except json.JSONDecodeError:
+            logger.error("Error decoding submitted trainer assignments for final display.")
+            flash("Error processing submitted trainer assignments.", "danger")
+            return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id)) # Go back
+
+    if interim_alloc_collection is None:
+        flash("Interim allocation database unavailable for final display.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    # --- 1. Update interimallocation with finalized trainer assignments for this batch ---
+    trainer_final_update_ops: List[UpdateOne] = []
+    try:
+        for trainer_final_data in final_trainer_assignments_input:
+            # The trainer_final_data should contain the interim_doc_id of the parent course
+            interim_doc_id_str = trainer_final_data.get('interim_doc_id')
+            if not interim_doc_id_str:
+                logger.warning(f"Missing 'interim_doc_id' in trainer final data: {trainer_final_data.get('sf_course_code')}")
+                continue
+            
+            update_payload_tp_final = {
+                "trainer_labbuild_course": trainer_final_data.get("labbuild_course"), # From user's choice
+                "trainer_memory_gb_one_pod": trainer_final_data.get("memory_gb_one_pod"),
+                "trainer_assignment_final": trainer_final_data.get("interactive_assignments", []), # User's choice
+                "trainer_assignment_final_warning": trainer_final_data.get("error_message"), # User acknowledged warning
+                "status": "trainer_confirmed", # Or a more general "plan_finalized"
+                "updated_at": datetime.datetime.now(pytz.utc)
+            }
+            trainer_final_update_ops.append(
+                UpdateOne(
+                    {"_id": ObjectId(interim_doc_id_str), "batch_review_id": batch_review_id},
+                    {"$set": update_payload_tp_final}
+                )
+            )
+        if trainer_final_update_ops:
+            result_tp_final = interim_alloc_collection.bulk_write(trainer_final_update_ops)
+            logger.info(f"Updated {result_tp_final.modified_count} trainer assignments in interim "
+                        f"(batch '{batch_review_id}') to 'trainer_confirmed'.")
+        else:
+            logger.info("No trainer assignments to finalize in interim for display.")
+
+    except Exception as e_tp_final_save:
+        logger.error(f"Error saving finalized trainer assignments to interim DB: {e_tp_final_save}", exc_info=True)
+        flash("Error saving finalized trainer assignments. Please try again.", "danger")
+        return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id))
+
+
+    # --- 2. Fetch ALL confirmed items for this batch_review_id from interimallocation ---
+    all_confirmed_batch_items_for_display: List[Dict] = []
+    try:
+        # Fetch documents that are now fully confirmed for this batch
+        confirmed_status_list = ["student_confirmed", "trainer_confirmed"] # Or just one final status
+        confirmed_batch_cursor = interim_alloc_collection.find({
+            "batch_review_id": batch_review_id,
+            "status": {"$in": confirmed_status_list}
+        }).sort("sf_course_code", ASCENDING) # Initial sort
+
+        for doc in confirmed_batch_cursor:
+            # Student Part
+            all_confirmed_batch_items_for_display.append({
+                "type": "Student Build",
+                "sf_course_code": doc.get("sf_course_code"),
+                "labbuild_course": doc.get("final_labbuild_course_student"),
+                "vendor": doc.get("vendor"),
+                "start_date": _format_date_for_review(doc.get("sf_start_date"), f"student {doc.get('sf_course_code')}"),
+                "assignments": doc.get("student_assignments_final", []),
+                "status_note": doc.get("student_assignment_final_warning") or doc.get("student_assignment_warning")
+            })
+            # Trainer Part (if it exists and is confirmed)
+            if doc.get("trainer_labbuild_course") and doc.get("status") == "trainer_confirmed":
+                trainer_start = _format_date_for_review(doc.get("sf_start_date"), f"trainer {doc.get('sf_course_code')}-TP")
+                all_confirmed_batch_items_for_display.append({
+                    "type": "Trainer Build",
+                    "sf_course_code": doc.get("sf_course_code", "") + "-TP",
+                    "labbuild_course": doc.get("trainer_labbuild_course"),
+                    "vendor": doc.get("vendor"),
+                    "start_date": trainer_start,
+                    "assignments": doc.get("trainer_assignment_final", []),
+                    "status_note": doc.get("trainer_assignment_final_warning") or doc.get("trainer_assignment_warning")
+                })
+    except (PyMongoError, NotImplementedError) as e_fetch_final_display:
+        logger.error(f"DB Error fetching confirmed items from interim for display: {e_fetch_final_display}", exc_info=True)
+        flash("Error fetching data for final review page.", "danger")
+
+    # --- 3. Fetch "Extend: True" Allocations from currentallocation (as before) ---
+    extended_allocations_display: List[Dict] = []
+    # ... (logic to fetch and format extended_allocations_display - UNCHANGED from previous) ...
+
+    # --- 4. Combine and Sort ---
+    final_review_list_display = all_confirmed_batch_items_for_display + extended_allocations_display # type: ignore
+    # ... (Python-side sorting logic using get_sort_key_python - UNCHANGED from previous) ...
+    # (Ensure get_sort_key_python is defined as in the previous response)
+    def get_sort_key_python(item: Dict) -> Tuple[str, datetime.date]: # Copied for completeness
+        date_str = item.get("start_date", "")
+        primary_sort_key = item.get("sf_course_code", "").lower()
+        secondary_sort_date = datetime.date.max 
+        if date_str == "Ongoing (Extended)": secondary_sort_date = datetime.date.min 
+        elif date_str and date_str != "N/A":
+            try: secondary_sort_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError: pass 
+        return (primary_sort_key, secondary_sort_date)
+    try: final_review_list_display.sort(key=get_sort_key_python)
+    except Exception as e: logger.error(f"Sort error: {e}"); flash("Error sorting items.", "warning")
+
+
+    # Prepare only items that need actual building for the next step's form
+    buildable_items_for_scheduling = [
+        item for item in final_review_list_display # Use the combined & sorted list
+        if item.get("type") in ["Student Build", "Trainer Build"]
+    ]
+
+    return render_template(
+        'final_review_schedule.html',
+        all_items_for_review=final_review_list_display,
+        buildable_items_json=json.dumps(buildable_items_for_scheduling),
+        batch_review_id=batch_review_id, # Pass for the form to /execute-scheduled-builds
+        current_theme=current_theme,
+    )

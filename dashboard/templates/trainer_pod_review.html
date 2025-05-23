@@ -1,0 +1,359 @@
+{# dashboard/templates/trainer_pod_review.html #}
+{% extends 'base.html' %}
+
+{% block title %}Review Trainer Pod Allocation{% endblock %}
+
+{% block head %}
+    {{ super() }}
+    <style>
+        .review-table th, .review-table td { 
+            font-size: 0.85rem; 
+            vertical-align: middle; 
+        }
+        .warning-message { font-weight: bold; color: var(--bs-danger); }
+        body.dark-mode .warning-message { color: var(--status-failed-dark-text); }
+        .host-error { color: var(--bs-danger); font-style: italic; }
+        body.dark-mode .host-error { color: var(--status-failed-dark-text); }
+        
+        .col-sf-code { width: 160px; } 
+        .col-lb-course { width: 150px; }
+        .col-vendor { width: 60px; text-align: center; }
+        .col-student-assignments-display { min-width: 250px; white-space: normal; font-size: 0.8em;}
+        .col-interactive-assignments-trainer { min-width: 400px; } 
+        .col-total-interactive-memory { width: 110px; text-align: right; font-weight: bold; }
+         
+
+        .review-table input[type="number"].form-control-sm,
+        .review-table select.form-select-sm {
+            font-size: 0.75rem; padding: 0.15rem 0.3rem; height: auto; 
+            display: inline-block; width: 100%; box-sizing: border-box;
+        }
+        .review-table td { padding-top: 0.3rem; padding-bottom: 0.3rem; } 
+        .table-sm th, .table-sm td { padding: 0.3rem; } 
+        .form-control.is-invalid, .form-select.is-invalid { border-color: var(--bs-danger); }
+
+        .assignment-sub-row {
+            display: flex; align-items: center; gap: 0.4rem; 
+            margin-bottom: 0.25rem; padding: 0.1rem 0; 
+        }
+        .sub-host-select { flex: 2; min-width: 120px; max-width: 150px; } 
+        .sub-pod-input { flex: 0.8; min-width: 55px; max-width: 65px; text-align: center;} 
+        /* Actions column in sub-row is not needed for trainer pod as it's always one segment */
+        /* .sub-row-actions { flex-shrink: 0; display: flex; align-items: center; } */
+        
+        .student-assignment-item { display: block; margin-bottom: 0.2em; font-size: 0.9em;}
+        .error-icon-container {
+            margin-left: 5px; 
+            display: inline-block; 
+        }
+        .error-icon-container .fa-exclamation-triangle {
+            color: var(--bs-warning); 
+            cursor: help; 
+        }
+        body.dark-mode .error-icon-container .fa-exclamation-triangle {
+            color: var(--status-warning-dark-text); 
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+   <h1>Review Trainer Pod Allocation (Batch ID: {{ batch_review_id }})</h1>
+   <a href="javascript:history.back()" 
+      onclick="return confirm('Are you sure you want to go back? Changes to trainer pods on this page will be lost, and you will return to student assignment review.');" 
+      class="btn btn-sm btn-outline-secondary">
+      Back to Student Assignments
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-header">Confirm Student Assignments & Assign Trainer Pods</div>
+    <div class="card-body">
+        {% if courses_and_trainer_pods %}
+            <p>Review the student pod assignments (read-only on this page) and the proposed/assigned trainer pod for each course. Adjust trainer pod host/number if needed.</p>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped table-bordered review-table" id="trainerReviewTable">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="col-sf-code">SF Course Code</th>
+                            <th class="col-lb-course">LabBuild Course</th>
+                            <th class="col-vendor">Vendor</th>
+                            <th class="col-student-assignments-display">Student Pod Assignments (Finalized)</th>
+                            <th class="col-interactive-assignments-trainer">Trainer Pod Assignment (Interactive)</th>
+                            <th class="col-total-interactive-memory">Trainer Pod Est. Mem (GB)</th> 
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in courses_and_trainer_pods %}
+                            {% if item.type == 'student' %}
+                                {% set student_course = item.data %}
+                                <tr class="table-secondary student-data-row" style="font-style: italic;"> {# Using table-secondary for student rows #}
+                                    <td class="col-sf-code" title="{{ student_course.sf_course_code }}">{{ student_course.sf_course_code }}</td>
+                                    <td class="col-lb-course" title="{{ student_course.labbuild_course }}">{{ student_course.labbuild_course }}</td>
+                                    <td class="col-vendor">{{ student_course.vendor | upper if student_course.vendor else 'N/A' }}</td>
+                                    <td class="col-student-assignments-display">
+                                        {% if student_course.interactive_assignments %}
+                                            {% for assignment in student_course.interactive_assignments %}
+                                                <span class="student-assignment-item">
+                                                    <strong>Host:</strong> {{ assignment.host or 'N/A' }}, 
+                                                    <strong>Pods:</strong> {{ assignment.start_pod or '?' }}-{{ assignment.end_pod or '?' }}
+                                                </span>
+                                            {% endfor %}
+                                            {% if student_course.assignment_warning %}
+                                                <small class="d-block text-warning mt-1">{{ student_course.assignment_warning }}</small>
+                                            {% endif %}
+                                        {% else %}
+                                            <span class="text-muted">No student assignments defined.</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="col-interactive-assignments-trainer text-muted">N/A (Student Info)</td>
+                                    <td class="col-total-interactive-memory text-muted text-end">
+                                        {{ "%.2f"|format(student_course.estimated_memory_gb | default(0.0) | float )}} GB
+                                    </td> 
+                                </tr>
+                            {% elif item.type == 'trainer' %}
+                                {% set trainer_pod = item.data %}
+                                <tr class="trainer-data-row" 
+                                    data-interim-doc-id="{{ trainer_pod.interim_doc_id }}" {# Store ID for submission #}
+                                    data-labbuild-course="{{ trainer_pod.labbuild_course }}" 
+                                    data-memory-one-pod="{{ trainer_pod.memory_gb_one_pod | default(0.0) }}"
+                                    data-sf-course-code-trainer="{{ trainer_pod.sf_course_code }}"
+                                    data-vendor="{{ trainer_pod.vendor | lower if trainer_pod.vendor else '' }}">
+
+                                    <td class="col-sf-code" title="{{ trainer_pod.sf_course_code }}">
+                                        <strong>{{ trainer_pod.sf_course_code }}</strong>
+                                    </td>
+                                    <td class="col-lb-course" title="{{ trainer_pod.labbuild_course }}">{{ trainer_pod.labbuild_course }}</td>
+                                    <td class="col-vendor">{{ trainer_pod.vendor | upper if trainer_pod.vendor else 'N/A'}}</td>
+                                    <td class="col-student-assignments-display text-muted">N/A (Trainer Assignment)</td>
+
+                                    <td class="col-interactive-assignments-trainer interactive-assignments-cell">
+                                        <div class="assignment-sub-row">
+                                            <select name="host_assignment_tp_{{ loop.index0 }}" class="form-select form-select-sm sub-host-select">
+                                                <option value="">-- Host --</option>
+                                                {% for host_name_opt_tp in all_hosts %}
+                                                <option value="{{ host_name_opt_tp }}" {% if trainer_pod.assigned_host == host_name_opt_tp %}selected{% endif %}>
+                                                    {{ host_name_opt_tp }}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                            <input type="number" name="start_pod_tp_{{ loop.index0 }}" 
+                                                   class="form-control form-control-sm sub-pod-input start-pod-input" 
+                                                   value="{{ trainer_pod.start_pod | default(1) }}" min="1" placeholder="Pod #">
+                                            {# Trainer pod end_pod is always same as start_pod #}
+                                            <input type="number" name="end_pod_tp_{{ loop.index0 }}" 
+                                                   class="form-control form-control-sm sub-pod-input end-pod-input" 
+                                                   value="{{ trainer_pod.start_pod | default(1) }}" min="1" readonly 
+                                                   title="End pod is same as start for a single trainer pod">
+                                            {% if trainer_pod.error_message %} {# This is the warning from auto-assignment #}
+                                                <span class="error-icon-container" title="{{trainer_pod.error_message}}">
+                                                    <i class="fas fa-exclamation-triangle"></i>
+                                                </span>
+                                            {% endif %}
+                                        </div>
+                                    </td>
+                                    <td class="col-total-interactive-memory text-end">
+                                        <span class="total-course-memory-display">0.00</span> GB
+                                    </td> 
+                                </tr>
+                            {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="mt-4">
+                <form action="{{ url_for('actions.finalize_and_display_build_plan') }}" method="POST" id="finalizeAndProceedForm">
+                     {# Hidden input for the batch_review_id to maintain context #}
+                     <input type="hidden" name="batch_review_id" value="{{ batch_review_id }}">
+                     {# This will be populated by JS with the trainer assignments finalized on this page #}
+                     <input type="hidden" name="final_trainer_assignments_for_review" id="finalTrainerAssignmentsInput">
+                     
+                     <button type="submit" class="btn btn-lg btn-primary" 
+                             title="Finalize these trainer pod assignments and proceed to the overall build schedule review.">
+                         <i class="fas fa-check-double"></i> Finalize Trainer Assignments & Proceed to Full Plan Review
+                     </button>
+                     <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-lg btn-secondary ms-2">Cancel & Back to Upcoming Courses</a>
+                </form>
+            </div>
+
+        {% else %}
+            <div class="alert alert-warning"> No course data received for trainer pod allocation. Batch ID: {{ batch_review_id or "Unknown" }}</div>
+             <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary">Back to Upcoming Courses</a>
+        {% endif %}
+    </div> 
+</div> 
+
+{# Embedded data for JavaScript #}
+<script id="allHostsDataTrainer" type="application/json">
+    {{ all_hosts | tojson | safe }}
+</script>
+<script id="courseMemoryDataTrainer" type="application/json">
+    {{ course_configs_for_memory | tojson | safe }}
+</script>
+{# SUBSEQUENT_POD_MEMORY_FACTOR is used by backend logic to calculate effective memory for TP if same LB course exists #}
+{# JS on this page just displays the FULL memory of the TP type, backend decides actual cost #}
+<script id="memoryFactorDataTrainer" type="application/json">
+    {{ {"factor": subsequent_pod_memory_factor} | tojson | safe }}
+</script>
+{# NO longer need to pass studentCoursesDataForFinalize here, as the finalize_and_display_build_plan route will fetch all confirmed items for the batch_review_id from interimallocation #}
+
+{% endblock %}
+
+{% block scripts %}
+    {{ super() }}
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const trainerReviewTable = document.getElementById('trainerReviewTable');
+        if (!trainerReviewTable) {
+            console.warn("Trainer review table element ('trainerReviewTable') not found.");
+            return;
+        }
+
+        let COURSE_MEMORY_STORE_TP = [];
+        try {
+            const courseMemoryDataEl = document.getElementById('courseMemoryDataTrainer');
+            if (courseMemoryDataEl && courseMemoryDataEl.textContent) {
+                COURSE_MEMORY_STORE_TP = JSON.parse(courseMemoryDataEl.textContent);
+            }
+        } catch (e) { console.error("Error parsing courseMemoryDataTrainer JSON:", e); }
+
+        function getLabbuildCourseMemoryTP(labbuildCourseName) {
+            if (!labbuildCourseName || !COURSE_MEMORY_STORE_TP.length) return 0;
+            const config = COURSE_MEMORY_STORE_TP.find(c => c.course_name === labbuildCourseName);
+            if (config) {
+                const memValStr = config.memory_gb_per_pod !== undefined ? String(config.memory_gb_per_pod) : String(config.memory);
+                const parsedMem = parseFloat(memValStr);
+                return !isNaN(parsedMem) && parsedMem >= 0 ? parsedMem : 0;
+            }
+            return 0;
+        }
+
+        function calculateAndDisplayTrainerPodMemory(trainerRowElement) {
+            // For a single trainer pod, memory is its full configured memory.
+            // The backend's auto-assignment logic considers deduplication if other
+            // student/trainer pods of the same type are on the host.
+            // This JS function only displays the *type* memory.
+            const memoryPerSinglePod = parseFloat(trainerRowElement.dataset.memoryOnePod);
+            const startPodInput = trainerRowElement.querySelector('.start-pod-input'); 
+            const memoryDisplay = trainerRowElement.querySelector('.total-course-memory-display');
+            const endPodInput = trainerRowElement.querySelector('.end-pod-input');
+
+            if (!startPodInput || !memoryDisplay || isNaN(memoryPerSinglePod)) {
+                if(memoryDisplay) memoryDisplay.textContent = "N/A";
+                return 0;
+            }
+            if (memoryPerSinglePod <= 0) {
+                memoryDisplay.textContent = "0.00";
+                return 0;
+            }
+            
+            let startVal = parseInt(startPodInput.value, 10);
+            let isValid = true;
+
+            if (isNaN(startVal) || startVal < 1) {
+                startPodInput.classList.add('is-invalid');
+                isValid = false;
+            } else {
+                startPodInput.classList.remove('is-invalid');
+            }
+            
+            if (endPodInput) { // Keep end pod in sync and valid
+                if (!isNaN(startVal) && startVal >=1 ) {
+                    endPodInput.value = startVal;
+                    endPodInput.classList.remove('is-invalid');
+                } else {
+                    endPodInput.value = ''; 
+                    endPodInput.classList.add('is-invalid');
+                }
+            }
+
+            if (!isValid) {
+                memoryDisplay.textContent = "Invalid";
+                return 0;
+            }
+            
+            memoryDisplay.textContent = memoryPerSinglePod.toFixed(2);
+            return memoryPerSinglePod;
+        }
+
+        trainerReviewTable.querySelectorAll('tbody tr.trainer-data-row').forEach(trainerRow => {
+            const startPodInput = trainerRow.querySelector('.start-pod-input');
+            const endPodInput = trainerRow.querySelector('.end-pod-input'); 
+            const hostSelect = trainerRow.querySelector('.sub-host-select');
+
+            if (startPodInput && endPodInput) {
+                startPodInput.addEventListener('input', function() {
+                    if (!isNaN(parseInt(this.value,10)) && parseInt(this.value,10) >= 1 ) {
+                        endPodInput.value = this.value; 
+                    } else {
+                        endPodInput.value = ''; 
+                    }
+                    calculateAndDisplayTrainerPodMemory(trainerRow);
+                });
+                if (hostSelect) { // Memory display for trainer doesn't change with host, but good to have listener
+                    hostSelect.addEventListener('change', () => calculateAndDisplayTrainerPodMemory(trainerRow));
+                }
+            }
+            calculateAndDisplayTrainerPodMemory(trainerRow); 
+        });
+
+        // --- Form Submission Logic ---
+        const finalizeAndProceedFormElement = document.getElementById('finalizeAndProceedForm');
+        if (finalizeAndProceedFormElement) {
+            finalizeAndProceedFormElement.addEventListener('submit', function(event) {
+                const finalTrainerAssignments = [];
+                let isTrainerFormCompletelyValid = true;
+
+                document.querySelectorAll('#trainerReviewTable tbody tr.trainer-data-row').forEach(trainerRow => {
+                    if (!isTrainerFormCompletelyValid) return;
+
+                    const hostSelect = trainerRow.querySelector('.sub-host-select');
+                    const startPodInput = trainerRow.querySelector('.start-pod-input');
+                    
+                    calculateAndDisplayTrainerPodMemory(trainerRow); // Run validation
+                    
+                    if (!hostSelect.value || hostSelect.value === "") {
+                        alert(`Host not selected for Trainer Pod: ${trainerRow.dataset.sfCourseCodeTrainer}. Please select a host.`);
+                        hostSelect.focus(); isTrainerFormCompletelyValid = false; return;
+                    }
+                    if (startPodInput.classList.contains('is-invalid')) {
+                        alert(`Invalid pod number for Trainer Pod: ${trainerRow.dataset.sfCourseCodeTrainer}.`);
+                        startPodInput.focus(); isTrainerFormCompletelyValid = false; return;
+                    }
+                    const podValue = parseInt(startPodInput.value, 10);
+
+                    finalTrainerAssignments.push({
+                        interim_doc_id: trainerRow.dataset.interimDocId, // Pass the ID of the interim doc to update
+                        sf_course_code: trainerRow.dataset.sfCourseCodeTrainer, // This is SFCode-TP
+                        labbuild_course: trainerRow.dataset.labbuildCourse,
+                        vendor: trainerRow.dataset.vendor,
+                        memory_gb_one_pod: parseFloat(trainerRow.dataset.memoryOnePod),
+                        interactive_assignments: [{ host: hostSelect.value, start_pod: podValue, end_pod: podValue }],
+                        error_message: trainerRow.querySelector('.error-icon-container') ? trainerRow.querySelector('.error-icon-container').title : null
+                    });
+                });
+
+                if (!isTrainerFormCompletelyValid) {
+                    event.preventDefault(); return;
+                }
+                
+                const finalTrainerAssignmentsInput = document.getElementById('finalTrainerAssignmentsInput');
+                if (finalTrainerAssignmentsInput) {
+                    finalTrainerAssignmentsInput.value = JSON.stringify(finalTrainerAssignments);
+                } else {
+                    console.error("Hidden input #finalTrainerAssignmentsInput not found."); event.preventDefault(); return;
+                }
+                
+                // Student assignments are NOT re-collected here. The backend will use the
+                // `batch_review_id` to fetch the already confirmed student assignments from interimallocation.
+                // So, `finalStudentAssignmentsInput` is no longer needed on this form.
+                // We only submit the batch_review_id and the finalized trainer assignments.
+
+                console.log("Submitting trainer assignments to /finalize-and-display-build-plan...");
+                // console.log("Trainer Assignments (from hidden field):", finalTrainerAssignmentsInput.value);
+            });
+        }
+    });
+    </script>
+{% endblock %}

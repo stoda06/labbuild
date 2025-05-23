@@ -52,6 +52,11 @@
   <label for="end_pod" class="form-label">End Pod</label>
   <input type="number" class="form-control" id="end_pod" name="end_pod" min="0">
 </div>
+<div class="col-md-4 mb-3" id="{{ prefix }}_cloneFromPodGroup" style="display: none;">
+  <label for="{{ prefix }}_clonefrom" class="form-label">Clone From Pod (CP)</label>
+  <input type="number" class="form-control" id="{{ prefix }}_clonefrom" name="clonefrom" min="0" placeholder="Source Pod #">
+  <div class="form-text">Optional: Source pod to clone Checkpoint VMs from.</div>
+</div>
 <div class="col-md-4 mb-3">
   <label for="class_number" class="form-label">F5 Class #</label>
   <input type="number" class="form-control" id="class_number" name="class_number" min="0">

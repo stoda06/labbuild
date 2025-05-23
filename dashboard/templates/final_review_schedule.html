@@ -1,0 +1,275 @@
+{# dashboard/templates/final_review_schedule.html #}
+{% extends 'base.html' %}
+
+{% block title %}Final Build Review & Schedule{% endblock %}
+
+{% block head %}
+    {{ super() }}
+    <style>
+        .review-table th, .review-table td { 
+            font-size: 0.85rem; 
+            vertical-align: middle; 
+        }
+        .review-table td ul {
+            padding-left: 1.2em;
+            margin-bottom: 0;
+            list-style-type: none;
+        }
+        .review-table td ul li {
+            font-size: 0.9em;
+            margin-bottom: 0.2em;
+        }
+        .col-type { width: 100px; }
+        .col-sf-code { width: 150px; }
+        .col-lb-course { width: 180px; }
+        .col-vendor { width: 60px; text-align: center; }
+        .col-start-date { width: 110px; }
+        .col-assignments { min-width: 280px; }
+        .col-status-note { min-width: 180px; font-style: italic; color: var(--bs-warning); }
+        body.dark-mode .col-status-note { color: var(--status-warning-dark-text); }
+        .col-status-note.text-success { color: var(--bs-success) !important; }
+        body.dark-mode .col-status-note.text-success { color: var(--status-success-dark-text) !important; }
+        
+        /* Remove sortable header styles if client-side sorting is gone */
+        /* .sortable-header { cursor: pointer; } */
+        /* .sortable-header .sort-icon { ... } */
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+   <h1>Final Build Plan Review</h1>
+   <div>
+        <a href="javascript:history.back()" 
+           onclick="return confirm('Are you sure you want to go back? This will discard the current review state.');" 
+           class="btn btn-sm btn-outline-secondary">
+           Back
+        </a>
+        <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-sm btn-outline-secondary ms-2">To Upcoming Courses</a>
+   </div>
+</div>
+
+<div class="card">
+  <div class="card-header">Consolidated Build & Keep-Running Plan</div>
+  <div class="card-body">
+    {% if all_items_for_review %}
+        <p>This is the final consolidated plan, sorted by SF Course Code then Start Date. Review all student builds, trainer builds, and existing allocations marked to 'Keep Running'.</p>
+        
+        <div class="table-responsive">
+            <table class="table table-sm table-striped table-bordered review-table" id="finalReviewTable">
+                <thead class="table-light">
+                    <tr>
+                        {# Headers are no longer 'sortable-header' if client-side sort is removed #}
+                        <th class="col-type">Type</th>
+                        <th class="col-sf-code">SF Course Code</th>
+                        <th class="col-lb-course">LabBuild Course</th>
+                        <th class="col-vendor">Vendor</th>
+                        <th class="col-start-date">Start Date</th>
+                        <th class="col-assignments">Assignments (Host: Pods)</th>
+                        <th class="col-status-note">Notes / Warnings</th>
+                    </tr>
+                </thead>
+                <tbody id="finalReviewTableBody">
+                    {# Direct rendering of rows from Python-sorted data #}
+                    {% for item in all_items_for_review %}
+                    <tr> {# Removed data attributes previously used by JS sort #}
+                        <td class="col-type">
+                            {% if item.type == 'Student Build' %}<span class="badge bg-primary">{{ item.type }}</span>
+                            {% elif item.type == 'Trainer Build' %}<span class="badge bg-info text-dark">{{ item.type }}</span>
+                            {% elif item.type == 'extended' %}<span class="badge bg-success">{{ item.type | replace('_', ' ') | title }}</span>
+                            {% else %}{{ item.type }}
+                            {% endif %}
+                        </td>
+                        <td class="col-sf-code">{{ item.sf_course_code }}</td>
+                        <td class="col-lb-course">{{ item.labbuild_course }}</td>
+                        <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A' }}</td>
+                        <td class="col-start-date">
+                            {%- if item.start_date and item.start_date != "N/A" and item.start_date != "Ongoing (Extended)" -%}
+                                <span class="local-datetime" data-timestamp="{{ (item.start_date ~ 'T00:00:00Z') if item.start_date and item.start_date.count('-') == 2 else '' }}">
+                                    {{ item.start_date }}
+                                </span>
+                            {%- else -%}
+                                {{ item.start_date }}
+                            {%- endif -%}
+                        </td>
+                        <td class="col-assignments">
+                            {% if item.assignments %}
+                                <ul>
+                                {% for assign in item.assignments %}
+                                    <li>
+                                        <strong>Host:</strong> {{ assign.host or 'N/A' }}
+                                        {% if assign.pods %}
+                                            <strong>Pod/Class:</strong> {{ assign.pods }}
+                                        {% elif assign.start_pod is not none and assign.end_pod is not none %}
+                                            <strong>Pods:</strong> {{ assign.start_pod }}-{{ assign.end_pod }}
+                                        {% else %}
+                                            (No pod range)
+                                        {% endif %}
+                                    </li>
+                                {% endfor %}
+                                </ul>
+                            {% else %}
+                                <span class="text-muted">No specific assignments.</span>
+                            {% endif %}
+                        </td>
+                        <td class="col-status-note {{ 'text-success' if item.type == 'extended' else '' }}">
+                            {{ item.status_note or '-' }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mt-4">
+            <form action="{{ url_for('actions.execute_scheduled_builds') }}" method="POST" id="executeBuildsForm">
+                 {# Populate hidden input with buildable_items_json from Python context #}
+                 <input type="hidden" name="confirmed_build_plan_data" id="confirmedBuildPlanInput" 
+                        value="{{ buildable_items_json | escape }}">
+                 
+                 <div class="mb-3">
+                     <label for="schedule_option_select" class="form-label">Scheduling Option:</label>
+                     <select id="schedule_option_select" name="schedule_option" class="form-select form-select-sm" style="max-width: 200px;">
+                         <option value="now" selected>Run All Now</option>
+                         <option value="specific_time_all">All at Specific Time</option>
+                         <option value="staggered">Staggered Start</option>
+                     </select>
+                 </div>
+                 <div id="specific_time_all_details" style="display:none;" class="mb-3">
+                     <label for="schedule_start_time_all" class="form-label">Start All At (Local Time):</label>
+                     <input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time" id="schedule_start_time_all" style="max-width: 250px;">
+                 </div>
+                 <div id="staggered_details" style="display:none;" class="mb-3">
+                     <label for="schedule_start_time_staggered" class="form-label">First Job Starts At (Local Time):</label>
+                     <input type="datetime-local" class="form-control form-control-sm mb-2" name="schedule_start_time_staggered" id="schedule_start_time_staggered" style="max-width: 250px;">
+                     <label for="schedule_stagger_minutes" class="form-label">Delay Between Jobs (minutes):</label>
+                     <input type="number" class="form-control form-control-sm" name="schedule_stagger_minutes" id="schedule_stagger_minutes" value="30" min="1" style="max-width: 100px;">
+                 </div>
+
+                 <button type="submit" class="btn btn-lg btn-success" 
+                         title="This will schedule the 'setup' commands for all 'Student Build' and 'Trainer Build' items based on selected option.">
+                     <i class="fas fa-calendar-check"></i> Confirm & Schedule All Builds
+                 </button>
+            </form>
+        </div>
+
+    {% elif error_message %}
+        <div class="alert alert-warning m-3">{{ error_message }}</div>
+    {% else %}
+        <p class="p-3">No data available or failed to load for final review.</p>
+    {% endif %}
+  </div> 
+</div> 
+{% endblock %}
+
+{% block scripts %}
+    {{ super() }}
+    {# Data for buildable items is now directly in the hidden form input, populated by Jinja server-side #}
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // JavaScript for toggling scheduling option details
+        const scheduleOptionSelect = document.getElementById('schedule_option_select');
+        const specificTimeAllDiv = document.getElementById('specific_time_all_details');
+        const specificTimeAllInput = document.getElementById('schedule_start_time_all'); // Ensure this ID is correct
+        const staggeredDiv = document.getElementById('staggered_details');
+        const staggeredTimeInput = document.getElementById('schedule_start_time_staggered'); // Ensure this ID is correct
+
+        function toggleScheduleDetailVisibility() {
+            if (!scheduleOptionSelect || !specificTimeAllDiv || !staggeredDiv) {
+                // console.warn("Scheduling UI elements not all found.");
+                return;
+            }
+
+            const selectedValue = scheduleOptionSelect.value;
+            specificTimeAllDiv.style.display = 'none';
+            staggeredDiv.style.display = 'none';
+
+            // Clear or disable inputs not relevant to the current selection
+            if (specificTimeAllInput) {
+                specificTimeAllInput.value = '';
+                specificTimeAllInput.required = (selectedValue === 'specific_time_all');
+            }
+            if (staggeredTimeInput) {
+                staggeredTimeInput.value = '';
+                staggeredTimeInput.required = (selectedValue === 'staggered');
+                // Also handle the stagger minutes input if it needs to be required
+                const staggeredMinutesInput = document.getElementById('schedule_stagger_minutes');
+                if (staggeredMinutesInput) {
+                    staggeredMinutesInput.required = (selectedValue === 'staggered');
+                }
+            }
+
+
+            if (selectedValue === 'specific_time_all') {
+                specificTimeAllDiv.style.display = 'block';
+            } else if (selectedValue === 'staggered') {
+                staggeredDiv.style.display = 'block';
+            }
+        }
+
+        if(scheduleOptionSelect) {
+            scheduleOptionSelect.addEventListener('change', toggleScheduleDetailVisibility);
+            toggleScheduleDetailVisibility(); // Call on load to set initial state
+        }
+
+        // The updateLocalTimes() function (from base.html) will handle date formatting
+        // for the .local-datetime spans rendered by Jinja.
+        if (typeof updateLocalTimes === "function") {
+            updateLocalTimes();
+        }
+
+        // Form submission logic
+        const executeForm = document.getElementById('executeBuildsForm');
+        if (executeForm) {
+            executeForm.addEventListener('submit', function(event) {
+                const planInput = document.getElementById('confirmedBuildPlanInput');
+                let buildableItems = [];
+
+                if (planInput && planInput.value) {
+                    try {
+                        buildableItems = JSON.parse(planInput.value);
+                        if (!Array.isArray(buildableItems)) { // Ensure it's an array
+                            buildableItems = []; 
+                        }
+                    } catch (e) {
+                        console.error("Error parsing buildable items from hidden input:", e);
+                        alert("Error: Corrupted build plan data. Cannot schedule.");
+                        event.preventDefault();
+                        return;
+                    }
+                } else {
+                    // This case should ideally not happen if Python always provides buildable_items_json
+                    console.error("Build plan data input field is missing or empty.");
+                    alert("Error: Build plan data is missing. Cannot schedule.");
+                    event.preventDefault();
+                    return;
+                }
+
+                if (buildableItems.length === 0) {
+                    // Check if there were any items rendered on the page at all
+                    // This can be done by checking if the table body has more than just a "no items" row
+                    const tableBody = document.getElementById('finalReviewTableBody');
+                    const hasRenderedItems = tableBody && tableBody.querySelector('tr td:not([colspan])'); // A simple check for actual data rows
+
+                    if (hasRenderedItems) {
+                        // Items were displayed, but none are "buildable" (e.g., all were "extended")
+                        alert("No new builds to schedule. The current plan may only contain items to keep running.");
+                        // Allow submission with empty buildableItems if this is acceptable (backend will do nothing)
+                        // or prevent it if an actual build is always expected:
+                        // event.preventDefault(); 
+                        // return; 
+                    } else {
+                        // No items were even displayed on the page for review
+                        alert("No items in the plan to schedule.");
+                        event.preventDefault();
+                        return;
+                    }
+                }
+                console.log("Submitting buildable items for scheduling:", buildableItems);
+                // Form will submit with the 'confirmed_build_plan_data' (which contains buildable_items_json)
+            });
+        }
+    });
+    </script>
+{% endblock %}
