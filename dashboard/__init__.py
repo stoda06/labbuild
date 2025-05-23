@@ -9,6 +9,7 @@ from flask.json.provider import DefaultJSONProvider
 from bson import ObjectId
 import datetime
 import pytz
+from flask_cors import CORS
 
 # Ensure project root is in path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -66,7 +67,7 @@ def create_app():
 
     # --- Apply Custom JSON Provider ---
     app.json = BsonJSONProvider(app)
-
+    CORS(app) 
     # --- Initialize Extensions (using objects from extensions.py) ---
     # The connections are already established in extensions.py
     # We just need to make sure the app context works if needed by extensions later.
