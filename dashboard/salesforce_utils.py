@@ -8,9 +8,10 @@ from datetime import datetime, timedelta
 import pytz # For timezone handling if needed
 
 from simple_salesforce import Salesforce, SalesforceAuthenticationFailed, SalesforceGeneralError
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from collections import defaultdict
 from dotenv import load_dotenv
+import math
 
 # Load environment variables from the project root .env file
 project_root = os.path.dirname(os.path.abspath(__file__)) # Assumes utils is at the root
@@ -472,150 +473,239 @@ def _find_all_matching_rules(rules: list, vendor: str, code: str, type_str: str)
 
 def apply_build_rules_to_courses(
     courses_df: pd.DataFrame,
-    build_rules: list, 
-    course_configs_list: list, 
-    hosts_list: list 
-) -> list:
+    build_rules: List[Dict[str, Any]],
+    course_configs_list: List[Dict[str, Any]], # Used to validate set_labbuild_course
+    hosts_list: List[str]  # Used to validate hosts in host_priority
+) -> List[Dict[str, Any]]:
     """
-    Applies build rules (including LabBuild course selection) to course data.
+    Applies build rules (including LabBuild course selection, host preferences,
+    and pod calculation adjustments) to course data from Salesforce.
     Actions from higher-priority rules override those from lower-priority rules
-    if they target the same action key.
+    if they target the same action key (tracked by action_set_flags).
 
     Args:
         courses_df: DataFrame from process_salesforce_data functions.
         build_rules: List of rule documents from MongoDB build_rules collection,
-                     expected to be pre-sorted by priority (ascending, lowest number first).
-        course_configs_list: List of available LabBuild course configs.
-        hosts_list: List of available host names.
+                     expected to be pre-sorted by priority (ascending).
+        course_configs_list: List of available LabBuild course configs (dicts with
+                             at least 'vendor_shortcode' and 'course_name').
+        hosts_list: List of available host names (strings).
 
     Returns:
-        List of course dictionaries augmented with preselect_* keys.
+        List of course dictionaries augmented with preselect_* keys and final 'Pods Req.'.
     """
     if courses_df is None or courses_df.empty:
+        logger.info("apply_build_rules_to_courses: Received empty DataFrame. Returning empty list.")
         return []
 
-    output_list = []
-    available_lab_courses_by_vendor = defaultdict(set)
+    output_list: List[Dict[str, Any]] = []
+    
+    # Prepare a lookup for available LabBuild courses by vendor for quick validation
+    available_lab_courses_by_vendor: Dict[str, set] = defaultdict(set)
     for cfg in course_configs_list:
-        vendor = cfg.get('vendor_shortcode', '').lower()
+        vendor_cfg = cfg.get('vendor_shortcode', '').lower()
         name = cfg.get('course_name')
-        if vendor and name:
-            available_lab_courses_by_vendor[vendor].add(name)
+        if vendor_cfg and name:
+            available_lab_courses_by_vendor[vendor_cfg].add(name)
 
     for index, course_row in courses_df.iterrows():
-        course_info = course_row.to_dict()
-        sf_course_code = course_info.get('Course Code', '')
-        cal_desc = course_info.get('Cal Desc', '')
-        # Assuming 'Pax' is the final calculated Pax number column from SF processing
-        pax_number = course_info.get('Pax', 0) 
-        try:
-            pax_number = int(pax_number) if pd.notna(pax_number) else 0
-        except ValueError:
-            pax_number = 0
-        # --- END CAL DESC AND PAX EXTRACTION ---
-        sf_course_type = course_info.get('Course Type', '') # Original SF Course Type
-        trainer_name = course_info.get('Trainer', 'N/A') # Get trainer name, default to N/A
-        sf_start_date = course_info.get('Start Date', 'N/A') # Assumes column name is 'Start Date'
-        sf_end_date = course_info.get('End Date', 'N/A')     # Assumes column name is 'End Date'
-        required_pods = int(course_info.get('Pods Req.', 0)) or 1
+        course_info: Dict[str, Any] = course_row.to_dict()
+
+        # Extract essential fields from the Salesforce data (DataFrame row)
+        sf_course_code = str(course_info.get('Course Code', '')) # Ensure string
+        sf_course_type = str(course_info.get('Course Type', 'N/A'))
+        trainer_name = str(course_info.get('Trainer', 'N/A'))
+        sf_start_date = str(course_info.get('Start Date', 'N/A')) # Assumed YYYY-MM-DD string
+        sf_end_date = str(course_info.get('End Date', 'N/A'))   # Assumed YYYY-MM-DD string
+        
+        # This is the 'Pods Req.' calculated by process_salesforce_data (e.g., max(1, students))
+        initial_required_pods = int(course_info.get('Pods Req.', 0)) or 1
+        
+        sf_pax_count = 0
+        try: sf_pax_count = int(course_info.get('Pax', 0)) # From 'Pax Number' renamed to 'Pax'
+        except (ValueError, TypeError): pass
+
+        sf_registered_attendees = 0
+        try: sf_registered_attendees = int(course_info.get('Processed Attendees', 0))
+        except (ValueError, TypeError): pass
+
+
+        # Derive vendor from SF course code if not already present or to ensure consistency
         derived_vendor = sf_course_code[:2].lower() if sf_course_code and len(sf_course_code) >= 2 else ''
-        course_info['vendor'] = derived_vendor
-        course_info['sf_course_type'] = sf_course_type
-        course_info['pax_number'] = pax_number
+        course_info['vendor'] = derived_vendor # This 'vendor' is used for rule matching
+
+        # Store original SF data and derived vendor in course_info for later use/API output
         course_info['Trainer'] = trainer_name
-        course_info['sf_start_date'] = sf_start_date # Using a consistent key
-        course_info['sf_end_date'] = sf_end_date   # Using a consistent key
+        course_info['sf_start_date'] = sf_start_date
+        course_info['sf_end_date'] = sf_end_date
+        course_info['sf_course_type'] = sf_course_type
+        course_info['sf_pax'] = sf_pax_count
+        course_info['sf_registered_attendees'] = sf_registered_attendees
 
-        preselect = {
-            "labbuild_course": None, "host": None, "host_priority_list": [],
-            "allow_spillover": True, "max_pods": None, "start_pod": 1,
-            "end_pod": required_pods 
+        logger.debug(
+            f"SF Utils: Initial for SF Course '{sf_course_code}', Vendor: '{derived_vendor}', "
+            f"Initial Pods Req: {initial_required_pods}, Pax: {sf_pax_count}, Reg: {sf_registered_attendees}"
+        )
+
+        # This will hold the final pod requirement after rules are applied
+        current_required_pods = initial_required_pods
+
+        # These are the defaults or rule-driven values for UI pre-selection and build execution
+        preselect_actions = {
+            "labbuild_course": None,
+            "host": None, # The single chosen host for pre-selection
+            "host_priority_list": [], # The full list from the rule that set the host
+            "allow_spillover": True, # Default
+            "max_pods_constraint": None, # Max pods constraint from a rule
+            "start_pod_number": 1, # Default start_pod
         }
-        action_set_flags = {k: False for k in preselect.keys()} # Track if an action was set
+        # Flags to ensure each action type is set by only the highest priority rule
+        action_applied_flags = {key: False for key in preselect_actions.keys()}
+        action_applied_flags["calculate_pods_from_pax"] = False # Specific flag for pod calculation rule
 
-        # Get all matching rules (already sorted by priority by MongoDB query)
-        all_matching_rules = _find_all_matching_rules(build_rules, derived_vendor, sf_course_code, sf_course_type)
+        all_matching_rules = _find_all_matching_rules(
+            build_rules, derived_vendor, sf_course_code, sf_course_type
+        )
 
         if not all_matching_rules:
-            logger.warning(f"No rules matched for SF Course '{sf_course_code}' (Vendor: {derived_vendor}). Using defaults.")
+            logger.debug(f"  SF Utils: No build rules matched for SF Course '{sf_course_code}'.")
         else:
-            logger.info(f"Applying {len(all_matching_rules)} matching rules for SF Course '{sf_course_code}'...")
-            for rule in all_matching_rules: # Rules are Prio 1, Prio 5, Prio 10...
-                actions = rule.get("actions", {})
-                rule_name_log = rule.get('rule_name', str(rule.get('_id')))
-                rule_prio_log = rule.get('priority', 'N/A')
+            logger.debug(f"  SF Utils: Applying {len(all_matching_rules)} matching build rules for SF Course '{sf_course_code}'.")
+            for rule in all_matching_rules: # Rules are pre-sorted by priority
+                actions_from_rule = rule.get("actions", {})
+                rule_name_for_log = rule.get('rule_name', str(rule.get('_id')))
+                rule_prio_for_log = rule.get('priority', 'N/A')
 
-                # --- LabBuild Course ---
-                if not action_set_flags["labbuild_course"] and "set_labbuild_course" in actions:
-                    lb_course_action = actions["set_labbuild_course"]
-                    if lb_course_action and isinstance(lb_course_action, str):
-                        if lb_course_action in available_lab_courses_by_vendor.get(derived_vendor, set()):
-                            preselect["labbuild_course"] = lb_course_action
-                            action_set_flags["labbuild_course"] = True
-                            logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET LabBuild Course: {lb_course_action}")
+                # --- Apply "set_labbuild_course" action ---
+                if not action_applied_flags["labbuild_course"] and "set_labbuild_course" in actions_from_rule:
+                    lb_course_action_val = actions_from_rule["set_labbuild_course"]
+                    if lb_course_action_val and isinstance(lb_course_action_val, str):
+                        if lb_course_action_val in available_lab_courses_by_vendor.get(derived_vendor, set()):
+                            preselect_actions["labbuild_course"] = lb_course_action_val
+                            action_applied_flags["labbuild_course"] = True
+                            logger.debug(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) SET LabBuild Course: {lb_course_action_val}")
                         else:
-                            logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) specified LabBuild course '{lb_course_action}' which is NOT FOUND for vendor '{derived_vendor}'.")
-                    elif lb_course_action is not None : # e.g. empty string or non-string
-                         logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'set_labbuild_course' value: {lb_course_action}")
+                            logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) specified LabBuild course '{lb_course_action_val}' "
+                                           f"which is NOT FOUND for vendor '{derived_vendor}'. LabBuild course not set by this rule.")
+                    elif lb_course_action_val is not None: # Handles empty string or non-string
+                         logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) has invalid 'set_labbuild_course' value: {lb_course_action_val}")
 
-                # --- Host Priority & Host ---
-                if not action_set_flags["host"] and "host_priority" in actions:
-                    rule_hp_list = actions["host_priority"]
-                    if isinstance(rule_hp_list, list) and rule_hp_list:
-                        chosen_host = next((h for h in rule_hp_list if h in hosts_list), None)
-                        if chosen_host:
-                            preselect["host"] = chosen_host
-                            preselect["host_priority_list"] = rule_hp_list # Store the list that led to this host
-                            action_set_flags["host"] = True
-                            logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Host: {chosen_host} (from list: {rule_hp_list})")
-                        else: # No available host from this rule's priority list
-                            logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) host preferences {rule_hp_list} are not available/valid. Host not set by this rule.")
-                    elif rule_hp_list is not None: # e.g. empty list or non-list
-                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'host_priority' value: {rule_hp_list}")
-
-                # --- Allow Spillover ---
-                if not action_set_flags["allow_spillover"] and "allow_spillover" in actions:
-                    # Ensure it's a boolean
-                    if isinstance(actions["allow_spillover"], bool):
-                        preselect["allow_spillover"] = actions["allow_spillover"]
-                        action_set_flags["allow_spillover"] = True
-                        logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Allow Spillover: {preselect['allow_spillover']}")
+                # --- Apply "host_priority" action ---
+                if not action_applied_flags["host"] and "host_priority" in actions_from_rule:
+                    rule_hp_list_val = actions_from_rule["host_priority"]
+                    if isinstance(rule_hp_list_val, list) and rule_hp_list_val:
+                        # Find first valid and available host from the priority list
+                        chosen_host_from_rule = next((h for h in rule_hp_list_val if h in hosts_list), None)
+                        if chosen_host_from_rule:
+                            preselect_actions["host"] = chosen_host_from_rule
+                            preselect_actions["host_priority_list"] = rule_hp_list_val # Store the list that led to selection
+                            action_applied_flags["host"] = True
+                            logger.debug(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) SET Host: {chosen_host_from_rule} (from list: {rule_hp_list_val})")
+                        else:
+                            logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) specified host_priority list {rule_hp_list_val}, "
+                                           "but no hosts in that list are currently available/valid. Host not set by this rule.")
+                    elif rule_hp_list_val is not None: # Handles empty list or non-list
+                        logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) has invalid 'host_priority' value (must be non-empty list): {rule_hp_list_val}")
+                
+                # --- Apply "allow_spillover" action ---
+                if not action_applied_flags["allow_spillover"] and "allow_spillover" in actions_from_rule:
+                    spillover_val = actions_from_rule["allow_spillover"]
+                    if isinstance(spillover_val, bool):
+                        preselect_actions["allow_spillover"] = spillover_val
+                        action_applied_flags["allow_spillover"] = True
+                        logger.debug(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) SET Allow Spillover: {spillover_val}")
                     else:
-                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'allow_spillover' value (must be boolean): {actions['allow_spillover']}")
-                
-                # --- Max Pods ---
-                if not action_set_flags["max_pods"] and "set_max_pods" in actions and actions["set_max_pods"] is not None:
-                    try:
-                        preselect["max_pods"] = max(1, int(actions["set_max_pods"]))
-                        action_set_flags["max_pods"] = True
-                        logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Max Pods: {preselect['max_pods']}")
-                    except (ValueError, TypeError):
-                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'set_max_pods' value: {actions['set_max_pods']}.")
-                
-                # --- Start Pod Number ---
-                if not action_set_flags["start_pod"] and "start_pod_number" in actions and actions["start_pod_number"] is not None:
-                    try:
-                        preselect["start_pod"] = max(1, int(actions["start_pod_number"]))
-                        action_set_flags["start_pod"] = True
-                        logger.debug(f"  Rule '{rule_name_log}' (P{rule_prio_log}) SET Start Pod: {preselect['start_pod']}")
-                    except (ValueError, TypeError):
-                        logger.warning(f"  Rule '{rule_name_log}' (P{rule_prio_log}) has invalid 'start_pod_number' value: {actions['start_pod_number']}.")
+                        logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) has invalid 'allow_spillover' value (must be boolean): {spillover_val}")
 
-        # Calculate final End Pod based on potentially modified start_pod and max_pods
-        effective_pods_needed = required_pods
-        if preselect["max_pods"] is not None:
-            effective_pods_needed = min(preselect["max_pods"], required_pods)
-        preselect["end_pod"] = max(preselect["start_pod"], preselect["start_pod"] + effective_pods_needed - 1)
+                # --- Apply "start_pod_number" action ---
+                if not action_applied_flags["start_pod_number"] and "start_pod_number" in actions_from_rule \
+                   and actions_from_rule["start_pod_number"] is not None:
+                    try:
+                        preselect_actions["start_pod_number"] = max(1, int(actions_from_rule["start_pod_number"]))
+                        action_applied_flags["start_pod_number"] = True
+                        logger.debug(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) SET Start Pod Number: {preselect_actions['start_pod_number']}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) has invalid 'start_pod_number' value: {actions_from_rule['start_pod_number']}.")
 
-        course_info['preselect_labbuild_course'] = preselect["labbuild_course"]
-        course_info['preselect_host'] = preselect["host"]
-        course_info['preselect_start_pod'] = preselect["start_pod"]
-        course_info['preselect_end_pod'] = preselect["end_pod"]
-        # Store these for potential use in intermediate_build_review or logging
-        course_info['preselect_allow_spillover'] = preselect["allow_spillover"]
-        course_info['preselect_host_priority_list'] = preselect["host_priority_list"]
+                # --- Apply "set_max_pods" (constraint) action ---
+                if not action_applied_flags["max_pods_constraint"] and "set_max_pods" in actions_from_rule \
+                   and actions_from_rule["set_max_pods"] is not None:
+                    try:
+                        preselect_actions["max_pods_constraint"] = max(1, int(actions_from_rule["set_max_pods"])) # Max pods should be at least 1
+                        action_applied_flags["max_pods_constraint"] = True
+                        logger.debug(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) SET Max Pods Constraint: {preselect_actions['max_pods_constraint']}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) has invalid 'set_max_pods' value: {actions_from_rule['set_max_pods']}.")
+
+                # --- Apply "calculate_pods_from_pax" action ---
+                if not action_applied_flags["calculate_pods_from_pax"] and \
+                   "calculate_pods_from_pax" in actions_from_rule and \
+                   isinstance(actions_from_rule["calculate_pods_from_pax"], dict):
+                    
+                    calc_params = actions_from_rule["calculate_pods_from_pax"]
+                    divisor_param = calc_params.get("divisor")
+                    min_pods_param = calc_params.get("min_pods", 1) # Default min_pods to 1
+                    use_field_param = calc_params.get("use_field", "pax").lower()
+
+                    if divisor_param is None:
+                        logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}): 'calculate_pods_from_pax' missing 'divisor'. Skipping.")
+                        continue # Skip this specific action from this rule
+                    try:
+                        divisor = int(divisor_param)
+                        min_p = int(min_pods_param)
+                        if divisor <= 0: raise ValueError("Divisor must be positive.")
+                        if min_p < 0: raise ValueError("min_pods cannot be negative.") # min_p can be 0
+                    except (ValueError, TypeError):
+                        logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}): Invalid 'divisor' or 'min_pods' in 'calculate_pods_from_pax'. Skipping.")
+                        continue
+
+                    student_count_for_calc = 0
+                    if use_field_param == "pax": student_count_for_calc = sf_pax_count
+                    elif use_field_param == "registered_attendees": student_count_for_calc = sf_registered_attendees
+                    elif use_field_param == "max_registered_or_pax": student_count_for_calc = max(sf_pax_count, sf_registered_attendees)
+                    else:
+                        logger.warning(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}): Invalid 'use_field' value '{use_field_param}'. Defaulting to 'pax'.")
+                        student_count_for_calc = sf_pax_count
+                    
+                    if student_count_for_calc <= 0:
+                        calculated_pods = min_p 
+                    else:
+                        calculated_pods = math.ceil(student_count_for_calc / divisor)
+                        calculated_pods = max(min_p, int(calculated_pods))
+
+                    current_required_pods = calculated_pods # This overrides the previous value
+                    action_applied_flags["calculate_pods_from_pax"] = True
+                    logger.info(f"  Rule '{rule_name_for_log}' (P{rule_prio_for_log}) Applied 'calculate_pods_from_pax': "
+                                f"Students({use_field_param}): {student_count_for_calc}, Divisor: {divisor}, Min: {min_p} "
+                                f"=> New Required Pods: {current_required_pods}")
+        
+        # After all rules for this course, apply max_pods_constraint if set by any rule
+        if preselect_actions["max_pods_constraint"] is not None:
+            if current_required_pods > preselect_actions["max_pods_constraint"]:
+                logger.info(f"  Applying Max Pods constraint for '{sf_course_code}': changing required pods from "
+                            f"{current_required_pods} to {preselect_actions['max_pods_constraint']}.")
+                current_required_pods = preselect_actions["max_pods_constraint"]
+
+        final_num_pods_to_assign = max(0, current_required_pods) # Ensure it's not negative
+
+        # Calculate final end_pod based on final start_pod and final_num_pods_to_assign
+        # If 0 pods are assigned, end_pod will be start_pod - 1, which is fine for range logic.
+        final_start_pod = preselect_actions["start_pod_number"]
+        final_end_pod = (final_start_pod + final_num_pods_to_assign - 1) if final_num_pods_to_assign > 0 else (final_start_pod -1)
+
+
+        # Store the final values in course_info. These are used by the API and subsequent dashboard steps.
+        course_info['Pods Req.'] = final_num_pods_to_assign # Final calculated pods needed
+        course_info['preselect_labbuild_course'] = preselect_actions["labbuild_course"]
+        course_info['preselect_host'] = preselect_actions["host"]
+        course_info['preselect_start_pod'] = final_start_pod
+        course_info['preselect_end_pod'] = final_end_pod # Correctly calculated end_pod
+        course_info['preselect_allow_spillover'] = preselect_actions["allow_spillover"]
+        course_info['preselect_host_priority_list'] = preselect_actions["host_priority_list"]
+        course_info['preselect_max_pods_applied_constraint'] = preselect_actions["max_pods_constraint"]
         
         output_list.append(course_info)
+        logger.debug(f"SF Utils: Final processed course_info for '{sf_course_code}': {course_info}")
 
     return output_list
 
