@@ -36,7 +36,8 @@ def build_args_from_form(form_data):
             'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn',
             'tag': '-t', 'component': '-c', 'operation': '-o',
             'memory': '-mem', 'prtg_server': '--prtg-server',
-            'datastore': '-ds', 'thread': '-th'
+            'datastore': '-ds', 'thread': '-th',
+            'clonefrom': '--clonefrom' 
         }
         for key, flag in arg_map.items():
             value = form_data.get(key)
@@ -120,7 +121,8 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
         'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn',
         'tag': '-t', 'component': '-c', 'operation': '-o',
         'memory': '-mem', 'prtg_server': '--prtg-server',
-        'datastore': '-ds', 'thread': '-th'
+        'datastore': '-ds', 'thread': '-th',
+        'clonefrom': '--clonefrom'
     }
     for key, flag in arg_map.items():
         value = data.get(key)
