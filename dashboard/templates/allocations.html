@@ -48,14 +48,11 @@
         .prtg-link { vertical-align: middle; padding: 0 0.2rem !important; }
         .col-status i { margin: 0 0.2rem; }
         
-        /* --- Pagination --- */
         .pagination-controls { 
-            margin-top: 1.5rem; /* Space above pagination */
-            margin-bottom: 1rem; /* Space below pagination */
-            padding: 0.5rem 0; /* Padding within the nav bar itself */
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+            padding: 0.5rem 0;
         }
-        /* --- End Pagination --- */
-
 
         .power-toggle-btn.text-danger { color: var(--bs-danger); } 
         .power-toggle-btn.text-secondary { color: #6c757d; }       
@@ -73,7 +70,11 @@
         .col-tag { min-width: 150px; max-width: 200px;}
         .col-vendor { width: 60px; }
         .col-type { width: 80px; }
-        .col-number { width: 70px; text-align: center; }
+        .col-number { 
+            width: 100px; 
+            text-align: center; 
+            white-space: normal; /* Allow pod list to wrap */
+        }
         .col-course { min-width: 160px; max-width: 250px;}
         .col-host { min-width: 130px; max-width: 180px;}
         .col-status { width: 85px; text-align: center; white-space: nowrap;}
@@ -84,18 +85,25 @@
             background-color: var(--bs-card-cap-bg);
             border: 1px solid var(--bs-card-border-color);
             border-radius: 0.375rem;
-            margin-bottom: 1rem; /* Space below bulk actions bar */
-            display: none; /* Initially hidden, shown by JS */
-            flex-wrap: wrap; /* Allow wrapping on smaller screens */
-            gap: 0.75rem; /* Spacing between elements */
+            margin-bottom: 1rem;
+            display: none; /* Initially hidden */
+            flex-wrap: wrap; 
+            gap: 0.75rem; 
         }
         body.dark-mode .bulk-actions-bar {
-            background-color: var(--card-header-bg-dark); /* Consistent dark header bg */
+            background-color: var(--card-header-bg-dark);
             border-color: var(--card-border-dark);
         }
         .bulk-actions-bar .form-select-sm { max-width: 200px; flex-shrink: 0;}
         .bulk-actions-bar .btn-sm { flex-shrink: 0; }
         .bulk-actions-bar > span { vertical-align: middle; font-weight: bold; }
+        .pod-list-inline {
+            font-size: 0.9em; 
+            color: #555;
+        }
+        body.dark-mode .pod-list-inline {
+            color: #bbb;
+        }
     </style>
 {% endblock %}
 
@@ -114,7 +122,7 @@
       <div class="col-md-3 col-lg-2"><label for="filter_vendor" class="form-label">Vendor</label><input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}"></div>
       <div class="col-md-3 col-lg-3"><label for="filter_course" class="form-label">Course</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
       <div class="col-md-3 col-lg-2"><label for="filter_host" class="form-label">Host</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
-      <div class="col-md-3 col-lg-1"><label for="filter_number" class="form-label">Pod/Class</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
+      <div class="col-md-3 col-lg-1"><label for="filter_number" class="form-label">Pod/Class #</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
       <div class="col-md-6 col-lg-2">
             <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
             <a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm w-100 mt-1">Clear Filters</a>
@@ -123,16 +131,10 @@
   </div>
 </div>
 
-{# --- BULK ACTIONS BAR (moved above the table card for better UX) --- #}
 <div class="bulk-actions-bar" id="bulkActionsBar">
     <span id="selectedItemsCount" class="me-3">0 items selected</span>
-    {# Hidden form for bulk actions - will be submitted by JavaScript buttons #}
-    <form id="bulkActionSubmitForm" method="POST" class="d-inline-flex align-items-center" style="gap: 0.5rem;">
-        <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputBulk">
-        {# Add CSRF token here if your app uses Flask-WTF or similar protection #}
-        {# Example: <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"> #}
-        
-        {# Pass current filters for redirect after bulk action #}
+    <form id="bulkActionSubmitActualForm" method="POST" class="d-inline-flex align-items-center" style="gap: 0.5rem;">
+        <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputForSubmit">
         {% for key, value in current_filters.items() %}
             <input type="hidden" name="{{ key }}" value="{{ value }}">
         {% endfor %}
@@ -146,23 +148,14 @@
             <button type="button" class="btn btn-sm btn-danger bulk-action-trigger" data-action="teardown_infra" title="Teardown Infrastructure"><i class="fas fa-fire-alt"></i> Infra</button>
             <button type="button" class="btn btn-sm btn-warning bulk-action-trigger" data-action="delete_db" title="Delete DB Entries"><i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i> DB</button>
         </div>
-        {# Bulk Toggle Extend: More complex as extend is per-tag. This would require JS to check if all selected items share the same tag, or backend to handle mixed tags.
-           For simplicity, individual toggle per row is often easier for this.
-        <!-- <div class="btn-group ms-2" role="group">
-            <button type="button" class="btn btn-sm btn-outline-danger bulk-action-trigger" data-action="lock_reuse" title="Lock Reuse (Extend:True)"><i class="fas fa-lock"></i> Lock</button>
-            <button type="button" class="btn btn-sm btn-outline-success bulk-action-trigger" data-action="unlock_reuse" title="Unlock Reuse (Extend:False)"><i class="fas fa-lock-open"></i> Unlock</button>
-        </div> -->
-        #}
     </form>
 </div>
-{# --- END Bulk Actions Bar --- #}
-
 
 <div class="card">
   <div class="card-header">
       Allocation List
       {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
-          (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching: {{ total_data_items }})
+          (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }})
       {% else %}
           (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }})
       {% endif %}
@@ -178,7 +171,7 @@
               <th class="col-vendor">Vendor</th>
               <th class="col-course">Course Name</th>
               <th class="col-type">Type</th>
-              <th class="col-number">Number</th>
+              <th class="col-number">Number / Contained Pods</th>
               <th class="col-host">Host</th>
               <th class="col-status">Status</th>
               <th class="col-actions text-end">Actions</th>
@@ -206,7 +199,12 @@
                     {% elif item.type == 'pod' %}<span class="badge bg-secondary" title="Pod">Pod</span>
                     {% else %}<span class="text-muted">?</span>{% endif %}
                 </td>
-                <td class="col-number">{{ item.number }}</td>
+                <td class="col-number">
+                    {{ item.number }}
+                    {% if item.type == 'f5_class' and item.nested_pods_str and item.nested_pods_str != '-' %}
+                        <br><small class="pod-list-inline">(Pods: {{ item.nested_pods_str }})</small>
+                    {% endif %}
+                </td>
                 <td class="col-host" title="{{ item.host }}">{{ item.host }}</td>
                 <td class="col-status text-center">
                      <i class="fas fa-power-off mx-1 {{ 'text-danger' if item.poweron else 'text-secondary' }}"
@@ -333,11 +331,14 @@
   </div> 
 </div>
 
-{# Hidden form for submitting bulk actions - its action URL is set by JS #}
+{# This hidden form is now only for submitting the selected_items_json for bulk actions #}
+{# Its action URL will be set by JavaScript before submission #}
 <form id="bulkActionSubmitActualForm" method="POST" style="display: none;">
     <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputForSubmit">
-    {# CSRF token if needed #}
-    {# Current filters for redirect #}
+    {# CSRF token would go here if you use Flask-WTF or similar #}
+    {# Example: <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"> #}
+    
+    {# These hidden inputs will carry filter parameters for redirect after bulk action #}
     {% for key, value in current_filters.items() %}
         <input type="hidden" name="{{ key }}" value="{{ value }}">
     {% endfor %}
@@ -350,24 +351,22 @@
   {{ super() }}
   <script>
     document.addEventListener('DOMContentLoaded', function () {
+      const allocationsTable = document.getElementById('allocationsTable'); // For individual action forms
       const selectAllCheckbox = document.getElementById('selectAllAllocationsCheckbox');
       const rowCheckboxes = document.querySelectorAll('#allocationsTable .row-checkbox');
       const bulkActionsBar = document.getElementById('bulkActionsBar');
       const selectedItemsCountSpan = document.getElementById('selectedItemsCount');
       
-      // The actual form that gets submitted by JS
       const bulkActionSubmitActualForm = document.getElementById('bulkActionSubmitActualForm');
       const selectedItemsJsonInputForSubmit = document.getElementById('selectedItemsJsonInputForSubmit');
-
-      // Buttons within the bulk actions bar
-      const bulkActionButtons = document.querySelectorAll('.bulk-action-trigger');
+      const bulkActionTriggerButtons = document.querySelectorAll('.bulk-action-trigger');
 
 
       function updateBulkActionsBarVisibility() {
           if (!bulkActionsBar || !selectedItemsCountSpan) return;
           const selectedCount = document.querySelectorAll('#allocationsTable .row-checkbox:checked').length;
           selectedItemsCountSpan.textContent = `${selectedCount} item${selectedCount !== 1 ? 's' : ''} selected`;
-          bulkActionsBar.style.display = (selectedCount > 0) ? 'flex' : 'none'; // Use flex for better alignment
+          bulkActionsBar.style.display = (selectedCount > 0) ? 'flex' : 'none'; 
       }
 
       if (selectAllCheckbox) {
@@ -403,7 +402,7 @@
                       host: row.dataset.host,
                       item_type: row.dataset.itemType,
                       item_number: row.dataset.itemNumber,
-                      pod_number: row.dataset.podNumber || null, // Send specific numbers
+                      pod_number: row.dataset.podNumber || null, 
                       class_number: row.dataset.classNumber || null,
                       current_power_state: row.dataset.powerState,
                       current_extend_state: row.dataset.extendState 
@@ -413,9 +412,9 @@
           return selectedData;
       }
 
-      bulkActionButtons.forEach(button => {
+      bulkActionTriggerButtons.forEach(button => {
           button.addEventListener('click', function() {
-              const action = this.dataset.action; // e.g., "power_on", "teardown_infra"
+              const action = this.dataset.action; 
               const selectedItems = getSelectedItemsDataForBulk();
 
               if (selectedItems.length === 0) {
@@ -436,19 +435,17 @@
 
               if (bulkActionSubmitActualForm && selectedItemsJsonInputForSubmit) {
                   selectedItemsJsonInputForSubmit.value = JSON.stringify(selectedItems);
-                  // Determine the correct URL based on the action
                   let actionUrl = "";
                   if (action === 'power_on') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='start') }}";
                   else if (action === 'power_off') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='stop') }}";
                   else if (action === 'teardown_infra') actionUrl = "{{ url_for('actions.bulk_teardown_items') }}";
                   else if (action === 'delete_db') actionUrl = "{{ url_for('actions.bulk_db_delete_items') }}";
-                  // Add bulk toggle extend actions if you implement them
                   
                   if (actionUrl) {
                       bulkActionSubmitActualForm.action = actionUrl;
                       bulkActionSubmitActualForm.submit();
                   } else {
-                      alert("Selected bulk action is not configured.");
+                      alert("Selected bulk action ('" + action + "') is not configured.");
                   }
               } else {
                   alert("Error: Bulk action form components not found.");
@@ -456,16 +453,16 @@
           });
       });
 
-      // Preserve filters on individual action form submissions
+      // Preserve filters on individual action form submissions (non-bulk)
       const individualActionForms = document.querySelectorAll('.action-forms form');
       individualActionForms.forEach(form => {
-          form.addEventListener('submit', function() {
-              // Check if onsubmit confirmation is handled already by browser default for that form
+          form.addEventListener('submit', function(event) { // Added event parameter
               const onsubmitAttr = form.getAttribute('onsubmit');
               if (onsubmitAttr && onsubmitAttr.includes('confirm')) {
-                  // If confirm is handled by onsubmit, do nothing extra here unless needed
+                  // Confirmation is handled by onsubmit, but we still need to prevent default if it fails
+                  // However, the native onsubmit="return confirm(...)" already does this.
               }
-              // Append filter params if not already present
+              // Append filter params if not already present in this specific form
               const filterParams = new URLSearchParams(window.location.search);
               filterParams.forEach((value, key) => {
                   if ((key.startsWith('filter_') || key === 'page') && 
@@ -478,7 +475,7 @@
           });
       });
 
-      updateBulkActionsBarVisibility(); // Set initial state of bulk actions bar
+      updateBulkActionsBarVisibility(); 
       if (typeof updateLocalTimes === "function") { updateLocalTimes(); }
     });
   </script>
