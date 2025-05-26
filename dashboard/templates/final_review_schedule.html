@@ -19,29 +19,40 @@
             font-size: 0.9em;
             margin-bottom: 0.2em;
         }
-        .col-type { width: 100px; }
+        .col-type { width: 140px; } /* Wider for "Scheduled for Teardown" */
         .col-sf-code { width: 150px; }
         .col-lb-course { width: 180px; }
         .col-vendor { width: 60px; text-align: center; }
         .col-start-date { width: 110px; }
         .col-assignments { min-width: 280px; }
-        .col-status-note { min-width: 180px; font-style: italic; color: var(--bs-warning); }
-        body.dark-mode .col-status-note { color: var(--status-warning-dark-text); }
-        .col-status-note.text-success { color: var(--bs-success) !important; }
-        body.dark-mode .col-status-note.text-success { color: var(--status-success-dark-text) !important; }
-        
-        /* Remove sortable header styles if client-side sorting is gone */
-        /* .sortable-header { cursor: pointer; } */
-        /* .sortable-header .sort-icon { ... } */
+        .col-status-note { min-width: 180px; font-style: italic; }
+
+        /* Specific colors for notes based on type */
+        .status-note-build-warning { color: var(--bs-warning); }
+        body.dark-mode .status-note-build-warning { color: var(--status-warning-dark-text); }
+        .status-note-extended { color: var(--bs-success); }
+        body.dark-mode .status-note-extended { color: var(--status-success-dark-text); }
+        .status-note-teardown { color: var(--bs-danger); } /* For teardown notes */
+        body.dark-mode .status-note-teardown { color: var(--status-failed-dark-text); } /* For teardown notes */
+
+
+        /* Sortable header styles (if client-side sorting is re-enabled, otherwise can be simplified) */
+        .sortable-header { cursor: pointer; }
+        .sortable-header .sort-icon { color: #ccc; margin-left: 5px; font-size: 0.8em; }
+        .sortable-header.sort-asc .sort-icon::before { content: "\\f0de"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
+        .sortable-header.sort-desc .sort-icon::before { content: "\\f0dd"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
+        body.dark-mode .sortable-header .sort-icon { color: #666; }
+        body.dark-mode .sortable-header.sort-asc .sort-icon,
+        body.dark-mode .sortable-header.sort-desc .sort-icon { color: #eee; }
     </style>
 {% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1>Final Build Plan Review</h1>
+   <h1>Final Build Plan Review (Batch ID: {{ batch_review_id or 'N/A' }})</h1>
    <div>
         <a href="javascript:history.back()" 
-           onclick="return confirm('Are you sure you want to go back? This will discard the current review state.');" 
+           onclick="return confirm('Are you sure you want to go back? This will discard the current review state and return to the previous step.');" 
            class="btn btn-sm btn-outline-secondary">
            Back
         </a>
@@ -49,61 +60,72 @@
    </div>
 </div>
 
+{% if error_message %}
+    <div class="alert alert-danger">{{ error_message }}</div>
+{% endif %}
+
 <div class="card">
-  <div class="card-header">Consolidated Build & Keep-Running Plan</div>
+  <div class="card-header">Consolidated Build, Keep-Running, and Teardown Plan</div>
   <div class="card-body">
     {% if all_items_for_review %}
-        <p>This is the final consolidated plan, sorted by SF Course Code then Start Date. Review all student builds, trainer builds, and existing allocations marked to 'Keep Running'.</p>
+        <p>This is the final consolidated plan, sorted by SF Course Code then Start Date. Review all new builds, items to keep running, and items scheduled for teardown.</p>
         
         <div class="table-responsive">
             <table class="table table-sm table-striped table-bordered review-table" id="finalReviewTable">
                 <thead class="table-light">
                     <tr>
-                        {# Headers are no longer 'sortable-header' if client-side sort is removed #}
-                        <th class="col-type">Type</th>
-                        <th class="col-sf-code">SF Course Code</th>
-                        <th class="col-lb-course">LabBuild Course</th>
-                        <th class="col-vendor">Vendor</th>
-                        <th class="col-start-date">Start Date</th>
-                        <th class="col-assignments">Assignments (Host: Pods)</th>
+                        {# Headers are no longer 'sortable-header' if client-side sort is removed, but keep data attributes for potential future JS use #}
+                        <th class="col-type" data-column="type" data-type="string">Type <span class="sort-icon fas fa-sort"></span></th>
+                        <th class="col-sf-code" data-column="sf_course_code" data-type="string">SF Course Code <span class="sort-icon fas fa-sort"></span></th>
+                        <th class="col-lb-course" data-column="labbuild_course" data-type="string">LabBuild Course <span class="sort-icon fas fa-sort"></span></th>
+                        <th class="col-vendor" data-column="vendor" data-type="string">Vendor <span class="sort-icon fas fa-sort"></span></th>
+                        <th class="col-start-date" data-column="start_date" data-type="date">Start Date <span class="sort-icon fas fa-sort"></span></th>
+                        <th class="col-assignments">Assignments (Host: Pods/Class)</th>
                         <th class="col-status-note">Notes / Warnings</th>
                     </tr>
                 </thead>
                 <tbody id="finalReviewTableBody">
                     {# Direct rendering of rows from Python-sorted data #}
                     {% for item in all_items_for_review %}
-                    <tr> {# Removed data attributes previously used by JS sort #}
+                    <tr>
                         <td class="col-type">
                             {% if item.type == 'Student Build' %}<span class="badge bg-primary">{{ item.type }}</span>
                             {% elif item.type == 'Trainer Build' %}<span class="badge bg-info text-dark">{{ item.type }}</span>
-                            {% elif item.type == 'extended' %}<span class="badge bg-success">{{ item.type | replace('_', ' ') | title }}</span>
-                            {% else %}{{ item.type }}
+                            {% elif item.type == 'Extended (Keep Running)' %}<span class="badge bg-success">{{ item.type }}</span>
+                            {% elif item.type == 'Scheduled for Teardown' %}<span class="badge bg-danger">{{ item.type }}</span>
+                            {% else %}{{ item.type or 'N/A' }}
                             {% endif %}
                         </td>
-                        <td class="col-sf-code">{{ item.sf_course_code }}</td>
-                        <td class="col-lb-course">{{ item.labbuild_course }}</td>
+                        <td class="col-sf-code">{{ item.sf_course_code or 'N/A' }}</td>
+                        <td class="col-lb-course">{{ item.labbuild_course or 'N/A' }}</td>
                         <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A' }}</td>
                         <td class="col-start-date">
-                            {%- if item.start_date and item.start_date != "N/A" and item.start_date != "Ongoing (Extended)" -%}
-                                <span class="local-datetime" data-timestamp="{{ (item.start_date ~ 'T00:00:00Z') if item.start_date and item.start_date.count('-') == 2 else '' }}">
-                                    {{ item.start_date }}
+                            {% set date_to_display = item.start_date %}
+                            {% if date_to_display and date_to_display != "N/A" and date_to_display != "Ongoing (Extended)" %}
+                                {# Attempt to create a valid ISO string part for data-timestamp if YYYY-MM-DD #}
+                                {% set timestamp_attr_val = '' %}
+                                {% if date_to_display and date_to_display.count('-') == 2 %}
+                                    {% set timestamp_attr_val = date_to_display ~ 'T00:00:00Z' %}
+                                {% endif %}
+                                <span class="local-datetime" data-timestamp="{{ timestamp_attr_val }}">
+                                    {{ date_to_display }}
                                 </span>
-                            {%- else -%}
-                                {{ item.start_date }}
-                            {%- endif -%}
+                            {% else %}
+                                {{ date_to_display or 'N/A' }}
+                            {% endif %}
                         </td>
                         <td class="col-assignments">
-                            {% if item.assignments %}
+                            {% if item.assignments and item.assignments is iterable and item.assignments is not string %}
                                 <ul>
                                 {% for assign in item.assignments %}
                                     <li>
                                         <strong>Host:</strong> {{ assign.host or 'N/A' }}
                                         {% if assign.pods %}
-                                            <strong>Pod/Class:</strong> {{ assign.pods }}
+                                            <strong>Pod(s)/Class:</strong> {{ assign.pods }}
                                         {% elif assign.start_pod is not none and assign.end_pod is not none %}
                                             <strong>Pods:</strong> {{ assign.start_pod }}-{{ assign.end_pod }}
                                         {% else %}
-                                            (No pod range)
+                                            (No pod/class range specified)
                                         {% endif %}
                                     </li>
                                 {% endfor %}
@@ -112,7 +134,13 @@
                                 <span class="text-muted">No specific assignments.</span>
                             {% endif %}
                         </td>
-                        <td class="col-status-note {{ 'text-success' if item.type == 'extended' else '' }}">
+                        <td class="col-status-note 
+                            {% if item.type == 'Extended (Keep Running)' %}text-success{% endif %}
+                            {% if item.type == 'Scheduled for Teardown' %}text-danger{% endif %}
+                            {% if item.type in ['Student Build', 'Trainer Build'] and item.status_note and ('warning' in item.status_note.lower() or 'insufficient' in item.status_note.lower() or 'error' in item.status_note.lower()) %}
+                                status-note-build-warning 
+                            {% endif %}
+                        ">
                             {{ item.status_note or '-' }}
                         </td>
                     </tr>
@@ -123,11 +151,26 @@
 
         <div class="mt-4">
             <form action="{{ url_for('actions.execute_scheduled_builds') }}" method="POST" id="executeBuildsForm">
-                 {# Populate hidden input with buildable_items_json from Python context #}
                  <input type="hidden" name="confirmed_build_plan_data" id="confirmedBuildPlanInput" 
-                        value="{{ buildable_items_json | escape }}">
+                        value="{{ buildable_items_json | default('[]') | escape }}">
+                 <input type="hidden" name="confirmed_teardown_plan_data" id="confirmedTeardownPlanInput"
+                        value="{{ teardownable_items_json | default('[]') | escape }}">
+                 <input type="hidden" name="batch_review_id" value="{{ batch_review_id or '' }}">
+                 {# --- NEW: Teardown Option --- #}
+                 <div class="mb-3 form-check">
+                    <input type="checkbox" class="form-check-input" id="perform_teardown_first" name="perform_teardown_first" value="yes">
+                    <label class="form-check-label" for="perform_teardown_first">
+                        Perform Teardown Before Setup for all new Student/Trainer Pod builds in this batch?
+                    </label>
+                    <small class="form-text d-block text-muted">
+                        If checked, a 'teardown' command will be scheduled to run before each 'setup' command for new builds. 
+                        This is useful for ensuring a clean environment. 'Extended' items are not affected by this.
+                    </small>
+                 </div>
+                 {# --- END NEW --- #}
                  
-                 <div class="mb-3">
+                 <div class="row align-items-end">
+                    <div class="mb-3">
                      <label for="schedule_option_select" class="form-label">Scheduling Option:</label>
                      <select id="schedule_option_select" name="schedule_option" class="form-select form-select-sm" style="max-width: 200px;">
                          <option value="now" selected>Run All Now</option>
@@ -135,28 +178,37 @@
                          <option value="staggered">Staggered Start</option>
                      </select>
                  </div>
-                 <div id="specific_time_all_details" style="display:none;" class="mb-3">
-                     <label for="schedule_start_time_all" class="form-label">Start All At (Local Time):</label>
-                     <input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time" id="schedule_start_time_all" style="max-width: 250px;">
-                 </div>
-                 <div id="staggered_details" style="display:none;" class="mb-3">
-                     <label for="schedule_start_time_staggered" class="form-label">First Job Starts At (Local Time):</label>
-                     <input type="datetime-local" class="form-control form-control-sm mb-2" name="schedule_start_time_staggered" id="schedule_start_time_staggered" style="max-width: 250px;">
-                     <label for="schedule_stagger_minutes" class="form-label">Delay Between Jobs (minutes):</label>
-                     <input type="number" class="form-control form-control-sm" name="schedule_stagger_minutes" id="schedule_stagger_minutes" value="30" min="1" style="max-width: 100px;">
+                    <div id="specific_time_all_details" style="display:none;" class="col-md-4 mb-3">
+                        <label for="schedule_start_time_all" class="form-label">Start All At (Local Time):</label>
+                        <input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time" id="schedule_start_time_all">
+                    </div>
+                    <div id="staggered_details" style="display:none;" class="col-md-8 mb-3">
+                        <div class="row">
+                            <div class="col-md-7">
+                                <label for="schedule_start_time_staggered" class="form-label">First Job Starts At (Local Time):</label>
+                                <input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time_staggered" id="schedule_start_time_staggered">
+                            </div>
+                            <div class="col-md-5">
+                                <label for="schedule_stagger_minutes" class="form-label">Delay (mins):</label>
+                                <input type="number" class="form-control form-control-sm" name="schedule_stagger_minutes" id="schedule_stagger_minutes" value="30" min="1">
+                            </div>
+                        </div>
+                    </div>
                  </div>
 
-                 <button type="submit" class="btn btn-lg btn-success" 
-                         title="This will schedule the 'setup' commands for all 'Student Build' and 'Trainer Build' items based on selected option.">
-                     <i class="fas fa-calendar-check"></i> Confirm & Schedule All Builds
+                 <button type="submit" class="btn btn-lg btn-success mt-3" 
+                         title="This will schedule TEARDOWNS first, then SETUP commands based on selected option.">
+                     <i class="fas fa-calendar-check"></i> Confirm & Schedule All Operations
                  </button>
             </form>
         </div>
 
     {% elif error_message %}
-        <div class="alert alert-warning m-3">{{ error_message }}</div>
+        <div class="alert alert-danger m-3">{{ error_message }}</div>
+         <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary m-3">Back to Upcoming Courses</a>
     {% else %}
         <p class="p-3">No data available or failed to load for final review.</p>
+         <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary m-3">Back to Upcoming Courses</a>
     {% endif %}
   </div> 
 </div> 
@@ -164,42 +216,38 @@
 
 {% block scripts %}
     {{ super() }}
-    {# Data for buildable items is now directly in the hidden form input, populated by Jinja server-side #}
-
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         // JavaScript for toggling scheduling option details
         const scheduleOptionSelect = document.getElementById('schedule_option_select');
         const specificTimeAllDiv = document.getElementById('specific_time_all_details');
-        const specificTimeAllInput = document.getElementById('schedule_start_time_all'); // Ensure this ID is correct
+        const specificTimeAllInput = document.getElementById('schedule_start_time_all');
         const staggeredDiv = document.getElementById('staggered_details');
-        const staggeredTimeInput = document.getElementById('schedule_start_time_staggered'); // Ensure this ID is correct
+        const staggeredTimeInput = document.getElementById('schedule_start_time_staggered');
+        const staggeredMinutesInput = document.getElementById('schedule_stagger_minutes');
+
 
         function toggleScheduleDetailVisibility() {
             if (!scheduleOptionSelect || !specificTimeAllDiv || !staggeredDiv) {
-                // console.warn("Scheduling UI elements not all found.");
                 return;
             }
-
             const selectedValue = scheduleOptionSelect.value;
             specificTimeAllDiv.style.display = 'none';
             staggeredDiv.style.display = 'none';
 
-            // Clear or disable inputs not relevant to the current selection
+            // Manage 'required' attribute for HTML5 form validation
             if (specificTimeAllInput) {
-                specificTimeAllInput.value = '';
                 specificTimeAllInput.required = (selectedValue === 'specific_time_all');
+                if (selectedValue !== 'specific_time_all') specificTimeAllInput.value = ''; 
             }
             if (staggeredTimeInput) {
-                staggeredTimeInput.value = '';
                 staggeredTimeInput.required = (selectedValue === 'staggered');
-                // Also handle the stagger minutes input if it needs to be required
-                const staggeredMinutesInput = document.getElementById('schedule_stagger_minutes');
-                if (staggeredMinutesInput) {
-                    staggeredMinutesInput.required = (selectedValue === 'staggered');
-                }
+                if (selectedValue !== 'staggered') staggeredTimeInput.value = '';
             }
-
+            if (staggeredMinutesInput) {
+                 staggeredMinutesInput.required = (selectedValue === 'staggered');
+                 if (selectedValue !== 'staggered') staggeredMinutesInput.value = '30'; // Reset to default
+            }
 
             if (selectedValue === 'specific_time_all') {
                 specificTimeAllDiv.style.display = 'block';
@@ -210,64 +258,51 @@
 
         if(scheduleOptionSelect) {
             scheduleOptionSelect.addEventListener('change', toggleScheduleDetailVisibility);
-            toggleScheduleDetailVisibility(); // Call on load to set initial state
+            toggleScheduleDetailVisibility(); // Initial call
         }
 
-        // The updateLocalTimes() function (from base.html) will handle date formatting
-        // for the .local-datetime spans rendered by Jinja.
         if (typeof updateLocalTimes === "function") {
-            updateLocalTimes();
+            updateLocalTimes(); // From base.html to format dates
         }
 
-        // Form submission logic
         const executeForm = document.getElementById('executeBuildsForm');
         if (executeForm) {
             executeForm.addEventListener('submit', function(event) {
-                const planInput = document.getElementById('confirmedBuildPlanInput');
-                let buildableItems = [];
+                const buildPlanInput = document.getElementById('confirmedBuildPlanInput');
+                const teardownPlanInput = document.getElementById('confirmedTeardownPlanInput');
+                let buildableItemsCount = 0;
+                let teardownableItemsCount = 0;
 
-                if (planInput && planInput.value) {
-                    try {
-                        buildableItems = JSON.parse(planInput.value);
-                        if (!Array.isArray(buildableItems)) { // Ensure it's an array
-                            buildableItems = []; 
-                        }
-                    } catch (e) {
-                        console.error("Error parsing buildable items from hidden input:", e);
-                        alert("Error: Corrupted build plan data. Cannot schedule.");
-                        event.preventDefault();
-                        return;
+                try {
+                    if (buildPlanInput && buildPlanInput.value) {
+                        buildableItemsCount = JSON.parse(buildPlanInput.value).length;
                     }
-                } else {
-                    // This case should ideally not happen if Python always provides buildable_items_json
-                    console.error("Build plan data input field is missing or empty.");
-                    alert("Error: Build plan data is missing. Cannot schedule.");
-                    event.preventDefault();
-                    return;
+                    if (teardownPlanInput && teardownPlanInput.value) {
+                        teardownableItemsCount = JSON.parse(teardownPlanInput.value).length;
+                    }
+                } catch (e) {
+                    console.error("Error parsing plan data on submit:", e);
+                    // Don't prevent submit, let backend handle potentially corrupt data
                 }
 
-                if (buildableItems.length === 0) {
-                    // Check if there were any items rendered on the page at all
-                    // This can be done by checking if the table body has more than just a "no items" row
+                if (buildableItemsCount === 0 && teardownableItemsCount === 0) {
+                    // This check relies on Python passing '[]' if empty, not null or undefined.
                     const tableBody = document.getElementById('finalReviewTableBody');
-                    const hasRenderedItems = tableBody && tableBody.querySelector('tr td:not([colspan])'); // A simple check for actual data rows
+                    const hasAnyRenderedItems = tableBody && tableBody.rows.length > 0 && 
+                                              (tableBody.rows[0].cells.length > 1 || 
+                                               !/No items to display|No items found/i.test(tableBody.rows[0].cells[0].textContent));
 
-                    if (hasRenderedItems) {
-                        // Items were displayed, but none are "buildable" (e.g., all were "extended")
-                        alert("No new builds to schedule. The current plan may only contain items to keep running.");
-                        // Allow submission with empty buildableItems if this is acceptable (backend will do nothing)
-                        // or prevent it if an actual build is always expected:
+                    if(hasAnyRenderedItems) { // Items were displayed, but none are actionable (e.g., all 'Extended')
+                        alert("No new builds or explicit teardowns to schedule. Plan may only contain 'Keep Running' items.");
+                        // Allow submission if this is a valid state (e.g., to log the review)
                         // event.preventDefault(); 
-                        // return; 
-                    } else {
-                        // No items were even displayed on the page for review
+                    } else { // No items were even on the review page
                         alert("No items in the plan to schedule.");
                         event.preventDefault();
-                        return;
                     }
+                    return;
                 }
-                console.log("Submitting buildable items for scheduling:", buildableItems);
-                // Form will submit with the 'confirmed_build_plan_data' (which contains buildable_items_json)
+                console.log("Submitting build and/or teardown plans...");
             });
         }
     });
