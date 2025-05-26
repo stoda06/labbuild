@@ -8,7 +8,7 @@ from flask import (
 )
 from pymongo import DESCENDING, ASCENDING
 from pymongo.errors import PyMongoError
-from collections import defaultdict
+from typing import Dict, List, Optional, Any
 
 # Import extensions and utils from the dashboard package
 from ..extensions import (
@@ -125,142 +125,227 @@ def index():
 @bp.route('/allocations')
 def view_allocations():
     """
-    Displays current allocations in a flat table format with filtering and pagination.
+    Displays current allocations in a flat table format with filtering,
+    pagination, and pre-calculated rowspans for merging tag cells.
     """
     current_theme = request.cookies.get('theme', 'light')
 
-    # --- 1. Get Filter & Pagination Parameters (same as before) ---
+    # --- 1. Get Filter & Pagination Parameters ---
     filter_tag = request.args.get('filter_tag', '').strip()
     filter_vendor = request.args.get('filter_vendor', '').strip()
     filter_course = request.args.get('filter_course', '').strip()
     filter_host_str = request.args.get('filter_host', '').strip().lower()
     filter_number_str = request.args.get('filter_number', '').strip()
 
-    try: page = int(request.args.get('page', 1)); page = max(1, page)
-    except ValueError: page = 1
+    try:
+        page = int(request.args.get('page', 1))
+        page = max(1, page)
+    except ValueError:
+        page = 1
+    
+    per_page = 25 # Items per page, can be made dynamic if needed
 
-    per_page = 50 # Fixed items per page
-
-    # --- 2. Build MongoDB Query ---
-    # This needs to potentially unwind arrays to filter effectively or filter post-fetch
-    # Let's try post-fetch filtering for simplicity first, although less efficient for large datasets.
-    mongo_query = {} # Start with empty query - fetch all tags first
+    # --- 2. Build MongoDB Query (Initial, primarily for tag if provided) ---
+    mongo_query: Dict[str, Any] = {}
     if filter_tag:
+        # Use regex for case-insensitive "contains" for tag if desired,
+        # or exact match if filter_tag is expected to be precise.
+        # For exact match on tag (often better for grouping):
+        # mongo_query['tag'] = filter_tag
+        # For "contains" (case-insensitive):
         mongo_query['tag'] = {'$regex': re.escape(filter_tag), '$options': 'i'}
 
-    # --- Store current filters for template/links ---
-    current_params = {
+    # Store current filters for template (repopulating form, pagination links)
+    current_filter_params = {
         'filter_tag': filter_tag,
         'filter_vendor': filter_vendor,
         'filter_course': filter_course,
         'filter_host': filter_host_str,
         'filter_number': filter_number_str
-        # 'per_page' not needed as it's fixed
     }
+    pagination_link_args = current_filter_params.copy()
+    # If per_page were dynamic:
+    # pagination_link_args['per_page'] = per_page
 
-    # --- 3. Fetch Data & Create Flat List ---
-    flat_allocation_list = []
+    # --- 3. Fetch Data & Create Intermediate Flat List (before rowspan/pagination) ---
+    temp_unprocessed_flat_list: List[Dict] = []
     db_error = False
 
-    if db is None or alloc_collection is None:
+    if alloc_collection is None: # Check if DB extension is available
         flash("Database connection or allocation collection unavailable.", "danger")
-        logger.error("DB connection or allocation collection is None.")
+        logger.error("DB connection or allocation collection is None for /allocations.")
         db_error = True
     else:
         try:
-            logger.debug(f"Fetching allocations with DB query: {mongo_query}")
-            alloc_cursor = alloc_collection.find(mongo_query).sort("tag", ASCENDING)
+            logger.debug(f"Fetching allocations with initial DB query: {mongo_query}")
+            # Sort by tag first to help with grouping later, then by other fields if desired
+            alloc_cursor = alloc_collection.find(mongo_query).sort(
+                [("tag", ASCENDING), ("courses.course_name", ASCENDING)]
+            )
 
-            # --- Process fetched documents into a flat list ---
-            number_filter_int = None
+            number_filter_int: Optional[int] = None
             if filter_number_str:
-                try: number_filter_int = int(filter_number_str)
-                except ValueError: number_filter_int = None
+                try:
+                    number_filter_int = int(filter_number_str)
+                except ValueError:
+                    logger.debug(f"Invalid number filter: {filter_number_str}")
 
             for tag_doc in alloc_cursor:
-                tag = tag_doc.get("tag", "Unknown Tag")
-                extend_val_str = tag_doc.get("extend", "false")
-                is_extended = extend_val_str.lower() == "true" # For tag-level actions
+                tag_name_from_doc = tag_doc.get("tag", "Unknown Tag")
+                extend_val = str(tag_doc.get("extend", "false")).lower() == "true"
 
                 for course_alloc in tag_doc.get("courses", []):
                     vendor = course_alloc.get("vendor")
                     course_name = course_alloc.get("course_name")
-                    if not vendor or not course_name: continue
+                    
+                    if not vendor or not course_name:
+                        continue # Skip if essential course info missing
 
-                    # Apply Vendor/Course Filters Here
-                    if filter_vendor and not re.match(f'^{re.escape(filter_vendor)}$', vendor, re.I): continue
-                    if filter_course and not re.search(re.escape(filter_course), course_name, re.I): continue
+                    # Apply Python-side filters
+                    if filter_vendor and not re.match(f'^{re.escape(filter_vendor)}$', vendor, re.I):
+                        continue
+                    if filter_course and not re.search(re.escape(filter_course), course_name, re.I):
+                        continue
 
                     for pod_detail in course_alloc.get("pod_details", []):
-                        host = pod_detail.get("host", pod_detail.get("pod_host", "Unknown Host"))
+                        host = pod_detail.get("host", pod_detail.get("pod_host", "Unknown Host")) # type: ignore
                         pod_num = pod_detail.get("pod_number")
                         class_num = pod_detail.get("class_number")
                         is_f5 = vendor.lower() == 'f5'
 
-                        # Apply Host Filter Here
-                        if filter_host_str and filter_host_str not in host.lower(): continue
+                        if filter_host_str and filter_host_str not in host.lower():
+                            continue
 
-                        # Determine item type and number
-                        item_type = "unknown"; item_number = None; nested_pods_list = []
+                        item_type = "unknown"
+                        item_number_display = None # The number shown in the 'Number' column
+                        nested_pods_for_f5_class: List[Any] = []
+
                         if is_f5 and class_num is not None:
-                            item_type = "f5_class"; item_number = class_num
-                            raw_nested = pod_detail.get("pods", [])
-                            if isinstance(raw_nested, list): nested_pods_list = [p.get("pod_number") for p in raw_nested if isinstance(p, dict) and p.get("pod_number") is not None]
+                            item_type = "f5_class"
+                            item_number_display = class_num
+                            raw_nested_f5 = pod_detail.get("pods", [])
+                            if isinstance(raw_nested_f5, list):
+                                nested_pods_for_f5_class = [
+                                    p.get("pod_number") for p in raw_nested_f5
+                                    if isinstance(p, dict) and p.get("pod_number") is not None
+                                ]
                         elif pod_num is not None:
-                            item_type = "pod"; item_number = pod_num
-
+                            item_type = "pod"
+                            item_number_display = pod_num
+                        
                         # Apply Number Filter
                         if number_filter_int is not None:
+                            passes_number_filter = False
                             if item_type == "f5_class":
-                                # Match if class number matches OR any nested pod matches
-                                if item_number != number_filter_int and number_filter_int not in nested_pods_list: continue
+                                if item_number_display == number_filter_int or \
+                                   number_filter_int in nested_pods_for_f5_class:
+                                    passes_number_filter = True
                             elif item_type == "pod":
-                                if item_number != number_filter_int: continue
-                            else: # Unknown type - skip if number filter active
+                                if item_number_display == number_filter_int:
+                                    passes_number_filter = True
+                            
+                            if not passes_number_filter and item_type != "unknown": # if unknown, filter passes unless number filter active
+                                continue
+                            elif item_type == "unknown" and number_filter_int is not None: # filter active, unknown type
                                 continue
 
-                        # If item passes all filters, add it to the flat list
+
                         if item_type != 'unknown':
-                            flat_allocation_list.append({
-                                "tag": tag,
-                                "is_extended": is_extended, # Pass tag extend status for actions
+                            temp_unprocessed_flat_list.append({
+                                "tag": tag_name_from_doc,
+                                "is_extended": extend_val,
                                 "vendor": vendor,
                                 "course_name": course_name,
                                 "host": host,
                                 "type": item_type,
-                                "number": item_number,
-                                "pod_number": pod_num, # Keep original pod_num if available
-                                "class_number": class_num, # Keep original class_num if available
-                                "nested_pods_str": ", ".join(map(str, sorted(nested_pods_list))) if nested_pods_list else "-",
+                                "number": item_number_display, # Main identifier for the row
+                                "pod_number": pod_num, # Store original pod_num explicitly
+                                "class_number": class_num, # Store original class_num explicitly
+                                "nested_pods_str": ", ".join(map(str, sorted(nested_pods_for_f5_class)))
+                                                   if nested_pods_for_f5_class else "-",
                                 "prtg_url": pod_detail.get("prtg_url"),
-                                "poweron": str(pod_detail.get("poweron", False)).lower() == 'true'
+                                "poweron": str(pod_detail.get("poweron", "false")).lower() == 'true'
                             })
+        except PyMongoError as e_mongo:
+            logger.error(f"DB error fetching allocations: {e_mongo}", exc_info=True)
+            flash("Error fetching data from database.", "danger")
+            db_error = True
+        except Exception as e_proc_alloc: # Catch other processing errors
+            logger.error(f"Error processing allocation data: {e_proc_alloc}", exc_info=True)
+            flash("Server error while processing allocation data.", "danger")
+            db_error = True
 
-        except PyMongoError as e:
-            logger.error(f"DB error fetching allocations: {e}", exc_info=True); flash("Error fetching data.", "danger"); db_error = True
-        except Exception as e:
-            logger.error(f"Error processing allocations: {e}", exc_info=True); flash("Error processing data.", "danger"); db_error = True
+    # --- 4. Pre-processing for Rowspan (applied to the fully filtered list) ---
+    processed_list_for_rowspan: List[Dict] = []
+    if not db_error and temp_unprocessed_flat_list:
+        # Ensure list is sorted by tag for rowspan calculation
+        # This sort should ideally match the initial DB sort for consistency.
+        # If DB sort was comprehensive, this might be redundant but safe.
+        temp_unprocessed_flat_list.sort(key=lambda x: (
+            x.get('tag', ''), 
+            x.get('course_name', ''), # Add secondary sort keys if needed
+            x.get('host', ''),
+            x.get('type', ''),
+            x.get('number', 0)
+        ))
 
-    # --- 4. Pagination Logic on the FLAT list ---
-    total_items = len(flat_allocation_list) # Total items AFTER filtering
-    total_pages = math.ceil(total_items / per_page) if per_page > 0 else 1
-    page = max(1, min(page, total_pages)) # Adjust page if out of bounds
+        current_tag_for_rowspan: Optional[str] = None
+        tag_row_count = 0
+        
+        for i, item_data in enumerate(temp_unprocessed_flat_list):
+            item_data_copy = item_data.copy() # Work on a copy
+            
+            if item_data_copy.get('tag') != current_tag_for_rowspan:
+                # New tag group starts
+                if current_tag_for_rowspan is not None and processed_list_for_rowspan:
+                    # Find the first item of the PREVIOUS group in processed_list_for_rowspan
+                    # and set its calculated rowspan
+                    for proc_item_idx in range(len(processed_list_for_rowspan) - 1, -1, -1):
+                        if processed_list_for_rowspan[proc_item_idx].get('_is_first_in_tag_group') and \
+                           processed_list_for_rowspan[proc_item_idx].get('tag') == current_tag_for_rowspan:
+                            processed_list_for_rowspan[proc_item_idx]['tag_rowspan'] = tag_row_count
+                            break
+                
+                current_tag_for_rowspan = item_data_copy.get('tag')
+                tag_row_count = 1
+                item_data_copy['_is_first_in_tag_group'] = True
+            else:
+                tag_row_count += 1
+                item_data_copy['_is_first_in_tag_group'] = False
+            processed_list_for_rowspan.append(item_data_copy)
+        
+        # Set rowspan for the very last group in the list
+        if current_tag_for_rowspan is not None and processed_list_for_rowspan:
+            for proc_item_idx in range(len(processed_list_for_rowspan) - 1, -1, -1):
+                if processed_list_for_rowspan[proc_item_idx].get('_is_first_in_tag_group') and \
+                   processed_list_for_rowspan[proc_item_idx].get('tag') == current_tag_for_rowspan:
+                    processed_list_for_rowspan[proc_item_idx]['tag_rowspan'] = tag_row_count
+                    break
+    else: # db_error or temp_unprocessed_flat_list is empty
+        processed_list_for_rowspan = []
+
+    # --- 5. Pagination on the Processed List ---
+    total_data_items = len(processed_list_for_rowspan)
+    total_pages = math.ceil(total_data_items / per_page) \
+                  if per_page > 0 and total_data_items > 0 else 1
+    page = max(1, min(page, total_pages)) # Re-validate page against new total_pages
+
     start_index = (page - 1) * per_page
     end_index = start_index + per_page
-    paginated_list = flat_allocation_list[start_index:end_index]
-
-    # Pass params for pagination links (filters only, no per_page)
-    pagination_args = current_params.copy()
+    paginated_allocation_list = processed_list_for_rowspan[start_index:end_index]
+    
+    logger.debug(f"Allocations: Total={total_data_items}, Page={page}, "
+                 f"TotalPages={total_pages}, PerPage={per_page}, "
+                 f"Items on this page={len(paginated_allocation_list)}")
 
     return render_template(
-        'allocations.html', # Still use the same template file name
-        allocation_list=paginated_list, # This is the flat list for the current page
-        total_data_items=total_items, # Total items matching filters
+        'allocations.html',
+        allocation_list=paginated_allocation_list,
+        total_data_items=total_data_items,
         current_page=page,
         total_pages=total_pages,
-        pagination_args=pagination_args, # For links (filters only)
-        current_filters=current_params, # For filter form persistence
-        # No per_page_options needed
+        pagination_args=pagination_link_args,
+        current_filters=current_filter_params,
         current_theme=current_theme
     )
 

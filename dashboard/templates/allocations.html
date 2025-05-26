@@ -21,6 +21,24 @@
             white-space: normal;        
             word-break: break-word;     
         }
+        .allocation-table td.tag-cell-merged {
+            vertical-align: middle !important; 
+            padding-top: 0.6rem; 
+        }
+
+        /* Custom Striping Classes */
+        .row-shade-even {
+            background-color: var(--bs-table-bg); 
+        }
+        .row-shade-odd {
+            background-color: var(--bs-table-striped-bg); 
+        }
+        body.dark-mode .row-shade-even {
+            background-color: var(--bs-table-bg); 
+        }
+        body.dark-mode .row-shade-odd {
+            background-color: var(--bs-table-striped-bg); 
+        }
 
         .action-forms form {
             margin-bottom: 0;
@@ -73,7 +91,7 @@
         .col-number { 
             width: 100px; 
             text-align: center; 
-            white-space: normal; /* Allow pod list to wrap */
+            white-space: normal; 
         }
         .col-course { min-width: 160px; max-width: 250px;}
         .col-host { min-width: 130px; max-width: 180px;}
@@ -86,7 +104,7 @@
             border: 1px solid var(--bs-card-border-color);
             border-radius: 0.375rem;
             margin-bottom: 1rem;
-            display: none; /* Initially hidden */
+            display: none; 
             flex-wrap: wrap; 
             gap: 0.75rem; 
         }
@@ -163,7 +181,7 @@
   <div class="card-body p-0">
     {% if allocation_list %}
       <div class="table-responsive">
-        <table class="table table-sm table-hover table-striped mb-0 allocation-table" id="allocationsTable">
+        <table class="table table-sm table-hover mb-0 allocation-table" id="allocationsTable"> {# Removed table-striped #}
           <thead class="table-light">
             <tr>
               <th class="col-checkbox"><input type="checkbox" class="form-check-input" id="selectAllAllocationsCheckbox" title="Select/Deselect All Visible"></th>
@@ -178,8 +196,16 @@
             </tr>
           </thead>
           <tbody>
+            {% set current_tag_group = '' %}
+            {% set row_class_idx = 0 %} {# 0 for even, 1 for odd shade based on tag group #}
             {% for item in allocation_list %}
-              <tr class="data-row" 
+              {% if item.tag != current_tag_group %}
+                {% set current_tag_group = item.tag %}
+                {% set row_class_idx = 1 - row_class_idx %} {# Toggle shade for new tag group #}
+              {% endif %}
+              {% set row_shade_class = 'row-shade-odd' if row_class_idx == 1 else 'row-shade-even' %}
+
+              <tr class="data-row {{ row_shade_class }}" 
                   data-tag="{{ item.tag }}" 
                   data-vendor="{{ item.vendor }}" 
                   data-course="{{ item.course_name }}"
@@ -191,7 +217,13 @@
                   data-power-state="{{ 'on' if item.poweron else 'off' }}"
                   data-extend-state="{{ 'true' if item.is_extended else 'false' }}">
                 <td class="col-checkbox"><input type="checkbox" class="row-checkbox form-check-input"></td>
-                <td class="col-tag" title="{{ item.tag }}">{{ item.tag }}</td>
+                
+                {% if item._is_first_in_tag_group %}
+                <td class="col-tag tag-cell-merged" title="{{ item.tag }}" rowspan="{{ item.tag_rowspan if item.tag_rowspan > 0 else 1 }}">
+                    {{ item.tag }}
+                </td>
+                {% endif %}
+                
                 <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A' }}</td>
                 <td class="col-course" title="{{ item.course_name }}">{{ item.course_name }}</td>
                 <td class="col-type">
@@ -331,16 +363,10 @@
   </div> 
 </div>
 
-{# This hidden form is now only for submitting the selected_items_json for bulk actions #}
-{# Its action URL will be set by JavaScript before submission #}
 <form id="bulkActionSubmitActualForm" method="POST" style="display: none;">
     <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputForSubmit">
-    {# CSRF token would go here if you use Flask-WTF or similar #}
-    {# Example: <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"> #}
-    
-    {# These hidden inputs will carry filter parameters for redirect after bulk action #}
-    {% for key, value in current_filters.items() %}
-        <input type="hidden" name="{{ key }}" value="{{ value }}">
+    {% for key, value_param in current_filters.items() %}{# Renamed value to value_param #}
+        <input type="hidden" name="{{ key }}" value="{{ value_param }}">
     {% endfor %}
     <input type="hidden" name="page" value="{{ current_page }}">
 </form>
@@ -351,7 +377,6 @@
   {{ super() }}
   <script>
     document.addEventListener('DOMContentLoaded', function () {
-      const allocationsTable = document.getElementById('allocationsTable'); // For individual action forms
       const selectAllCheckbox = document.getElementById('selectAllAllocationsCheckbox');
       const rowCheckboxes = document.querySelectorAll('#allocationsTable .row-checkbox');
       const bulkActionsBar = document.getElementById('bulkActionsBar');
@@ -422,7 +447,7 @@
                   return;
               }
 
-              let confirmMsg = `Are you sure you want to perform '${action.replace('_', ' ')}' on ${selectedItems.length} item(s)?`;
+              let confirmMsg = `Are you sure you want to perform '${action.replace(/_/g, ' ')}' on ${selectedItems.length} item(s)?`;
               if (action === 'teardown_infra') {
                   confirmMsg += " This is IRREVERSIBLE and deletes VMs/networks.";
               } else if (action === 'delete_db') {
@@ -453,22 +478,19 @@
           });
       });
 
-      // Preserve filters on individual action form submissions (non-bulk)
       const individualActionForms = document.querySelectorAll('.action-forms form');
       individualActionForms.forEach(form => {
-          form.addEventListener('submit', function(event) { // Added event parameter
+          form.addEventListener('submit', function(event) {
               const onsubmitAttr = form.getAttribute('onsubmit');
-              if (onsubmitAttr && onsubmitAttr.includes('confirm')) {
-                  // Confirmation is handled by onsubmit, but we still need to prevent default if it fails
-                  // However, the native onsubmit="return confirm(...)" already does this.
+              if (onsubmitAttr && onsubmitAttr.includes('confirm(')) {
+                // Native confirm is handled by the browser based on its return value
               }
-              // Append filter params if not already present in this specific form
               const filterParams = new URLSearchParams(window.location.search);
-              filterParams.forEach((value, key) => {
-                  if ((key.startsWith('filter_') || key === 'page') && 
-                      !form.querySelector(`input[name="${key}"]`)) {
+              filterParams.forEach((value_param, key_param) => { // Renamed to avoid conflict
+                  if ((key_param.startsWith('filter_') || key_param === 'page') && 
+                      !form.querySelector(`input[name="${key_param}"]`)) {
                       const hiddenInput = document.createElement('input');
-                      hiddenInput.type = 'hidden'; hiddenInput.name = key; hiddenInput.value = value;
+                      hiddenInput.type = 'hidden'; hiddenInput.name = key_param; hiddenInput.value = value_param;
                       form.appendChild(hiddenInput);
                   }
               });
