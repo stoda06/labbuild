@@ -27,17 +27,20 @@
         }
 
         /* Custom Striping Classes */
-        .row-shade-even {
-            background-color: var(--bs-table-bg); 
+        .tag-group-shade-0 { /* Corresponds to row_class_idx = 0 */
+            background-color: var(--bs-table-bg); /* Transparent or base table bg */
         }
-        .row-shade-odd {
-            background-color: var(--bs-table-striped-bg); 
+        /* Odd groups */
+        .tag-group-shade-1 { /* Corresponds to row_class_idx = 1 */
+            background-color: var(--bs-table-striped-bg); /* Bootstrap's striped color */
         }
-        body.dark-mode .row-shade-even {
-            background-color: var(--bs-table-bg); 
+
+        /* Dark Mode overrides for custom striping */
+        body.dark-mode .tag-group-shade-0 {
+            background-color: var(--bs-table-bg); /* Dark mode table bg */
         }
-        body.dark-mode .row-shade-odd {
-            background-color: var(--bs-table-striped-bg); 
+        body.dark-mode .tag-group-shade-1 {
+            background-color: var(--bs-table-striped-bg); /* Dark mode striped bg */
         }
 
         .action-forms form {
@@ -172,10 +175,19 @@
 <div class="card">
   <div class="card-header">
       Allocation List
-      {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
-          (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }})
-      {% else %}
-          (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }})
+      {% if pagination_by_tags %}
+          (Page {{ current_page }} of {{ total_pages }} Tags
+          {%- if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number -%}
+              , Total Matching Tags: {{ total_display_count }}, Total Matching Items: {{ total_items_overall }}
+          {%- else -%}
+              , Total Tags: {{ total_display_count }}, Total Items: {{ total_items_overall }}
+          {%- endif -%})
+      {% else %} {# Fallback to original row-based count display if pagination_by_tags is false or not set #}
+          {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
+              (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }}) {# Original variable was total_data_items #}
+          {% else %}
+              (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }}) {# Original variable was total_data_items #}
+          {% endif %}
       {% endif %}
   </div>
   <div class="card-body p-0">
@@ -196,14 +208,15 @@
             </tr>
           </thead>
           <tbody>
-            {% set current_tag_group = '' %}
-            {% set row_class_idx = 0 %} {# 0 for even, 1 for odd shade based on tag group #}
+            {# --- Jinja Logic for Alternating Tag Group Shading --- #}
+            {% set current_tag_for_shade = '' %}
+            {% set shade_index = 0 %} {# 0 for even shade, 1 for odd shade #}
             {% for item in allocation_list %}
-              {% if item.tag != current_tag_group %}
-                {% set current_tag_group = item.tag %}
-                {% set row_class_idx = 1 - row_class_idx %} {# Toggle shade for new tag group #}
+              {% if item.tag != current_tag_for_shade %}
+                {% set current_tag_for_shade = item.tag %}
+                {% set shade_index = 1 - shade_index %} {# Toggle shade index for new tag group #}
               {% endif %}
-              {% set row_shade_class = 'row-shade-odd' if row_class_idx == 1 else 'row-shade-even' %}
+              {% set row_shade_class = 'tag-group-shade-' ~ shade_index %}
 
               <tr class="data-row {{ row_shade_class }}" 
                   data-tag="{{ item.tag }}" 
