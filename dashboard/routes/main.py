@@ -4,7 +4,7 @@ import re
 import math
 import logging
 from flask import (
-    Blueprint, render_template, request, flash, current_app, jsonify, redirect, url_for
+    Blueprint, render_template, request, flash, current_app, jsonify, redirect, url_for, g, session
 )
 from pymongo import DESCENDING, ASCENDING
 from pymongo.errors import PyMongoError
@@ -27,6 +27,83 @@ from ..salesforce_utils import get_upcoming_courses_data # USE THIS ONE
 # Define Blueprint
 bp = Blueprint('main', __name__)
 logger = logging.getLogger('dashboard.routes.main')
+
+def get_past_due_allocations():
+    """
+    Fetches allocations where the course end date is in the past
+    and the tag is not marked with extend: "true".
+    Filters out notifications that have been "cleared" in the current session.
+    """
+    past_due_items = []
+    if alloc_collection is None:
+        logger.warning("get_past_due_allocations: alloc_collection is None.")
+        return past_due_items
+
+    # Get the set of notification IDs cleared in this session
+    cleared_in_session = session.get('cleared_notifications', set())
+    logger.debug(f"Notifications cleared in this session: {cleared_in_session}")
+
+    try:
+        today_naive = datetime.datetime.now().date()
+        relevant_tags_cursor = alloc_collection.find(
+            {"extend": {"$not": re.compile("^true$", re.IGNORECASE)}}
+        )
+
+        for tag_doc in relevant_tags_cursor:
+            tag_name = tag_doc.get("tag")
+            if not tag_name:
+                continue
+
+            for course_data in tag_doc.get("courses", []):
+                course_name = course_data.get("course_name")
+                end_date_str = str(course_data.get("end_date", ""))
+
+                if not course_name or not end_date_str or end_date_str == "N/A":
+                    continue
+                
+                # Generate a consistent ID for this potential notification
+                notification_id = f"past_due_{tag_name}_{course_name}".replace(" ", "_").replace("/", "_")
+
+                # If this notification ID is in the session's cleared set, skip it
+                if notification_id in cleared_in_session:
+                    logger.debug(f"Skipping already cleared notification: {notification_id}")
+                    continue
+
+                try:
+                    course_end_date_obj = None
+                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+                        try:
+                            course_end_date_obj = datetime.datetime.strptime(end_date_str, fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                    
+                    if course_end_date_obj and course_end_date_obj < today_naive:
+                        past_due_items.append({
+                            "id": notification_id,
+                            "tag": tag_name,
+                            "course_name": course_name,
+                            "end_date": end_date_str, 
+                            "days_past": (today_naive - course_end_date_obj).days
+                        })
+                except ValueError:
+                    logger.warning(f"Could not parse end_date '{end_date_str}' for tag '{tag_name}', course '{course_name}'.")
+                    continue
+    except PyMongoError as e:
+        logger.error(f"Error fetching past due allocations: {e}", exc_info=True)
+    except Exception as e_gen:
+        logger.error(f"Unexpected error in get_past_due_allocations: {e_gen}", exc_info=True)
+
+    past_due_items.sort(key=lambda x: x.get("days_past", 0), reverse=True)
+    return past_due_items
+
+# --- NEW: App Context Processor to make notifications available globally ---
+@bp.app_context_processor
+def inject_notifications():
+    """Injects past_due_notifications into all templates."""
+    if 'past_due_notifications' not in g:
+        g.past_due_notifications = get_past_due_allocations()
+    return dict(past_due_notifications=g.past_due_notifications)
 
 @bp.route('/')
 def index():
@@ -564,5 +641,76 @@ def run_status(run_id):
     except Exception as e:
          logger.error(f"Error fetching status for {run_id}: {e}", exc_info=True)
          return jsonify({"error": "Internal server error"}), 500
+    
+@bp.route('/notifications/clear/<notification_id>', methods=['POST'])
+def clear_notification(notification_id: str):
+    """
+    Marks a specific notification as 'cleared' for the current user session.
+    """
+    logger.info(f"Attempting to clear notification ID: {notification_id}")
+    if 'cleared_notifications' not in session:
+        session['cleared_notifications'] = set()
+    
+    # Ensure session['cleared_notifications'] is a set
+    if not isinstance(session['cleared_notifications'], set):
+        try:
+            session['cleared_notifications'] = set(session['cleared_notifications'])
+        except TypeError: # If it's not iterable, reset it
+            session['cleared_notifications'] = set()
 
-# --- END OF dashboard/routes/main.py ---
+    session['cleared_notifications'].add(notification_id)
+    session.modified = True # Important to mark session as modified
+    
+    flash(f"Notification '{notification_id.split('_')[-1]}' (from tag '{notification_id.split('_')[-2]}') marked as read for this session.", "info")
+    return redirect(request.referrer or url_for('main.index'))
+
+@bp.route('/notifications/clear-all', methods=['POST'])
+def clear_all_notifications():
+    """
+    Marks ALL currently past-due notifications as 'cleared' for the current user session.
+    """
+    logger.info("Attempting to clear all current past-due notifications for this session.")
+    
+    # Get current past-due items (before modifying session)
+    # We call get_past_due_allocations() but it will use the *current* session state.
+    # So, we need to get the list of IDs *before* we add them to the session's cleared set.
+    # A simpler way is to just clear the session's set or add a special "clear_all_flag".
+    # For now, let's get current notifications and add all their IDs.
+    
+    # To avoid re-querying and complex logic with g, let's fetch them once more
+    # or rely on the idea that if this route is hit, it's after a page render where g was populated.
+    # Safer to re-fetch IF the list in 'g' isn't guaranteed to be up-to-date for this exact request.
+    # However, for session-based clearing, we just need to ensure future calls to get_past_due_allocations
+    # will return an empty list if "clear all" was pressed.
+
+    # A more robust way for "clear all" with session:
+    # We can't easily add all *future* past_due IDs.
+    # Instead, we can either:
+    # 1. Store a "cleared_all_timestamp" in the session. `get_past_due_allocations` would then
+    #    ignore any notification whose original end_date is before this timestamp. (More complex date logic)
+    # 2. Simpler: Just add all *currently visible* past-due notification IDs to the session's cleared set.
+    #    This means if new items become past-due later, they will appear.
+
+    # Let's go with option 2 for simplicity for now:
+    current_notifications_to_clear = get_past_due_allocations() # Gets uncleared items
+    
+    if 'cleared_notifications' not in session:
+        session['cleared_notifications'] = set()
+    
+    if not isinstance(session['cleared_notifications'], set): # Ensure it's a set
+        try: session['cleared_notifications'] = set(session['cleared_notifications'])
+        except TypeError: session['cleared_notifications'] = set()
+
+    cleared_count = 0
+    for item in current_notifications_to_clear:
+        if item['id'] not in session['cleared_notifications']:
+            session['cleared_notifications'].add(item['id'])
+            cleared_count +=1
+    
+    if cleared_count > 0:
+        session.modified = True
+        flash(f"{cleared_count} notification(s) marked as read for this session.", "success")
+    else:
+        flash("No active notifications to clear.", "info")
+        
+    return redirect(request.referrer or url_for('main.index'))
