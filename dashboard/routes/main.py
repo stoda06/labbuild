@@ -10,7 +10,7 @@ from pymongo import DESCENDING, ASCENDING
 from pymongo.errors import PyMongoError
 from typing import Dict, List, Optional, Any, OrderedDict, Tuple
 import datetime
-
+import pytz
 
 # Import extensions and utils from the dashboard package
 from ..extensions import (
@@ -27,6 +27,49 @@ from ..salesforce_utils import get_upcoming_courses_data # USE THIS ONE
 # Define Blueprint
 bp = Blueprint('main', __name__)
 logger = logging.getLogger('dashboard.routes.main')
+
+def _prepare_date_for_display_iso(date_str: Optional[str], context_info: str = "") -> Optional[str]:
+    if not date_str or date_str == "N/A":
+        logger.debug(f"Date Prep ({context_info}): Input date string is None, empty, or 'N/A': '{date_str}'. Returning None.")
+        return None
+    
+    parsed_date = None
+    # Prioritize the expected "YYYY-MM-DD" format
+    expected_formats = ["%Y-%m-%d"]
+    # Add other common formats as fallbacks
+    fallback_formats = ["%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y", "%Y/%m/%d"]
+    
+    all_formats_to_try = expected_formats + fallback_formats
+
+    for fmt in all_formats_to_try:
+        try:
+            parsed_date = datetime.datetime.strptime(date_str, fmt).date()
+            logger.debug(f"Date Prep ({context_info}): Successfully parsed '{date_str}' with format '{fmt}' to {parsed_date}.")
+            break # Parsed successfully
+        except ValueError:
+            logger.debug(f"Date Prep ({context_info}): Failed to parse '{date_str}' with format '{fmt}'.")
+            continue # Try next format
+    
+    if parsed_date:
+        # Convert to datetime at midnight UTC for ISO string
+        # Ensure correct UTC localization
+        dt_obj_utc = datetime.datetime.combine(parsed_date, datetime.time.min)
+        dt_obj_utc = pytz.utc.localize(dt_obj_utc) # Make it timezone-aware (UTC)
+        
+        iso_string = dt_obj_utc.isoformat() # This should produce 'YYYY-MM-DDTHH:MM:SS+00:00'
+        
+        # Ensure it ends with 'Z' for JavaScript compatibility, if not already +00:00
+        if iso_string.endswith('+00:00'):
+            iso_string = iso_string.replace('+00:00', 'Z')
+        elif not iso_string.endswith('Z'): # Should not happen if localized to UTC correctly
+            logger.warning(f"Date Prep ({context_info}): ISO string for {dt_obj_utc} did not end with +00:00 or Z: {iso_string}. Appending Z.")
+            iso_string += 'Z'
+
+        logger.debug(f"Date Prep ({context_info}): Converted to ISO string: {iso_string}")
+        return iso_string
+    
+    logger.warning(f"Date Prep ({context_info}): Could not parse date string '{date_str}' into any known format. Returning None.")
+    return None
 
 def get_past_due_allocations():
     """
@@ -227,9 +270,8 @@ def view_allocations():
 
     # --- 2. Build Initial MongoDB Query ---
     mongo_query: Dict[str, Any] = {}
-    if filter_tag_input: # If specific tag is filtered, narrow down DB query
+    if filter_tag_input: 
         mongo_query['tag'] = {'$regex': re.escape(filter_tag_input), '$options': 'i'}
-    # Other primary filters could be added to mongo_query if they map directly to top-level fields
 
     current_filter_params = {
         'filter_tag': filter_tag_input,
@@ -251,9 +293,7 @@ def view_allocations():
     else:
         try:
             logger.debug(f"Fetching allocations with initial DB query: {mongo_query}")
-            # Fetch all documents matching the primary tag filter (if any).
-            # We will sort comprehensively in Python later.
-            alloc_cursor = alloc_collection.find(mongo_query) # No sort here yet
+            alloc_cursor = alloc_collection.find(mongo_query) 
 
             number_filter_int: Optional[int] = None
             if filter_number_str:
@@ -263,18 +303,18 @@ def view_allocations():
             for tag_doc in alloc_cursor:
                 tag_name = tag_doc.get("tag", "Unknown Tag")
                 is_extended_tag = str(tag_doc.get("extend", "false")).lower() == "true"
+                course_start_date_str = str(tag_doc.get("start_date", "N/A"))
+                course_end_date_str = str(tag_doc.get("end_date", "N/A"))
                 
-                items_for_this_tag_doc = []
-                tag_passes_all_item_filters = False # Does this tag have at least one item passing all filters?
-
                 for course_alloc in tag_doc.get("courses", []):
+                    if not isinstance(course_alloc, dict): continue
                     vendor = course_alloc.get("vendor")
                     course_name = course_alloc.get("course_name")
-                    # Get course-level start_date and end_date
-                    course_start_date_str = str(course_alloc.get("start_date", "N/A"))
-                    course_end_date_str = str(course_alloc.get("end_date", "N/A"))
+                    
 
-
+                    course_start_date_iso = _prepare_date_for_display_iso(course_start_date_str, f"Tag: {tag_name}, Course: {course_name}, Field: start_date")
+                    course_end_date_iso = _prepare_date_for_display_iso(course_end_date_str, f"Tag: {tag_name}, Course: {course_name}, Field: end_date")
+                    
                     if not vendor or not course_name: continue
 
                     if filter_vendor and not re.match(f'^{re.escape(filter_vendor)}$', vendor, re.I):
@@ -283,17 +323,15 @@ def view_allocations():
                         continue
 
                     for pod_detail in course_alloc.get("pod_details", []):
+                        if not isinstance(pod_detail, dict): continue
                         host = pod_detail.get("host", pod_detail.get("pod_host", "Unknown Host"))
-                        pod_num = pod_detail.get("pod_number")
-                        class_num = pod_detail.get("class_number")
+                        pod_num = pod_detail.get("pod_number"); class_num = pod_detail.get("class_number")
                         is_f5 = vendor.lower() == 'f5'
 
                         if filter_host_str and filter_host_str not in host.lower():
                             continue
 
-                        item_type = "unknown"
-                        item_number_display: Any = None
-                        nested_pods_f5: List[Any] = []
+                        item_type = "unknown"; item_number_display: Any = None; nested_pods_f5: List[Any] = []
 
                         if is_f5 and class_num is not None:
                             item_type = "f5_class"; item_number_display = class_num
@@ -314,12 +352,13 @@ def view_allocations():
                             elif item_type == "unknown": continue 
                         
                         if item_type != 'unknown':
-                            tag_passes_all_item_filters = True
-                            all_items_matching_filters.append({ # Add directly to the main list
+                            all_items_matching_filters.append({
                                 "tag": tag_name, "is_extended": is_extended_tag,
                                 "vendor": vendor, "course_name": course_name,
-                                "course_start_date": course_start_date_str, # Store course start date
-                                "course_end_date": course_end_date_str, # Store course end date
+                                "course_start_date": course_start_date_str,
+                                "course_end_date": course_end_date_str,
+                                "course_start_date_iso": course_start_date_iso,
+                                "course_end_date_iso": course_end_date_iso,
                                 "host": host, "type": item_type,
                                 "number": item_number_display,
                                 "pod_number": pod_num, "class_number": class_num,
@@ -341,25 +380,40 @@ def view_allocations():
         def get_sort_keys_for_item(item: Dict) -> Tuple[str, datetime.date, int]:
             tag_key = item.get('tag', '').lower()
             
-            date_str = item.get('course_start_date', '')
-            sort_date = datetime.date.max # Default for unparseable/N/A dates
-            if date_str and date_str != "N/A": # Check for "N/A"
-                try: # Expect YYYY-MM-DD from your DB or prior processing
-                    sort_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-                except ValueError: # Try other common formats if primary parse fails
-                    for fmt in ("%d/%m/%Y", "%m/%d/%Y"):
-                        try: sort_date = datetime.datetime.strptime(date_str, fmt).date(); break
-                        except ValueError: pass
-                    if sort_date == datetime.date.max: # Log if still unparsed
-                        logger.debug(f"SortKey: Could not parse date '{date_str}' for tag '{tag_key}'. Sorting as latest.")
+            date_iso_str_sort = item.get('course_start_date_iso') 
+            sort_date_obj = datetime.date.max 
             
-            number_key_val = item.get('number') # This is pod_number or class_number
-            number_key = 999999 # Default for non-numeric or missing, sorts last
-            if number_key_val is not None:
-                try: number_key = int(number_key_val)
+            if date_iso_str_sort:
+                try:
+                    dt_temp = datetime.datetime.fromisoformat(date_iso_str_sort.replace('Z', '+00:00'))
+                    sort_date_obj = dt_temp.date() 
+                except ValueError:
+                    logger.warning(f"SortKey: Failed to parse pre-processed ISO date '{date_iso_str_sort}' for tag '{tag_key}'. Falling back to original string.")
+                    date_str_orig_sort = item.get('course_start_date', '') 
+                    if date_str_orig_sort and date_str_orig_sort != "N/A":
+                        for fmt_sort in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y"):
+                            try: sort_date_obj = datetime.datetime.strptime(date_str_orig_sort, fmt_sort).date(); break
+                            except ValueError: continue
+            else: 
+                date_str_orig_sort = item.get('course_start_date', '') 
+                if date_str_orig_sort and date_str_orig_sort != "N/A":
+                    for fmt_sort in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y"):
+                        try: sort_date_obj = datetime.datetime.strptime(date_str_orig_sort, fmt_sort).date(); break
+                        except ValueError: continue
+            
+            if sort_date_obj == datetime.date.max and item.get('course_start_date_iso') is not None : # Log if ISO was present but still resulted in max_date
+                logger.debug(f"SortKey: Date for tag '{tag_key}' remains at max_date despite ISO value. Original: '{item.get('course_start_date', '')}', ISO: '{item.get('course_start_date_iso')}'")
+            elif sort_date_obj == datetime.date.max: # Log if no ISO and original string parse also failed
+                 logger.debug(f"SortKey: Date for tag '{tag_key}' remains at max_date after all parsing attempts. Original: '{item.get('course_start_date', '')}'")
+
+
+            number_key_val_sort = item.get('number')
+            number_key_sort = 999999 
+            if number_key_val_sort is not None:
+                try: number_key_sort = int(number_key_val_sort)
                 except (ValueError, TypeError): pass 
             
-            return (tag_key, sort_date, number_key)
+            return (tag_key, sort_date_obj, number_key_sort)
 
         try:
             all_items_matching_filters.sort(key=get_sort_keys_for_item)
@@ -386,22 +440,19 @@ def view_allocations():
 
             start_tag_idx = (page - 1) * tags_per_page
             end_tag_idx = start_tag_idx + tags_per_page
-            tags_to_display_on_page = set(unique_tags_ordered[start_tag_idx:end_tag_idx]) # Use set for faster lookups
+            tags_to_display_on_page = set(unique_tags_ordered[start_tag_idx:end_tag_idx]) 
             
             logger.debug(f"Page {page}: Displaying tags {tags_to_display_on_page}")
 
             current_tag_for_rowspan_calc: Optional[str] = None
             tag_item_counter_for_rowspan = 0
             
-            # Iterate the already sorted all_items_matching_filters
             for item_data in all_items_matching_filters:
                 if item_data.get('tag') in tags_to_display_on_page:
                     item_data_copy = item_data.copy()
                     
                     if item_data_copy.get('tag') != current_tag_for_rowspan_calc:
-                        # This is the first item of a new tag group *on this page*
                         if current_tag_for_rowspan_calc is not None and paginated_allocation_list:
-                            # Set rowspan for the first item of the PREVIOUS tag group *on this page*
                             for prev_item_idx in range(len(paginated_allocation_list) - 1, -1, -1):
                                 if paginated_allocation_list[prev_item_idx].get('_is_first_in_tag_group') and \
                                    paginated_allocation_list[prev_item_idx].get('tag') == current_tag_for_rowspan_calc:
@@ -416,7 +467,6 @@ def view_allocations():
                         item_data_copy['_is_first_in_tag_group'] = False
                     paginated_allocation_list.append(item_data_copy)
             
-            # Set rowspan for the very last tag group processed on the page
             if current_tag_for_rowspan_calc is not None and paginated_allocation_list:
                 for last_grp_item_idx in range(len(paginated_allocation_list) - 1, -1, -1):
                     if paginated_allocation_list[last_grp_item_idx].get('_is_first_in_tag_group') and \
@@ -433,14 +483,14 @@ def view_allocations():
     return render_template(
         'allocations.html',
         allocation_list=paginated_allocation_list,
-        total_display_count=total_unique_tags_matching_filters, # Total unique tags matching filters
-        total_items_overall=total_items_in_filtered_tags,    # Total items across all matching tags
+        total_display_count=total_unique_tags_matching_filters, 
+        total_items_overall=total_items_in_filtered_tags,    
         current_page=page,
-        total_pages=total_pages, # Total pages of TAGS
+        total_pages=total_pages, 
         pagination_args=pagination_link_args,
         current_filters=current_filter_params,
         current_theme=current_theme,
-        pagination_by_tags=True # Flag for template display logic
+        pagination_by_tags=True 
     )
 
 @bp.route('/logs/<run_id>')

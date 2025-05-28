@@ -25,6 +25,7 @@ from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 from pymongo import ASCENDING
 from pymongo.errors import PyMongoError
 from bson import ObjectId
+from config_utils import fetch_and_prepare_course_config, extract_components
 
 # Define Blueprint
 bp = Blueprint('api', __name__, url_prefix='/api') # Prefix all routes with /api
@@ -32,21 +33,91 @@ logger = logging.getLogger('dashboard.routes.api')
 
 @bp.route('/courses') # Route becomes /api/courses
 def api_courses():
-    """Returns course name suggestions based on query and optional vendor."""
-    # Logic moved from original app.py
     query = request.args.get('q', '').strip()
     vendor = request.args.get('vendor', '').strip()
     suggestions = []
-    if not query or db is None or course_config_collection is None:
+
+    # Corrected check: Use 'is not None'
+    if course_config_collection is None:
+        logger.error("API /courses: course_config_collection is None. Cannot fetch suggestions.")
         return jsonify(suggestions)
-    try:
-        mongo_filter = {'course_name': {'$regex': f'^{re.escape(query)}', '$options': 'i'}}
-        if vendor: mongo_filter['vendor_shortcode'] = {'$regex': f'^{re.escape(vendor)}$', '$options': 'i'}
-        cursor = course_config_collection.find(mongo_filter, {'course_name': 1, '_id': 0}).limit(15)
-        suggestions = [doc['course_name'] for doc in cursor if 'course_name' in doc]
-    except Exception as e:
-        logger.error(f"Error fetching course suggestions: {e}", exc_info=True)
+
+    if query: # If there's a search query (and collection is not None due to above check)
+        try:
+            mongo_filter = {'course_name': {'$regex': f'^{re.escape(query)}', '$options': 'i'}}
+            if vendor:
+                mongo_filter['vendor_shortcode'] = {'$regex': f'^{re.escape(vendor)}$', '$options': 'i'}
+
+            cursor = course_config_collection.find(
+                mongo_filter,
+                {'course_name': 1, '_id': 0}
+            ).sort("course_name", ASCENDING).limit(15)
+
+            suggestions = [doc['course_name'] for doc in cursor if 'course_name' in doc]
+        except PyMongoError as e:
+            logger.error(f"API /courses: DB error fetching course suggestions (query: '{query}', vendor: '{vendor}'): {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"API /courses: Unexpected error fetching course suggestions (query: '{query}', vendor: '{vendor}'): {e}", exc_info=True)
+
+    # Corrected elif block:
+    # This block executes if 'query' is empty, 'vendor' is present,
+    # and 'course_config_collection' is not None (checked at the start).
+    elif not query and vendor:
+        try:
+            mongo_filter = {'vendor_shortcode': {'$regex': f'^{re.escape(vendor)}$', '$options': 'i'}}
+            cursor = course_config_collection.find(
+                mongo_filter,
+                {'course_name': 1, '_id': 0}
+            ).sort("course_name", ASCENDING).limit(50)
+            suggestions = [doc['course_name'] for doc in cursor if 'course_name' in doc]
+        except PyMongoError as e:
+            logger.error(f"API /courses: DB error fetching all courses for vendor '{vendor}': {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"API /courses: Unexpected error fetching all courses for vendor '{vendor}': {e}", exc_info=True)
+    
+    # If no query and no vendor, suggestions will remain an empty list.
+    
     return jsonify(suggestions)
+
+@bp.route('/components') # New endpoint: /api/components
+def api_components():
+    """
+    Returns a list of components for a given course_name.
+    Optionally uses vendor_shortcode for more robust lookup if provided.
+    """
+    course_name = request.args.get('course_name', '').strip()
+    # vendor_shortcode = request.args.get('vendor', '').strip() # Optional
+
+    if not course_name:
+        return jsonify({"error": "course_name parameter is required"}), 400
+
+    components_list = []
+    if course_config_collection is None: # Check if collection is available
+        logger.error("API /components: course_config_collection is None.")
+        return jsonify({"error": "Server configuration error: Course DB unavailable."}), 500
+
+    try:
+        # fetch_and_prepare_course_config expects course_name as primary identifier
+        config = fetch_and_prepare_course_config(course_name)
+        if config:
+            components_list = extract_components(config)
+            logger.debug(f"API /components: Found {len(components_list)} components for course '{course_name}'.")
+        else:
+            # This case should be handled by ValueError in fetch_and_prepare if not found
+            logger.warning(f"API /components: No configuration found for course '{course_name}'.")
+            return jsonify([]) # Return empty list if course config not found
+
+    except ValueError as ve: # Catch "not found" from fetch_and_prepare_course_config
+        logger.warning(f"API /components: Configuration error for course '{course_name}': {ve}")
+        return jsonify([]) # Return empty list
+    except PyMongoError as e_mongo:
+        logger.error(f"API /components: Database error fetching components for '{course_name}': {e_mongo}", exc_info=True)
+        return jsonify({"error": "Database error"}), 500
+    except Exception as e:
+        logger.error(f"API /components: Unexpected error fetching components for '{course_name}': {e}", exc_info=True)
+        return jsonify({"error": "Internal server error"}), 500
+    
+    return jsonify(components_list)
 
 
 @bp.route('/v1/labbuild', methods=['POST']) # Route becomes /api/v1/labbuild

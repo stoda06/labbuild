@@ -88,16 +88,17 @@
         .allocation-table .text-center { text-align: center; }
         .allocation-table .text-end { text-align: right; }
         .col-checkbox { width: 45px; text-align: center; } 
-        .col-tag { min-width: 150px; max-width: 200px;}
+        .col-tag { min-width: 130px; max-width: 180px;} /* Adjusted width */
         .col-vendor { width: 60px; }
+        .col-course { min-width: 150px; max-width: 220px;} /* Adjusted width */
+        .col-date { width: 100px; } /* New class for date columns */
         .col-type { width: 80px; }
         .col-number { 
             width: 100px; 
             text-align: center; 
             white-space: normal; 
         }
-        .col-course { min-width: 160px; max-width: 250px;}
-        .col-host { min-width: 130px; max-width: 180px;}
+        .col-host { min-width: 120px; max-width: 160px;} /* Adjusted width */
         .col-status { width: 85px; text-align: center; white-space: nowrap;}
         .col-actions { min-width: 160px; white-space: nowrap; }
 
@@ -182,24 +183,26 @@
           {%- else -%}
               , Total Tags: {{ total_display_count }}, Total Items: {{ total_items_overall }}
           {%- endif -%})
-      {% else %} {# Fallback to original row-based count display if pagination_by_tags is false or not set #}
+      {% else %} 
           {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
-              (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }}) {# Original variable was total_data_items #}
+              (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }}) 
           {% else %}
-              (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }}) {# Original variable was total_data_items #}
+              (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }}) 
           {% endif %}
       {% endif %}
   </div>
   <div class="card-body p-0">
     {% if allocation_list %}
       <div class="table-responsive">
-        <table class="table table-sm table-hover mb-0 allocation-table" id="allocationsTable"> {# Removed table-striped #}
+        <table class="table table-sm table-hover mb-0 allocation-table" id="allocationsTable"> 
           <thead class="table-light">
             <tr>
               <th class="col-checkbox"><input type="checkbox" class="form-check-input" id="selectAllAllocationsCheckbox" title="Select/Deselect All Visible"></th>
               <th class="col-tag">Tag</th>
               <th class="col-vendor">Vendor</th>
               <th class="col-course">Course Name</th>
+              <th class="col-date">Start Date</th> {# New Column #}
+              <th class="col-date">End Date</th>   {# New Column #}
               <th class="col-type">Type</th>
               <th class="col-number">Number / Contained Pods</th>
               <th class="col-host">Host</th>
@@ -208,13 +211,12 @@
             </tr>
           </thead>
           <tbody>
-            {# --- Jinja Logic for Alternating Tag Group Shading --- #}
             {% set current_tag_for_shade = '' %}
-            {% set shade_index = 0 %} {# 0 for even shade, 1 for odd shade #}
+            {% set shade_index = 0 %} 
             {% for item in allocation_list %}
               {% if item.tag != current_tag_for_shade %}
                 {% set current_tag_for_shade = item.tag %}
-                {% set shade_index = 1 - shade_index %} {# Toggle shade index for new tag group #}
+                {% set shade_index = 1 - shade_index %} 
               {% endif %}
               {% set row_shade_class = 'tag-group-shade-' ~ shade_index %}
 
@@ -239,6 +241,16 @@
                 
                 <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A' }}</td>
                 <td class="col-course" title="{{ item.course_name }}">{{ item.course_name }}</td>
+                <td class="col-date">
+                    <span class="local-datetime" data-timestamp="{{ item.course_start_date_iso }}">
+                        {{ item.course_start_date }}
+                    </span>
+                </td>
+                <td class="col-date">
+                    <span class="local-datetime" data-timestamp="{{ item.course_end_date_iso }}">
+                        {{ item.course_end_date }}
+                    </span>
+                </td>
                 <td class="col-type">
                     {% if item.type == 'f5_class' %}<span class="badge bg-info text-dark" title="F5 Class">F5 Cls</span>
                     {% elif item.type == 'pod' %}<span class="badge bg-secondary" title="Pod">Pod</span>
@@ -511,7 +523,10 @@
       });
 
       updateBulkActionsBarVisibility(); 
-      if (typeof updateLocalTimes === "function") { updateLocalTimes(); }
+      // Ensure local times are updated after initial render and any dynamic updates
+      if (typeof updateLocalTimes === "function") { 
+          updateLocalTimes(); 
+      }
     });
   </script>
 {% endblock %}
