@@ -248,8 +248,19 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
     
     # STEP 2: Create resource pool.
+    if "cliffjumper" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-cl"
+    elif "unicron" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-un"
+    elif "nightbird" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-ni"
+    elif "ultramagnus" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-ul"
+    elif "hotshot" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa"
+        
     group_name = f'pa-pod{pod_config["pod_number"]}'
-    if not ResourcePoolManager(service_instance).create_resource_pool("pa", group_name, host_fqdn=pod_config["host_fqdn"]):
+    if not ResourcePoolManager(service_instance).create_resource_pool(parent_resource_pool, group_name, host_fqdn=pod_config["host_fqdn"]):
         return False, "create_resource_pool", f"Failed creating resource pool {group_name}"
     vmm.logger.info(f'Created resource pool {group_name}')
 

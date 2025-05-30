@@ -135,7 +135,11 @@
   <h1>Current Allocations</h1>
   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
 </div>
-
+<div class="mb-3 text-end">
+    <a href="{{ url_for('actions.export_allocations_excel') }}" class="btn btn-success btn-sm">
+        <i class="fas fa-file-excel"></i> Export to Excel
+    </a>
+</div>
 <div class="card mb-4">
   <div class="card-header">Filter Allocations</div>
   <div class="card-body">

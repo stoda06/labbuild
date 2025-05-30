@@ -5,9 +5,10 @@ import threading
 import datetime
 import pytz
 import re
+import io
 import json
 from flask import (
-    Blueprint, request, redirect, url_for, flash, current_app, jsonify, render_template
+    Blueprint, request, redirect, url_for, flash, current_app, jsonify, render_template, send_file
 )
 from pymongo.errors import PyMongoError, BulkWriteError
 import pymongo
@@ -24,6 +25,9 @@ from ..extensions import (
     course_config_collection,  # For getting memory in build_review
     build_rules_collection
 )
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill, Color
+from openpyxl.utils import get_column_letter
 import math
 from ..utils import (build_args_from_form, parse_command_line, 
                      update_power_state_in_db, get_hosts_available_memory_parallel)
@@ -2586,3 +2590,417 @@ def bulk_db_delete_items():
         
     preserved_filters = {k: v for k, v in request.form.items() if k.startswith('filter_') or k in ['page', 'per_page']}
     return redirect(url_for('main.view_allocations', **preserved_filters))
+
+def set_cell_style(cell, bold: bool = False, italic: bool = False, underline: str = None,
+                   strike: bool = False, font_name: str = 'Calibri', font_size: int = 11,
+                   font_color: str = None,  # Hex ARGB color string e.g., "FF00FF00" for green
+                   alignment_horizontal: str = None, # e.g., 'general', 'left', 'right', 'center', 'justify'
+                   alignment_vertical: str = None,   # e.g., 'top', 'center', 'bottom', 'justify', 'distributed'
+                   wrap_text: bool = None,
+                   shrink_to_fit: bool = None,
+                   indent: int = 0,
+                   text_rotation: int = 0,
+                   border_style: str = None,    # e.g., 'thin', 'medium', 'thick', 'double', 'dotted', 'dashed'
+                   border_color: str = "000000", # Default black
+                   fill_color: str = None,      # Hex ARGB color string e.g., "FFFFFF00" for yellow
+                   number_format: str = None    # e.g., 'General', '0.00', 'mm-dd-yy'
+                   ):
+    """
+    Applies comprehensive styling to an openpyxl cell.
+    Creates new style objects as openpyxl styles are immutable.
+    """
+    # --- Font ---
+    # Start with defaults or existing font properties
+    current_font = cell.font
+    new_font_kwargs = {
+        'name': current_font.name if current_font.name is not None else font_name,
+        'sz': current_font.sz if current_font.sz is not None else font_size,
+        'bold': current_font.bold if bold is None else bold,
+        'italic': current_font.italic if italic is None else italic,
+        'underline': current_font.underline if underline is None else underline,
+        'strike': current_font.strike if strike is None else strike,
+        'color': current_font.color if font_color is None else (Color(font_color) if isinstance(font_color, str) else font_color)
+        # Copy other font properties if needed like scheme, family, charset, etc.
+        # For simplicity, we'll stick to common ones here.
+    }
+    # Only create a new Font object if there's a reason to (a change or explicit setting)
+    # This check can be more granular if performance is critical for millions of cells.
+    cell.font = Font(**new_font_kwargs)
+
+    # --- Alignment ---
+    if (alignment_horizontal is not None or
+            alignment_vertical is not None or
+            wrap_text is not None or
+            shrink_to_fit is not None or
+            indent != 0 or # Default indent is 0, so any non-zero is a change
+            text_rotation != 0): # Default rotation is 0
+
+        existing_alignment = cell.alignment
+        new_align_kwargs = {}
+
+        # Preserve existing alignment properties if not overridden
+        if existing_alignment:
+            new_align_kwargs.update({
+                'horizontal': existing_alignment.horizontal,
+                'vertical': existing_alignment.vertical,
+                'textRotation': existing_alignment.textRotation, # openpyxl uses textRotation (int)
+                'wrapText': existing_alignment.wrapText,
+                'shrinkToFit': existing_alignment.shrinkToFit,
+                'indent': existing_alignment.indent,
+                'relativeIndent': existing_alignment.relativeIndent,
+                'justifyLastLine': existing_alignment.justifyLastLine,
+                'readingOrder': existing_alignment.readingOrder,
+            })
+
+        # Apply new/overridden values
+        if alignment_horizontal is not None:
+            new_align_kwargs['horizontal'] = alignment_horizontal
+        if alignment_vertical is not None:
+            new_align_kwargs['vertical'] = alignment_vertical
+        if wrap_text is not None:
+            new_align_kwargs['wrapText'] = wrap_text
+        if shrink_to_fit is not None:
+            new_align_kwargs['shrinkToFit'] = shrink_to_fit
+        if indent != 0: # Only set if different from default
+            new_align_kwargs['indent'] = indent
+        if text_rotation != 0: # Only set if different from default
+            new_align_kwargs['textRotation'] = text_rotation
+        
+        cell.alignment = Alignment(**new_align_kwargs)
+
+    # --- Border ---
+    if border_style:
+        side = Side(border_style=border_style, color=border_color)
+        cell.border = Border(left=side, right=side, top=side, bottom=side)
+
+    # --- Fill ---
+    if fill_color:
+        cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+
+    # --- Number Format ---
+    if number_format:
+        cell.number_format = number_format
+
+def get_host_shortname(hostname_fqdn_or_short: str) -> str:
+    """Returns a standardized short host name (ni, cl, ul, un, ho, k2) or original if not matched."""
+    if not hostname_fqdn_or_short:
+        return "N/A"
+    
+    hn_lower = hostname_fqdn_or_short.lower()
+    
+    if "nightbird" in hn_lower or hn_lower == "ni": return "Ni"
+    if "cliffjumper" in hn_lower or hn_lower == "cl": return "Cl"
+    if "ultramagnus" in hn_lower or hn_lower == "ul": return "Ul"
+    if "unicron" in hn_lower or hn_lower == "un": return "Un"
+    if "hotshot" in hn_lower or hn_lower == "ho": return "Ho"
+    if "k2" in hn_lower : return "K2" # Assuming K2 is another short name
+
+    # Fallback to first two letters if it's an FQDN and not recognized
+    if '.' in hn_lower:
+        short = hn_lower.split('.')[0][:2]
+        if short == "ni": return "Ni"
+        # Add other FQDN prefix mappings if needed
+    
+    return hostname_fqdn_or_short # Return original if no specific mapping
+
+@bp.route('/export-allocations-excel')
+def export_allocations_excel():
+    logger.info("Exporting allocations to Excel (New Format)...")
+    if alloc_collection is None or course_config_collection is None or host_collection is None:
+        flash("Database collections unavailable for export.", "danger")
+        return redirect(url_for('main.view_allocations'))
+
+    try:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Allocations"
+
+        # --- 1. RAM Summary Header (as per image) ---
+        ram_summary_data_from_image = [
+            ["RAM Summary", None, None, None], # Merged later
+            [None, "Allocated RAM", "CPU", "HDD"],
+            ["Nightbird", 2000, 2000, 2000],
+            ["Hotshot", 2000, 2000, 2000],
+            ["Cliffjumper", 1200, 1200, 1200],
+            ["Unicron", 1000, 1000, 1000],
+            ["Ultramagnus", 1000, 1000, 1000],
+            ["K2", 1000, 1000, 1000] # Added K2 based on common hosts
+        ]
+        yellow_fill = "FFFF00"
+        for r_idx, r_data in enumerate(ram_summary_data_from_image, start=1):
+            for c_idx, value in enumerate(r_data, start=1):
+                if value is not None:
+                    cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                    is_header_row = r_idx <= 2
+                    set_cell_style(cell, bold=is_header_row, fill_color=yellow_fill, alignment_horizontal="center" if is_header_row or c_idx > 1 else "left")
+        ws.merge_cells('A1:D1')
+        current_row = len(ram_summary_data_from_image) + 2 # Start main table after some space
+
+        # --- Main Table Headers (from image) ---
+        main_headers = [
+            "Course Job Code", "Start Date", "Last Day", "Location", "Trainer Name", "Course Name",
+            "Start/End Pod", None, "Username", "Password", "Class", "Students", "Vendor Pods", "Group",
+            "Version", "Course Version", "RAM", "Virtual Hosts", "Ni", "Cl", "Ul", "Un", "Ho", "K2" # Added K2 here too
+        ] # Col H is for the "->" arrow
+
+        header_fill_color = "ADD8E6" # Light Blue
+        thin_black_border = Border(left=Side(style='thin', color="000000"), 
+                                 right=Side(style='thin', color="000000"), 
+                                 top=Side(style='thin', color="000000"), 
+                                 bottom=Side(style='thin', color="000000"))
+
+        # --- Data Fetching and Processing ---
+        all_alloc_docs = list(alloc_collection.find({}))
+        all_course_configs_list = list(course_config_collection.find({}))
+        course_configs_dict = {cc['course_name']: cc for cc in all_course_configs_list}
+        
+        # Get host locations mapping if available
+        host_locations = {h.get('host_name'): h.get('location', 'Virtual') for h in host_collection.find({}, {"host_name":1, "location":1})}
+
+
+        processed_data_by_vendor = defaultdict(list)
+
+        for tag_doc in all_alloc_docs:
+            tag_name = tag_doc.get("tag", "UNKNOWN_TAG")
+            for course_alloc in tag_doc.get("courses", []):
+                vendor_code = course_alloc.get("vendor", "UN").upper()
+                labbuild_course_name = course_alloc.get("course_name")
+                course_config = course_configs_dict.get(labbuild_course_name, {})
+
+                for pod_detail in course_alloc.get("pod_details", []):
+                    is_trainer_pod = "-TP" in tag_name.upper()
+                    excel_row_data = {
+                        "Course Job Code": tag_name if not is_trainer_pod else tag_name.replace("-TP",""), # Base code for TP
+                        "Start Date": course_alloc.get("start_date", "N/A") if not is_trainer_pod else "",
+                        "Last Day": course_alloc.get("end_date", "N/A") if not is_trainer_pod else "", # Assuming end_date is last day
+                        "Location": host_locations.get(pod_detail.get("host"), "Virtual"),
+                        "Trainer Name": course_alloc.get("trainer_name", "N/A") if not is_trainer_pod else "",
+                        "Course Name": labbuild_course_name if not is_trainer_pod else "Trainer pods",
+                        "Username": course_config.get("student_user", "labcp-X/labpa-X") if not is_trainer_pod else \
+                                    (course_config.get("trainer_user", "labcp-X") if "-TP" in tag_name.upper() else ""),
+                        "Password": course_config.get("student_password", "password") if not is_trainer_pod else \
+                                    (course_config.get("trainer_password", "password") if "-TP" in tag_name.upper() else ""),
+                        "Class": "", "Students": "", "Vendor Pods": "", # To be filled
+                        "Group": course_config.get("group", ""), # From courseconfig
+                        "Version": labbuild_course_name, # Main LabBuild course name
+                        "Course Version": course_config.get("course_version", course_config.get("build#", "")), # Specific build/version
+                        "RAM": 0, # To be calculated
+                        "Virtual Hosts": "", # Representative VM
+                        "Ni": 0, "Cl": 0, "Ul": 0, "Un": 0, "Ho": 0, "K2": 0, # Host RAM allocations
+                        "_host_shortname": get_host_shortname(pod_detail.get("host")), # Internal helper
+                        "_original_host_fqdn": pod_detail.get("host")
+                    }
+
+                    # Determine representative Virtual Host (e.g., first component)
+                    components_list = course_config.get("components", [])
+                    if not components_list and course_config.get("groups"): # F5 structure
+                        for grp in course_config.get("groups",[]): components_list.extend(grp.get("component",[]))
+                    
+                    if components_list:
+                        first_comp = components_list[0]
+                        base_vm_name = first_comp.get("base_vm", first_comp.get("component_name", "N/A"))
+                        excel_row_data["Virtual Hosts"] = base_vm_name
+
+
+                    # Pods, Class, Students calculation
+                    pod_num = pod_detail.get("pod_number")
+                    class_num = pod_detail.get("class_number")
+                    num_student_pods_in_range = 0
+
+                    if vendor_code == "F5" and class_num is not None:
+                        excel_row_data["Class"] = class_num
+                        f5_student_pods = pod_detail.get("pods", [])
+                        if isinstance(f5_student_pods, list):
+                            excel_row_data["Students"] = len(f5_student_pods)
+                            excel_row_data["Vendor Pods"] = ", ".join(sorted([str(p.get("pod_number")) for p in f5_student_pods if p.get("pod_number") is not None]))
+                            num_student_pods_in_range = len(f5_student_pods)
+                        # For F5, "Start/End Pod" in Excel might refer to the class number itself if no student pods, or range of student pods
+                        excel_row_data["Start/End Pod"] = str(class_num) if not f5_student_pods else f"{min(p['pod_number'] for p in f5_student_pods)}-{max(p['pod_number'] for p in f5_student_pods)}"
+
+                    elif pod_num is not None: # Non-F5 or F5 student pod without class context (unlikely from your data)
+                        # The image for PA/CP shows Start/End Pod as a range.
+                        # This pod_detail from currentallocation is often a single pod_number from build.
+                        # We need to infer the original range if this is a student pod.
+                        # For simplicity here, if it's a single pod, Start/End will be the same.
+                        # Your "-TP" logic might override this.
+                        excel_row_data["Start/End Pod"] = f"{pod_num} -> {pod_num}" # Default if range not obvious from this single entry
+                        excel_row_data["Students"] = 1 # Assume 1 student per basic pod_detail entry unless grouped
+                        excel_row_data["Vendor Pods"] = str(pod_num)
+                        num_student_pods_in_range = 1
+                    
+                    # Override Start/End Pod for Trainer Pods (often a different range)
+                    if is_trainer_pod:
+                        # Trainer pods often have a specific range in their tag or pre-defined
+                        # This part needs logic to correctly parse trainer pod ranges from tag or config
+                        # Example: If tag "COURSE-TP-101-102"
+                        tp_range_match = re.search(r'-(\d+)-(\d+)$', tag_name)
+                        if tp_range_match:
+                            excel_row_data["Start/End Pod"] = f"{tp_range_match.group(1)} -> {tp_range_match.group(2)}"
+                            excel_row_data["Students"] = int(tp_range_match.group(2)) - int(tp_range_match.group(1)) + 1
+                        else: # Fallback if TP range not in tag
+                            excel_row_data["Start/End Pod"] = f"{pod_num} -> {pod_num}" if pod_num else "N/A"
+                            excel_row_data["Students"] = 1 if pod_num else 0
+                        excel_row_data["Username"] = course_config.get("trainer_user", excel_row_data["Username"])
+                        excel_row_data["Password"] = course_config.get("trainer_password", excel_row_data["Password"])
+
+
+                    # Calculate RAM for this row based on number of "student" pods and host
+                    # This is a complex part based on your image.
+                    # The RAM per host (Ni, Cl, etc.) is shown per *course line item*.
+                    # It's the total RAM for the pods in THAT line item on THAT host.
+                    # If a course like CP Maestro is split (e.g. 2 pods on Unicron, 1 on Hotshot),
+                    # it appears as multiple lines in your Excel for the same "Course Job Code".
+                    
+                    ram_per_pod_from_config = float(course_config.get("memory_gb_per_pod", course_config.get("memory", 0)))
+                    if isinstance(ram_per_pod_from_config, str) : # handle if memory is string
+                        try: ram_per_pod_from_config = float(ram_per_pod_from_config)
+                        except ValueError: ram_per_pod_from_config = 0.0
+                    
+                    calculated_ram_for_row = ram_per_pod_from_config * num_student_pods_in_range if num_student_pods_in_range > 0 else ram_per_pod_from_config # if 0 students, maybe it's a single entity ram
+                    if is_trainer_pod: # Trainer pods might have different RAM or count as 1 entity
+                        calculated_ram_for_row = ram_per_pod_from_config # Assuming trainer pod RAM is per entity
+                        
+                    excel_row_data["RAM"] = calculated_ram_for_row
+                    
+                    host_short_key = excel_row_data["_host_shortname"]
+                    if host_short_key in ["Ni", "Cl", "Ul", "Un", "Ho", "K2"]:
+                        excel_row_data[host_short_key] = calculated_ram_for_row
+                    
+                    processed_data_by_vendor[vendor_code].append(excel_row_data)
+
+        # --- Write to Excel ---
+        # Define vendor order for sheet
+        vendor_display_order = ["PA", "CP", "NU", "F5", "AV", "PR", "OT"] # Add others as needed
+
+        for vendor_code_ordered in vendor_display_order:
+            if vendor_code_ordered not in processed_data_by_vendor:
+                continue
+            
+            vendor_specific_data = processed_data_by_vendor[vendor_code_ordered]
+            if not vendor_specific_data:
+                continue
+
+            # Vendor Section Title (e.g., "PA Courses")
+            title_cell = ws.cell(row=current_row, column=1, value=f"{vendor_code_ordered} Courses")
+            ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(main_headers))
+            set_cell_style(title_cell, bold=True, fill_color=header_fill_color, alignment_horizontal="left", font_size=12)
+            current_row += 1
+
+            # Write Main Headers for this vendor section
+            for col_idx, header_text in enumerate(main_headers, start=1):
+                cell = ws.cell(row=current_row, column=col_idx, value=header_text if header_text is not None else "")
+                set_cell_style(cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center", wrap_text=True, font_size=10)
+            current_row += 1
+            
+            vendor_total_pods_count = 0
+
+            for item_data in vendor_specific_data:
+                col_offset = 0
+                for header_key in main_headers: # Iterate based on header order
+                    if header_key is None: # For the "->" arrow column
+                        ws.cell(row=current_row, column=col_offset + 1, value="->")
+                        set_cell_style(ws.cell(row=current_row, column=col_offset + 1), border_style="thin", alignment_horizontal="center")
+                    elif header_key == "Start/End Pod": # Special handling for combined field
+                         cell_val = item_data.get(header_key, "")
+                         ws.cell(row=current_row, column=col_offset + 1, value=str(cell_val).split(" -> ")[0] if " -> " in str(cell_val) else str(cell_val) ) # Start
+                         set_cell_style(ws.cell(row=current_row, column=col_offset + 1), border_style="thin", alignment_horizontal="center")
+                         # Arrow in next column (which was None in headers)
+                         ws.cell(row=current_row, column=col_offset + 2, value="->")
+                         set_cell_style(ws.cell(row=current_row, column=col_offset + 2), border_style="thin", alignment_horizontal="center")
+                         # End pod value in column after arrow
+                         ws.cell(row=current_row, column=col_offset + 3, value=str(cell_val).split(" -> ")[1] if " -> " in str(cell_val) else "")
+                         set_cell_style(ws.cell(row=current_row, column=col_offset + 3), border_style="thin", alignment_horizontal="center")
+                         col_offset += 1 # Account for the extra column used by "->" and end pod
+                    else:
+                        cell_val = item_data.get(header_key, "")
+                        ws.cell(row=current_row, column=col_offset + 1, value=cell_val)
+                        align_h = "center" if header_key in ["Class", "Students", "Vendor Pods", "RAM", "Ni","Cl","Ul","Un","Ho","K2"] else "left"
+                        set_cell_style(ws.cell(row=current_row, column=col_offset + 1), border_style="thin", alignment_horizontal=align_h, alignment_vertical="top", wrap_text=True)
+                    col_offset += 1
+                current_row += 1
+                
+                # Accumulate pods for vendor total (using "Students" count for now, needs refinement)
+                try: vendor_total_pods_count += int(item_data.get("Students", 0))
+                except ValueError: pass
+
+
+            # Total Pods for Vendor
+            if vendor_specific_data: # Only add total if there was data
+                total_pods_label_cell = ws.cell(row=current_row, column=main_headers.index("Students") + 1 -1, value="Total Pods") # Col before "Students"
+                total_pods_value_cell = ws.cell(row=current_row, column=main_headers.index("Students") + 1, value=vendor_total_pods_count)
+                
+                set_cell_style(total_pods_label_cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="right")
+                set_cell_style(total_pods_value_cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center")
+                
+                # Merge cells for "Total Pods" label across preceding columns
+                label_col_start_merge = 1
+                label_col_end_merge = main_headers.index("Students") + 1 - 2 # Up to column before label
+                if label_col_end_merge >= label_col_start_merge:
+                     ws.merge_cells(start_row=current_row, start_column=label_col_start_merge, end_row=current_row, end_column=label_col_end_merge)
+                     for c_merge in range(label_col_start_merge, label_col_end_merge + 1):
+                        set_cell_style(ws.cell(row=current_row, column=c_merge), fill_color=header_fill_color, border_style="thin")
+                
+                # Style remaining cells in total row
+                ram_col_idx = main_headers.index("RAM") +1
+                host_ram_cols_start_idx = main_headers.index("Ni") + 1
+                
+                # Sum RAM for hosts in this vendor section
+                host_ram_sums = defaultdict(float)
+                for item_d in vendor_specific_data:
+                    for host_s_key in ["Ni", "Cl", "Ul", "Un", "Ho", "K2"]:
+                        try: host_ram_sums[host_s_key] += float(item_d.get(host_s_key, 0))
+                        except ValueError: pass
+                
+                # Write summed host RAM
+                ws.cell(row=current_row, column=ram_col_idx, value=sum(host_ram_sums.values())) # Total RAM column
+                set_cell_style(ws.cell(row=current_row, column=ram_col_idx), bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center")
+
+
+                for i_host_key, host_s_key_val in enumerate(["Ni", "Cl", "Ul", "Un", "Ho", "K2"]):
+                    cell = ws.cell(row=current_row, column=host_ram_cols_start_idx + i_host_key, value=host_ram_sums[host_s_key_val])
+                    set_cell_style(cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center")
+
+                # Style any remaining cells in the total row (e.g. Virtual Hosts)
+                for c_empty_total in range(main_headers.index("Vendor Pods") + 2, ram_col_idx): # Cols between Vendor Pods and RAM
+                    set_cell_style(ws.cell(row=current_row, column=c_empty_total), fill_color=header_fill_color, border_style="thin")
+                for c_empty_total_after in range(host_ram_cols_start_idx + len(["Ni", "Cl", "Ul", "Un", "Ho", "K2"]), len(main_headers) + 1): # After last host RAM col
+                    set_cell_style(ws.cell(row=current_row, column=c_empty_total_after), fill_color=header_fill_color, border_style="thin")
+
+
+                current_row += 1
+            current_row += 2 # Extra space between vendor blocks
+
+        # --- Auto-size columns (basic fit) ---
+        # This is a basic auto-size, might not be perfect for merged cells or very long content.
+        # Set specific widths for better control if needed.
+        column_widths_map = {
+            'A': 20, 'B': 12, 'C': 12, 'D': 15, 'E': 22, 'F': 50, # Course Job Code to Course Name
+            'G': 12, 'H': 3, 'I': 12, # Start/End Pod, Arrow, End Pod, Username
+            'J': 12, 'K': 7, 'L': 7, 'M': 15, # Password, Class, Students, Vendor Pods
+            'N': 25, 'O': 25, 'P': 25, # Group, Version, Course Version
+            'Q': 7, 'R': 30, # RAM, Virtual Hosts
+            'S': 4, 'T': 4, 'U': 4, 'V': 4, 'W': 4, 'X': 4 # Ni, Cl, Ul, Un, Ho, K2
+        }
+        for col_letter, width in column_widths_map.items():
+            ws.column_dimensions[col_letter].width = width
+        # Example for specific columns from your image:
+        # ws.column_dimensions['A'].width = 20 # Course Job Code
+        # ws.column_dimensions['F'].width = 60 # Course Name
+        # ... and so on for all 24 columns ...
+
+        excel_buffer = io.BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+
+        logger.info("Excel export generated successfully (new format).")
+        return send_file(
+            excel_buffer,
+            as_attachment=True,
+            download_name="labbuild_allocations_detailed.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating detailed Excel export: {e}", exc_info=True)
+        flash("Error generating detailed Excel export. Please check server logs.", "danger")
+        return redirect(url_for('main.view_allocations'))
