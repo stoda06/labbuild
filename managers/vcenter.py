@@ -7,34 +7,66 @@ import logging
 logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager') 
 
 class VCenter:
-    def __init__(self, host, user, password, port=443):
+    def __init__(self, host, user, password, port=443, disable_ssl_verification=False): # Add new param
         self.host = host
         self.user = user
         self.password = password
         self.port = port
         self.connection = None
         self.logger = logger
+        self.disable_ssl_verification = disable_ssl_verification # Store it
 
     def connect(self):
-        """Establishes a secure connection to the vCenter server."""
+        """Establishes a connection to the vCenter server."""
         try:
-            # For secure connection, SSL verification is enabled by default
+            ssl_context = None
+            if self.disable_ssl_verification:
+                self.logger.warning(
+                    f"Attempting to connect to vCenter {self.host} with SSL certificate verification DISABLED. "
+                    "This is insecure and should only be used in trusted environments."
+                )
+                # Create an SSL context that does not verify certificates
+                ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT) # Use PROTOCOL_TLS_CLIENT for modern TLS
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+            # else, ssl_context remains None, and SmartConnect uses default verification
+
             self.connection = SmartConnect(host=self.host,
                                            user=self.user,
                                            pwd=self.password,
-                                           port=self.port)
-            atexit.register(Disconnect, self.connection)
-            self.logger.debug("Connected to vCenter server securely.")
-        except ssl.SSLError as ssl_error:
-            self.logger.error(f"SSL Error encountered: {ssl_error}")
-            self.logger.error("Check your SSL certificate or connection settings.")
+                                           port=self.port,
+                                           sslContext=ssl_context) # <--- PASS SSL CONTEXT
+            
+            # Register disconnect only if connection was successful
+            if self.connection:
+                atexit.register(Disconnect, self.connection)
+                self.logger.info(f"Successfully connected to vCenter server: {self.host}") # Changed to info
+            else:
+                # This case should ideally be caught by SmartConnect raising an exception
+                self.logger.error(f"SmartConnect returned None for vCenter: {self.host}. Connection failed.")
+
+
+        except ssl.SSLCertVerificationError as ssl_verify_error:
+            self.logger.error(
+                f"SSL Certificate Verification Error connecting to vCenter {self.host}: {ssl_verify_error}. "
+                "Consider using disable_ssl_verification=True if this is a trusted environment with a self-signed certificate, "
+                "or ensure the vCenter certificate is trusted by the system."
+            )
+            self.connection = None
+        except vim.fault.InvalidLogin as e:
+            self.logger.error(f"Invalid login credentials for vCenter {self.host}: {e.msg}")
+            self.connection = None
+        except ConnectionRefusedError as e:
+            self.logger.error(f"Connection refused by vCenter {self.host}:{self.port}. Ensure vCenter is reachable and the service is running. Error: {e}")
+            self.connection = None
         except Exception as e:
-            self.logger.error(f"Failed to connect to vCenter: {e}")
+            self.logger.error(f"Failed to connect to vCenter {self.host}: {e}", exc_info=True) # Log full traceback for unexpected errors
             self.connection = None
     
     def is_connected(self):
         """Checks if the service instance is connected."""
-        return self.connection is not None
+        # A more robust check might involve a quick API call if connection can go stale
+        return self.connection is not None and self.connection.content.sessionManager.currentSession is not None
 
     def get_content(self):
         """Retrieves the root folder from vCenter."""

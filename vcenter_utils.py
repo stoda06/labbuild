@@ -15,6 +15,13 @@ logger = logging.getLogger('labbuild.vcenter')
 
 VC_USER = os.getenv("VC_USER")
 VC_PASS = os.getenv("VC_PASS")
+VC_DISABLE_SSL_VERIFY = os.getenv("VC_DISABLE_SSL_VERIFY", "False").lower() in ('true', '1', 't')
+
+if VC_DISABLE_SSL_VERIFY:
+    logger.warning(
+        "VCENTER SSL CERTIFICATE VERIFICATION IS GLOBALLY DISABLED VIA VC_DISABLE_SSL_VERIFY ENV VAR. "
+        "THIS IS INSECURE AND SHOULD ONLY BE USED IN TRUSTED DEVELOPMENT/LAB ENVIRONMENTS."
+    )
 
 def get_vcenter_instance(host_details: Dict[str, Any]) -> Optional[VCenter]:
     """Create and connect a VCenter service instance."""
@@ -27,14 +34,23 @@ def get_vcenter_instance(host_details: Dict[str, Any]) -> Optional[VCenter]:
         return None
 
     try:
-        service_instance = VCenter(vc_host, VC_USER, VC_PASS, 443)
-        service_instance.connect() # connect() method handles logging
+        # Pass the global disable_ssl_verification flag to the VCenter constructor
+        service_instance = VCenter(
+            vc_host,
+            VC_USER,
+            VC_PASS,
+            port=443, # Default port
+            disable_ssl_verification=VC_DISABLE_SSL_VERIFY # Pass the flag
+        )
+        service_instance.connect() 
+        
         if not service_instance.is_connected():
-             # Error already logged by connect() or is_connected() potentially
+             # Error already logged by VCenter.connect()
+             logger.error(f"get_vcenter_instance: Failed to establish connection object for {vc_host}")
              return None
-        # logger.info(f"Successfully connected to vCenter: {vc_host}") # connect() logs this
+        # logger.info(f"Successfully created VCenter instance for: {vc_host}") # VCenter.connect() logs success
         return service_instance
     except Exception as e:
-        # Error should have been logged by VCenter.connect()
-        # logger.error(f"Error connecting to vCenter {vc_host}: {e}", exc_info=True)
+        # VCenter.connect() should log its own errors.
+        logger.error(f"get_vcenter_instance: Unexpected error creating VCenter instance for {vc_host}: {e}", exc_info=True)
         return None
