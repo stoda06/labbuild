@@ -23,7 +23,8 @@
     {# Course Input - JS will enhance this #}
     <div class="col-md-4 mb-3 position-relative"> {# Added position-relative for custom dropdown #}
         <label for="course" class="form-label">Course <span class="text-danger">*</span></label>
-        <input type="text" class="form-control" id="course" name="course" placeholder="Type or select..." required list="course-suggestions-datalist" autocomplete="off">
+        <input type="text" class="form-control" id="course" name="course" placeholder="Type or select..." required
+            list="course-suggestions-datalist" autocomplete="off">
         <datalist id="course-suggestions-datalist"></datalist>
         <div id="customCourseDropdown" class="dropdown-menu w-100" style="max-height: 200px; overflow-y: auto;">
             {# Suggestions will be populated here by JS #}
@@ -66,20 +67,29 @@
         </select>
         <div class="form-text text-muted">Required for Manage command.</div>
     </div>
-    
+
     {# Component Field - To be replaced/enhanced by JS dropdown with checkboxes #}
     <div class="col-md-4 mb-3" id="componentWrapper">
         <label for="component" class="form-label">Component(s)</label>
         <div class="dropdown">
-            <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start" type="button" id="componentDropdownBtn" data-bs-toggle="dropdown" aria-expanded="false" data-bs-auto-close="outside">
+            <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start" type="button"
+                id="componentDropdownBtn" data-bs-toggle="dropdown" aria-expanded="false" data-bs-auto-close="outside">
                 Select Components...
             </button>
-            <div class="dropdown-menu w-100 p-2" aria-labelledby="componentDropdownBtn" id="componentChecklist" style="max-height: 250px; overflow-y: auto;">
+            <div class="dropdown-menu w-100 p-2" aria-labelledby="componentDropdownBtn" id="componentChecklist"
+                style="max-height: 250px; overflow-y: auto;">
                 {# Checkboxes will be populated by JS #}
                 <div class="text-muted p-2" id="componentLoadingMsg">Enter a course to see components.</div>
             </div>
         </div>
-        <input type="text" class="form-control mt-1" id="component" name="component" placeholder="Or type '?' to list via CLI" readonly>
-         <div class="form-text text-muted">Select from dropdown or use '?' to list via CLI.</div>
+        <input type="text" class="form-control mt-1" id="component" name="component"
+            placeholder="Or type '?' to list via CLI" readonly>
+        <div class="form-text text-muted">Select from dropdown or use '?' to list via CLI.</div>
+    </div>
+
+    <div class="col-md-4 mb-3">
+        <label for="tag" class="form-label">Tag</label>
+        <input type="text" class="form-control" id="tag" name="tag" value="dashboard">
+        <div class="form-text text-muted">Optional tag for grouping.</div> {# Added form text #}
     </div>
 </div>
