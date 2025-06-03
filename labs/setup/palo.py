@@ -353,6 +353,8 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
             resource_pool = component["component_name"] + "-ul"
         elif host_prefix == "unicron":
             resource_pool = component["component_name"] + "-un"
+        elif host_prefix == "hotshot":
+            resource_pool = component["component_name"] + "-ho"
         else:
             resource_pool = component["component_name"]
 
