@@ -363,7 +363,9 @@ def vendor_setup(
                     pod_config_vendor = fetch_and_prepare_course_config(course_name, pod=pod)
                     pod_config_vendor.update({
                         "host_fqdn": host_details["fqdn"], "pod_number": pod,
-                        "vendor_shortcode": vendor_shortcode
+                        "vendor_shortcode": vendor_shortcode,
+                        "start_pod": start_pod,
+                        "end_pod": end_pod
                     })
                     course_name_lower = pod_config_vendor.get("course_name", "").lower()
                     pod_configs_map[pod_id_str] = pod_config_vendor # Store config
