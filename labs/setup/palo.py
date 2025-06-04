@@ -323,8 +323,10 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
 def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
+    folder_mgr = FolderManager(service_instance)
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
+    target_folder_name = f'pa-cortex-folder'
     
     # Optionally filter components.
     components_to_build = pod_config["components"]
@@ -339,6 +341,10 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         solved_port_groups = solve_vlan_id(network["port_groups"])
         if not network_manager.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
+    
+    logger.info(f"Ensuring folder '{target_folder_name}' for pod {pod}.")
+    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name): # Parent folder is vendor code
+        return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
     
     # STEP 2: Clone/configure each component.
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm"):
@@ -365,10 +371,10 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         if not full:
             if not vm_manager.snapshot_exists(component["base_vm"], "base") and not vm_manager.create_snapshot(component["base_vm"], "base", "Base snapshot"):
                 return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
-            if not vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool):
+            if not vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool, directory_name=target_folder_name):
                 return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
         else:
-            if not vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool):
+            if not vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool, directory_name=target_folder_name):
                 return False, "clone_vm", f"Failed cloning VM for {component['clone_name']}"
         
         # STEP 3: Update VM network, connect networks and create snapshot.
