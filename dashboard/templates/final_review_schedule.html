@@ -5,47 +5,10 @@
 
 {% block head %}
     {{ super() }}
-    <style>
-        .review-table th, .review-table td { 
-            font-size: 0.85rem; 
-            vertical-align: middle; 
-        }
-        .review-table td ul {
-            padding-left: 1.2em;
-            margin-bottom: 0;
-            list-style-type: none;
-        }
-        .review-table td ul li {
-            font-size: 0.9em;
-            margin-bottom: 0.2em;
-        }
-        .col-type { width: 140px; } /* Wider for "Scheduled for Teardown" */
-        .col-sf-code { width: 150px; }
-        .col-lb-course { width: 180px; }
-        .col-vendor { width: 60px; text-align: center; }
-        .col-start-date { width: 110px; }
-        .col-assignments { min-width: 280px; }
-        .col-status-note { min-width: 180px; font-style: italic; }
-
-        /* Specific colors for notes based on type */
-        .status-note-build-warning { color: var(--bs-warning); }
-        body.dark-mode .status-note-build-warning { color: var(--status-warning-dark-text); }
-        .status-note-extended { color: var(--bs-success); }
-        body.dark-mode .status-note-extended { color: var(--status-success-dark-text); }
-        .status-note-teardown { color: var(--bs-danger); } /* For teardown notes */
-        body.dark-mode .status-note-teardown { color: var(--status-failed-dark-text); } /* For teardown notes */
-
-
-        /* Sortable header styles (if client-side sorting is re-enabled, otherwise can be simplified) */
-        .sortable-header { cursor: pointer; }
-        .sortable-header .sort-icon { color: #ccc; margin-left: 5px; font-size: 0.8em; }
-        .sortable-header.sort-asc .sort-icon::before { content: "\\f0de"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
-        .sortable-header.sort-desc .sort-icon::before { content: "\\f0dd"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
-        body.dark-mode .sortable-header .sort-icon { color: #666; }
-        body.dark-mode .sortable-header.sort-asc .sort-icon,
-        body.dark-mode .sortable-header.sort-desc .sort-icon { color: #eee; }
-    </style>
+    {# Link to the dedicated CSS file for this page #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/final_review_schedule.css') }}">
 {% endblock %}
+
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -74,7 +37,6 @@
             <table class="table table-sm table-striped table-bordered review-table" id="finalReviewTable">
                 <thead class="table-light">
                     <tr>
-                        {# Headers are no longer 'sortable-header' if client-side sort is removed, but keep data attributes for potential future JS use #}
                         <th class="col-type" data-column="type" data-type="string">Type <span class="sort-icon fas fa-sort"></span></th>
                         <th class="col-sf-code" data-column="sf_course_code" data-type="string">SF Course Code <span class="sort-icon fas fa-sort"></span></th>
                         <th class="col-lb-course" data-column="labbuild_course" data-type="string">LabBuild Course <span class="sort-icon fas fa-sort"></span></th>
@@ -102,7 +64,6 @@
                         <td class="col-start-date">
                             {% set date_to_display = item.start_date %}
                             {% if date_to_display and date_to_display != "N/A" and date_to_display != "Ongoing (Extended)" %}
-                                {# Attempt to create a valid ISO string part for data-timestamp if YYYY-MM-DD #}
                                 {% set timestamp_attr_val = '' %}
                                 {% if date_to_display and date_to_display.count('-') == 2 %}
                                     {% set timestamp_attr_val = date_to_display ~ 'T00:00:00Z' %}
@@ -149,14 +110,25 @@
             </table>
         </div>
 
-        <div class="mt-4">
+        {# --- EMAIL MODAL BUTTON --- #}
+        {% if all_items_for_review %}
+        <div class="mt-4 mb-3 pt-3">
+            <button type="button" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#emailTrainersModal">
+                <i class="fas fa-envelope"></i> Prepare & Send Emails to Trainers
+            </button>
+        </div>
+        {% endif %}
+        {# --- END EMAIL MODAL BUTTON --- #}
+
+
+        <div class="mt-4 border-top pt-3"> {# Added border-top and pt-3 for separation #}
             <form action="{{ url_for('actions.execute_scheduled_builds') }}" method="POST" id="executeBuildsForm">
                  <input type="hidden" name="confirmed_build_plan_data" id="confirmedBuildPlanInput" 
                         value="{{ buildable_items_json | default('[]') | escape }}">
                  <input type="hidden" name="confirmed_teardown_plan_data" id="confirmedTeardownPlanInput"
                         value="{{ teardownable_items_json | default('[]') | escape }}">
                  <input type="hidden" name="batch_review_id" value="{{ batch_review_id or '' }}">
-                 {# --- NEW: Teardown Option --- #}
+                 
                  <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="perform_teardown_first" name="perform_teardown_first" value="yes">
                     <label class="form-check-label" for="perform_teardown_first">
@@ -164,10 +136,9 @@
                     </label>
                     <small class="form-text d-block text-muted">
                         If checked, a 'teardown' command will be scheduled to run before each 'setup' command for new builds. 
-                        This is useful for ensuring a clean environment. 'Extended' items are not affected by this.
+                        'Extended' items are not affected.
                     </small>
                  </div>
-                 {# --- END NEW --- #}
                  
                  <div class="row align-items-end">
                     <div class="mb-3">
@@ -197,7 +168,7 @@
                  </div>
 
                  <button type="submit" class="btn btn-lg btn-success mt-3" 
-                         title="This will schedule TEARDOWNS first, then SETUP commands based on selected option.">
+                         title="This will schedule TEARDOWNS first (if checked), then SETUP commands based on selected option.">
                      <i class="fas fa-calendar-check"></i> Confirm & Schedule All Operations
                  </button>
             </form>
@@ -212,99 +183,36 @@
     {% endif %}
   </div> 
 </div> 
+
+{# --- Email Trainers Modal (already defined in previous step) --- #}
+<div class="modal fade" id="emailTrainersModal" tabindex="-1" aria-labelledby="emailTrainersModalLabel" aria-hidden="true" data-send-email-url="{{ url_for('actions.send_trainer_email') }}">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="emailTrainersModalLabel">Trainer Email Allocations</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="trainerEmailsContainer">
+        <p class="text-muted">Generating email previews...</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{# --- END Email Trainers Modal --- #}
+
+
+{# --- Embed all_review_items_json for JS (already defined in previous step) --- #}
+<script id="allReviewItemsJsonData" type="application/json">
+    {{ all_items_for_review | tojson | safe }}
+</script>
+
 {% endblock %}
 
 {% block scripts %}
     {{ super() }}
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        // JavaScript for toggling scheduling option details
-        const scheduleOptionSelect = document.getElementById('schedule_option_select');
-        const specificTimeAllDiv = document.getElementById('specific_time_all_details');
-        const specificTimeAllInput = document.getElementById('schedule_start_time_all');
-        const staggeredDiv = document.getElementById('staggered_details');
-        const staggeredTimeInput = document.getElementById('schedule_start_time_staggered');
-        const staggeredMinutesInput = document.getElementById('schedule_stagger_minutes');
-
-
-        function toggleScheduleDetailVisibility() {
-            if (!scheduleOptionSelect || !specificTimeAllDiv || !staggeredDiv) {
-                return;
-            }
-            const selectedValue = scheduleOptionSelect.value;
-            specificTimeAllDiv.style.display = 'none';
-            staggeredDiv.style.display = 'none';
-
-            // Manage 'required' attribute for HTML5 form validation
-            if (specificTimeAllInput) {
-                specificTimeAllInput.required = (selectedValue === 'specific_time_all');
-                if (selectedValue !== 'specific_time_all') specificTimeAllInput.value = ''; 
-            }
-            if (staggeredTimeInput) {
-                staggeredTimeInput.required = (selectedValue === 'staggered');
-                if (selectedValue !== 'staggered') staggeredTimeInput.value = '';
-            }
-            if (staggeredMinutesInput) {
-                 staggeredMinutesInput.required = (selectedValue === 'staggered');
-                 if (selectedValue !== 'staggered') staggeredMinutesInput.value = '30'; // Reset to default
-            }
-
-            if (selectedValue === 'specific_time_all') {
-                specificTimeAllDiv.style.display = 'block';
-            } else if (selectedValue === 'staggered') {
-                staggeredDiv.style.display = 'block';
-            }
-        }
-
-        if(scheduleOptionSelect) {
-            scheduleOptionSelect.addEventListener('change', toggleScheduleDetailVisibility);
-            toggleScheduleDetailVisibility(); // Initial call
-        }
-
-        if (typeof updateLocalTimes === "function") {
-            updateLocalTimes(); // From base.html to format dates
-        }
-
-        const executeForm = document.getElementById('executeBuildsForm');
-        if (executeForm) {
-            executeForm.addEventListener('submit', function(event) {
-                const buildPlanInput = document.getElementById('confirmedBuildPlanInput');
-                const teardownPlanInput = document.getElementById('confirmedTeardownPlanInput');
-                let buildableItemsCount = 0;
-                let teardownableItemsCount = 0;
-
-                try {
-                    if (buildPlanInput && buildPlanInput.value) {
-                        buildableItemsCount = JSON.parse(buildPlanInput.value).length;
-                    }
-                    if (teardownPlanInput && teardownPlanInput.value) {
-                        teardownableItemsCount = JSON.parse(teardownPlanInput.value).length;
-                    }
-                } catch (e) {
-                    console.error("Error parsing plan data on submit:", e);
-                    // Don't prevent submit, let backend handle potentially corrupt data
-                }
-
-                if (buildableItemsCount === 0 && teardownableItemsCount === 0) {
-                    // This check relies on Python passing '[]' if empty, not null or undefined.
-                    const tableBody = document.getElementById('finalReviewTableBody');
-                    const hasAnyRenderedItems = tableBody && tableBody.rows.length > 0 && 
-                                              (tableBody.rows[0].cells.length > 1 || 
-                                               !/No items to display|No items found/i.test(tableBody.rows[0].cells[0].textContent));
-
-                    if(hasAnyRenderedItems) { // Items were displayed, but none are actionable (e.g., all 'Extended')
-                        alert("No new builds or explicit teardowns to schedule. Plan may only contain 'Keep Running' items.");
-                        // Allow submission if this is a valid state (e.g., to log the review)
-                        // event.preventDefault(); 
-                    } else { // No items were even on the review page
-                        alert("No items in the plan to schedule.");
-                        event.preventDefault();
-                    }
-                    return;
-                }
-                console.log("Submitting build and/or teardown plans...");
-            });
-        }
-    });
-    </script>
+    {# Link to the dedicated JS file for this page #}
+    <script src="{{ url_for('static', filename='js/final_review_schedule.js') }}" defer></script>
 {% endblock %}

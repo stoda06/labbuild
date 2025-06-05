@@ -12,6 +12,7 @@ LOG_COLLECTION = "logs" # Standard detailed logs from MongoLogHandler
 COURSE_MAPPING_RULES_COLLECTION = "course_mapping_rules"
 INTERIM_ALLOCATION_COLLECTION = "interimallocation"
 BUILD_RULES_COLLECTION = "build_rules"
+TRAINER_EMAIL_COLLECTION = "trainer_emails"
 SUBSEQUENT_POD_MEMORY_FACTOR = 0.5
 # Add other constants here if needed, e.g.:
 # DEFAULT_TAG = "untagged"
