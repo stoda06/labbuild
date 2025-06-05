@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const trainerEmailsContainer = document.getElementById('trainerEmailsContainer');
     const allReviewItemsJsonDataEl = document.getElementById('allReviewItemsJsonData');
     let allReviewItemsDataForEmail = [];
-    let sendEmailUrl = ''; // Will be populated from data attribute
+    let sendEmailUrl = '';
 
     if (emailTrainersModalEl) {
         sendEmailUrl = emailTrainersModalEl.dataset.sendEmailUrl;
@@ -82,7 +82,6 @@ document.addEventListener('DOMContentLoaded', function() {
     } else {
         console.warn("Email Modal JS: Modal element #emailTrainersModal not found.");
     }
-
 
     if (allReviewItemsJsonDataEl && allReviewItemsJsonDataEl.textContent) {
         try {
@@ -162,7 +161,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
         emailsDataGrouped.forEach((coursesBySfCodeMap, trainerName) => {
             coursesBySfCodeMap.forEach((courseItemsForThisSfCode, sfCodeForEmail) => {
-                const firstItemForDisplay = courseItemsForThisSfCode[0];
                 const emailItemId = `email-${trainerName.replace(/\s+/g, '_')}-${sfCodeForEmail.replace(/\W/g, '')}`;
                 let emailSectionTitle = `To: ${trainerName} (for SF Course: ${sfCodeForEmail})`;
 
@@ -234,7 +232,7 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         });
 
-        trainerEmailsContainer.innerHTML = allEmailsHtml || '<p class="text-info">No student courses with trainers found.</p>';
+        trainerEmailsContainer.innerHTML = allEmailsHtml || '<p class="text-info">No student courses with trainers assigned.</p>';
 
         document.querySelectorAll('.email-body-iframe').forEach(iframe => {
             const initialHtml = iframe.dataset.initialHtml;
@@ -267,7 +265,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     trainer_name: trainerName,
                     edited_subject: subject,
                     edited_html_body: htmlBody,
-                    course_item_to_email: courseItemsForPayloadList // Changed from correspondingCourseItem
+                    course_item_to_email: courseItemsForPayloadList
                 })
             });
             const contentType = response.headers.get("content-type");
@@ -330,9 +328,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const originalButtonHtml = this.innerHTML;
                 this.disabled = true; this.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sending...';
-                // Pass the list of items for this specific email
                 const sendResult = await sendSingleEmailLogic(trainerName, emailItemId, subject, htmlBody, courseItemsPayloadForThisEmail);
-
+                
                 if (sendResult.success) {
                     this.classList.remove('btn-primary'); this.classList.add('btn-success');
                     this.innerHTML = '<i class="fas fa-check"></i> Sent!';
@@ -366,7 +363,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     const subjectInput = document.getElementById(`${emailItemId}-subject`);
                     const iframe = document.getElementById(`${emailItemId}-body-iframe`);
                     if (!subjectInput || !iframe || !iframe.contentWindow) { failCount++; console.warn(`Skipping ${emailItemId}: missing elements.`); continue; }
-
+                    
                     const courseItemsPayloadForThisEmailAll = allReviewItemsDataForEmail.filter(item =>
                         item.type === "Student Build" &&
                         item.sf_trainer_name === trainerName &&
@@ -383,5 +380,94 @@ document.addEventListener('DOMContentLoaded', function() {
                 alert(`Bulk send attempt complete. Success: ${successCount}, Failed: ${failCount}.`);
             });
         }
+    } // End addEmailActionListenersForEach
+
+
+    // --- APM Commands Modal JavaScript ---
+    const generateApmCommandsBtn = document.getElementById('generateApmCommandsBtn');
+    const apmLoadingIndicator = document.getElementById('apmLoadingIndicator');
+    const apmCommandsModalEl = document.getElementById('apmCommandsModal');
+    const apmCommandsModalBody = document.getElementById('apmCommandsModalBody');
+    const copyApmCommandsBtn = document.getElementById('copyApmCommandsBtn');
+    let apmModalInstance = null;
+    let apmCommandsUrl = '';
+
+    if (generateApmCommandsBtn) {
+        apmCommandsUrl = generateApmCommandsBtn.dataset.apmCommandsUrl;
+        if (!apmCommandsUrl) {
+            console.error("APM Commands JS: URL not found in button data attribute.");
+            generateApmCommandsBtn.disabled = true;
+        }
+    }
+
+    if (apmCommandsModalEl) {
+        apmModalInstance = new bootstrap.Modal(apmCommandsModalEl);
+    }
+
+    if (generateApmCommandsBtn) {
+        generateApmCommandsBtn.addEventListener('click', async function() {
+            if (!apmCommandsUrl) {
+                alert("Cannot generate APM commands: Client configuration error (URL missing).");
+                if (apmCommandsModalBody) apmCommandsModalBody.innerHTML = '<p class="text-danger">Error: Client configuration error (URL missing).</p>';
+                if (apmModalInstance) apmModalInstance.show();
+                return;
+            }
+
+            if (apmLoadingIndicator) apmLoadingIndicator.style.display = 'inline-block';
+            this.disabled = true;
+            if (apmCommandsModalBody) apmCommandsModalBody.innerHTML = '<p class="text-center"><span class="spinner-border spinner-border-sm"></span> Generating APM commands...</p>';
+            if (apmModalInstance) apmModalInstance.show();
+
+            const batchReviewIdInput = document.querySelector('#executeBuildsForm input[name="batch_review_id"]');
+            if (!batchReviewIdInput || !batchReviewIdInput.value) {
+                if (apmCommandsModalBody) apmCommandsModalBody.innerHTML = '<p class="text-danger">Error: Batch Review ID not found.</p>';
+                if (apmLoadingIndicator) apmLoadingIndicator.style.display = 'none';
+                this.disabled = false;
+                return;
+            }
+            const batchId = batchReviewIdInput.value;
+
+            try {
+                const response = await fetch(apmCommandsUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ batch_review_id: batchId })
+                });
+
+                if (!response.ok) {
+                    let errorMsg = `Server error: ${response.status} ${response.statusText}`;
+                    try { const errData = await response.json(); errorMsg = errData.error || errData.message || errorMsg; }
+                    catch (e) { const textError = await response.text(); errorMsg = textError || errorMsg; }
+                    throw new Error(errorMsg);
+                }
+                const data = await response.json();
+                if (apmCommandsModalBody) {
+                    if (data.commands && data.commands.length > 0) {
+                        const pre = document.createElement('pre'); pre.textContent = data.commands.join('\n');
+                        apmCommandsModalBody.innerHTML = ''; apmCommandsModalBody.appendChild(pre);
+                    } else { apmCommandsModalBody.innerHTML = `<p class="text-info">${data.message || 'No APM commands generated.'}</p>`; }
+                    if (data.error && data.message && data.commands && data.commands.length > 0 && data.commands[0].startsWith("# Errors occurred")) {}
+                    else if (data.error && data.message) { const eDiv = document.createElement('div'); eDiv.className='alert alert-warning mt-2'; eDiv.textContent=data.message; apmCommandsModalBody.appendChild(eDiv); }
+                }
+            } catch (error) {
+                console.error("Error generating APM commands:", error);
+                if (apmCommandsModalBody) apmCommandsModalBody.innerHTML = `<p class="text-danger">Failed to generate APM commands: ${error.message}</p>`;
+            } finally {
+                if (apmLoadingIndicator) apmLoadingIndicator.style.display = 'none';
+                this.disabled = false;
+            }
+        });
+    }
+
+    if (copyApmCommandsBtn && apmCommandsModalBody) {
+        copyApmCommandsBtn.addEventListener('click', function() {
+            const preElement = apmCommandsModalBody.querySelector('pre');
+            if (preElement && preElement.textContent) {
+                navigator.clipboard.writeText(preElement.textContent).then(() => {
+                    this.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                    setTimeout(() => { this.innerHTML = '<i class="fas fa-copy"></i> Copy All Commands'; }, 2000);
+                }).catch(err => { console.error('Failed to copy APM commands: ', err); alert('Failed to copy commands.'); });
+            } else { alert('No commands to copy.'); }
+        });
     }
 });

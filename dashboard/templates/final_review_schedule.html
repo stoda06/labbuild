@@ -116,6 +116,12 @@
             <button type="button" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#emailTrainersModal">
                 <i class="fas fa-envelope"></i> Prepare & Send Emails to Trainers
             </button>
+            {# --- NEW: Generate APM Commands Button --- #}
+            <button type="button" class="btn btn-warning me-2" id="generateApmCommandsBtn" data-apm-commands-url="{{ url_for('actions.generate_apm_commands_route') }}">
+                <i class="fas fa-terminal"></i> Generate APM Commands
+            </button>
+            <span id="apmLoadingIndicator" class="spinner-border spinner-border-sm text-warning ms-2" role="status" style="display: none;"></span>
+            {# --- END NEW --- #}
         </div>
         {% endif %}
         {# --- END EMAIL MODAL BUTTON --- #}
@@ -202,6 +208,29 @@
   </div>
 </div>
 {# --- END Email Trainers Modal --- #}
+
+{# --- NEW: APM Commands Modal --- #}
+<div class="modal fade" id="apmCommandsModal" tabindex="-1" aria-labelledby="apmCommandsModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable"> {# modal-xl for wider content #}
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="apmCommandsModalLabel">Generated APM Commands</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="apmCommandsModalBody">
+        <p class="text-muted">Generating commands...</p>
+        {# Commands will be placed inside a <pre> tag by JavaScript #}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" id="copyApmCommandsBtn" title="Copy all commands to clipboard">
+            <i class="fas fa-copy"></i> Copy All Commands
+        </button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{# --- END NEW MODAL --- #}
 
 
 {# --- Embed all_review_items_json for JS (already defined in previous step) --- #}

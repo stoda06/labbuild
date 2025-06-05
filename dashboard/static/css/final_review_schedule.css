@@ -1,45 +1,112 @@
 /* dashboard/static/css/final_review_schedule.css */
 
-.review-table th, .review-table td { 
-    font-size: 0.85rem; 
-    vertical-align: middle; 
+.review-table th,
+.review-table td {
+    font-size: 0.85rem;
+    vertical-align: middle;
 }
+
 .review-table td ul {
     padding-left: 1.2em;
     margin-bottom: 0;
-    list-style-type: none; /* Remove bullets from assignment list */
+    list-style-type: none;
+    /* Remove bullets from assignment list */
 }
+
 .review-table td ul li {
     font-size: 0.9em;
     margin-bottom: 0.2em;
 }
-.col-type { width: 140px; }
-.col-sf-code { width: 150px; }
-.col-lb-course { width: 180px; }
-.col-vendor { width: 60px; text-align: center; }
-.col-start-date { width: 110px; }
-.col-assignments { min-width: 280px; } /* Allow to grow */
-.col-status-note { min-width: 180px; font-style: italic; }
+
+.col-type {
+    width: 140px;
+}
+
+.col-sf-code {
+    width: 150px;
+}
+
+.col-lb-course {
+    width: 180px;
+}
+
+.col-vendor {
+    width: 60px;
+    text-align: center;
+}
+
+.col-start-date {
+    width: 110px;
+}
+
+.col-assignments {
+    min-width: 280px;
+}
+
+/* Allow to grow */
+.col-status-note {
+    min-width: 180px;
+    font-style: italic;
+}
 
 /* Specific colors for notes based on type */
-.status-note-build-warning { color: var(--bs-warning); }
-body.dark-mode .status-note-build-warning { color: var(--status-warning-dark-text); }
+.status-note-build-warning {
+    color: var(--bs-warning);
+}
 
-.status-note-extended { color: var(--bs-success); } /* If you add a specific note for extended */
-body.dark-mode .status-note-extended { color: var(--status-success-dark-text); }
+body.dark-mode .status-note-build-warning {
+    color: var(--status-warning-dark-text);
+}
 
-.status-note-teardown { color: var(--bs-danger); }
-body.dark-mode .status-note-teardown { color: var(--status-failed-dark-text); }
+.status-note-extended {
+    color: var(--bs-success);
+}
+
+/* If you add a specific note for extended */
+body.dark-mode .status-note-extended {
+    color: var(--status-success-dark-text);
+}
+
+.status-note-teardown {
+    color: var(--bs-danger);
+}
+
+body.dark-mode .status-note-teardown {
+    color: var(--status-failed-dark-text);
+}
 
 
 /* Sortable header styles (keep if client-side sorting might be re-added) */
-.sortable-header { cursor: pointer; }
-.sortable-header .sort-icon { color: #ccc; margin-left: 5px; font-size: 0.8em; }
-.sortable-header.sort-asc .sort-icon::before { content: "\f0de"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
-.sortable-header.sort-desc .sort-icon::before { content: "\f0dd"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
-body.dark-mode .sortable-header .sort-icon { color: #666; }
+.sortable-header {
+    cursor: pointer;
+}
+
+.sortable-header .sort-icon {
+    color: #ccc;
+    margin-left: 5px;
+    font-size: 0.8em;
+}
+
+.sortable-header.sort-asc .sort-icon::before {
+    content: "\f0de";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+}
+
+.sortable-header.sort-desc .sort-icon::before {
+    content: "\f0dd";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+}
+
+body.dark-mode .sortable-header .sort-icon {
+    color: #666;
+}
+
 body.dark-mode .sortable-header.sort-asc .sort-icon,
-body.dark-mode .sortable-header.sort-desc .sort-icon { color: #eee; }
+body.dark-mode .sortable-header.sort-desc .sort-icon {
+    color: #eee;
+}
 
 
 /* Trainer Email Modal Specific CSS */
@@ -47,31 +114,67 @@ body.dark-mode .sortable-header.sort-desc .sort-icon { color: #eee; }
 .trainer-email-section h4 {
     font-size: 1.1rem;
 }
+
 .trainer-email-section .table th,
 .trainer-email-section .table td {
-    border: 1px solid #dee2e6; /* Standard table border */
-    padding: 0.3rem 0.4rem;    /* Slightly smaller padding for modal table */
-    font-size: 0.75rem;        /* Smaller font for email preview */
+    border: 1px solid #dee2e6;
+    /* Standard table border */
+    padding: 0.3rem 0.4rem;
+    /* Slightly smaller padding for modal table */
+    font-size: 0.75rem;
+    /* Smaller font for email preview */
 }
+
 .trainer-email-section .table th {
     background-color: #f8f9fa;
     font-weight: bold;
 }
+
 body.dark-mode .trainer-email-section .table th,
 body.dark-mode .trainer-email-section .table td {
     border-color: #495057;
 }
+
 body.dark-mode .trainer-email-section .table th {
     background-color: #343a40;
 }
+
 /* Ensure the email content div within the modal is scrollable if very long */
 .email-content-preview {
-    max-height: 400px; /* Example max height */
+    max-height: 400px;
+    /* Example max height */
     overflow-y: auto;
     padding: 5px;
-    border: 1px dashed #ccc; /* Optional: to delineate copyable area */
+    border: 1px dashed #ccc;
+    /* Optional: to delineate copyable area */
     margin-top: 5px;
 }
+
 body.dark-mode .email-content-preview {
     border-color: #555;
+}
+
+#apmCommandsModalBody pre {
+    background-color: #f8f9fa;
+    /* Light mode background */
+    border: 1px solid #dee2e6;
+    /* Light mode border */
+    padding: 15px;
+    border-radius: 4px;
+    max-height: 60vh;
+    /* Limit height */
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+body.dark-mode #apmCommandsModalBody pre {
+    background-color: #212529;
+    /* Dark mode background */
+    border-color: #495057;
+    /* Dark mode border */
+    color: #e9ecef;
+    /* Dark mode text */
 }
