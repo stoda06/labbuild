@@ -498,4 +498,142 @@ document.addEventListener('DOMContentLoaded', function() {
             } else { alert('No commands to copy.'); }
         });
     }
+    // --- LabBuild Commands Preview Modal JavaScript ---
+    const previewLabbuildCommandsBtn = document.getElementById('previewLabbuildCommandsBtn');
+    const labbuildCommandsModalEl = document.getElementById('labbuildCommandsModal');
+    const labbuildCommandsModalBody = document.getElementById('labbuildCommandsModalBody');
+    const copyLabbuildCommandsBtn = document.getElementById('copyLabbuildCommandsBtn');
+    const buildableItemsJsonDataEl = document.getElementById('buildableItemsJsonData'); // Get the buildable items
+    const performTeardownCheckbox = document.getElementById('perform_teardown_first');
+
+    let labbuildModalInstance = null;
+    let buildableItemsData = [];
+
+    if (labbuildCommandsModalEl) {
+        labbuildModalInstance = new bootstrap.Modal(labbuildCommandsModalEl);
+    }
+
+    if (buildableItemsJsonDataEl && buildableItemsJsonDataEl.textContent) {
+        try {
+            buildableItemsData = JSON.parse(buildableItemsJsonDataEl.textContent);
+        } catch (e) {
+            console.error("LabBuild Commands JS: Error parsing buildableItemsJsonData:", e);
+        }
+    } else {
+        console.warn("LabBuild Commands JS: Script tag #buildableItemsJsonData not found or empty.");
+    }
+
+
+    function generateLabbuildCommands() {
+        if (!labbuildCommandsModalBody) return;
+        labbuildCommandsModalBody.innerHTML = '<p class="text-center"><span class="spinner-border spinner-border-sm"></span> Generating commands...</p>';
+        
+        if (!buildableItemsData || buildableItemsData.length === 0) {
+            labbuildCommandsModalBody.innerHTML = '<p class="text-info">No buildable items in the current plan to generate commands for.</p>';
+            return;
+        }
+
+        const doTeardownFirst = performTeardownCheckbox ? performTeardownCheckbox.checked : false;
+        let commandsArray = [];
+        let commandNumber = 1;
+
+        buildableItemsData.forEach(item => {
+            // Each 'item' here is expected to be a student or trainer build item
+            // with 'assignments', 'vendor', 'labbuild_course', 'original_sf_course_code' etc.
+            const assignments = item.assignments || [];
+            const vendor = item.vendor;
+            const lbCourse = item.labbuild_course;
+            const originalSfCode = item.original_sf_course_code || item.sf_course_code; // Fallback
+            const itemTypeSuffix = (item.type === "Trainer Build") ? "-TP" : "";
+            
+            // Construct a unique tag for this build operation
+            // Ensure tag is filesystem-friendly and not too long
+            let tag = `${originalSfCode}${itemTypeSuffix}`.replace(/[^a-zA-Z0-9-_]/g, '_').substring(0, 45);
+
+
+            if (!vendor || !lbCourse || assignments.length === 0) {
+                console.warn("Skipping command generation for item due to missing data:", item);
+                return; // Skip this item if essential data is missing
+            }
+
+            // Process each assignment block (e.g., host + pod range) for this item
+            assignments.forEach((assignment, index) => {
+                const host = assignment.host;
+                const startPod = assignment.start_pod;
+                const endPod = assignment.end_pod;
+                let partTag = tag;
+                if (assignments.length > 1) { // Add part number if multiple assignments for one item
+                    partTag = `${tag}_part${index + 1}`.substring(0,45);
+                }
+
+
+                if (!host || startPod === undefined || endPod === undefined) {
+                    console.warn("Skipping assignment segment due to missing host/pods:", assignment);
+                    return;
+                }
+
+                let baseArgs = [
+                    '-v', vendor,
+                    '-g', `"${lbCourse}"`, // Quote LabBuild course name if it might have spaces
+                    '--host', host,
+                    '-s', String(startPod),
+                    '-e', String(endPod),
+                    '-t', `"${partTag}"` // Quote tag
+                ];
+
+                // Add F5 class number if applicable (example: from item.f5_class_number)
+                if (vendor && vendor.toLowerCase() === 'f5' && item.f5_class_number) {
+                    baseArgs.push('-cn', String(item.f5_class_number));
+                }
+                // Add other specific flags based on item properties if needed (e.g. memory, clonefrom)
+                // Example: if (item.memory_for_setup) baseArgs.push('-mem', String(item.memory_for_setup));
+
+
+                if (doTeardownFirst) {
+                    commandsArray.push(`${commandNumber++}. labbuild teardown ${baseArgs.join(' ')}`);
+                }
+                commandsArray.push(`${commandNumber++}. labbuild setup ${baseArgs.join(' ')}`);
+            });
+        });
+
+        if (commandsArray.length > 0) {
+            const pre = document.createElement('pre');
+            pre.textContent = commandsArray.join('\n');
+            labbuildCommandsModalBody.innerHTML = ''; // Clear loading/previous
+            labbuildCommandsModalBody.appendChild(pre);
+        } else {
+            labbuildCommandsModalBody.innerHTML = '<p class="text-info">No LabBuild commands to generate based on the current plan and selections.</p>';
+        }
+    }
+
+
+    if (previewLabbuildCommandsBtn) {
+        previewLabbuildCommandsBtn.addEventListener('click', function() {
+            // Re-parse buildableItemsData in case it was dynamically updated (though unlikely for this page)
+            // Or ensure it's fresh if the main plan can change without page reload.
+            if (buildableItemsJsonDataEl && buildableItemsJsonDataEl.textContent) {
+                try { buildableItemsData = JSON.parse(buildableItemsJsonDataEl.textContent); }
+                catch (e) { console.error("Error re-parsing buildableItems for LabBuild preview:", e); }
+            }
+            generateLabbuildCommands();
+            // Bootstrap modal is shown via data-bs-toggle and data-bs-target
+        });
+    }
+
+    if (copyLabbuildCommandsBtn && labbuildCommandsModalBody) {
+        copyLabbuildCommandsBtn.addEventListener('click', function() {
+            const preElement = labbuildCommandsModalBody.querySelector('pre');
+            if (preElement && preElement.textContent) {
+                navigator.clipboard.writeText(preElement.textContent).then(() => {
+                    this.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                    setTimeout(() => { this.innerHTML = '<i class="fas fa-copy"></i> Copy All Commands'; }, 2000);
+                }).catch(err => {
+                    console.error('Failed to copy LabBuild commands: ', err);
+                    alert('Failed to copy commands. Please try manual selection.');
+                });
+            } else {
+                alert('No commands to copy.');
+            }
+        });
+    }
 });

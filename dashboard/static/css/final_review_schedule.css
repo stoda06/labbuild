@@ -178,3 +178,24 @@ body.dark-mode #apmCommandsModalBody pre {
     color: #e9ecef;
     /* Dark mode text */
 }
+
+#labbuildCommandsModalBody pre {
+    /* Style for the new modal's content */
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    padding: 15px;
+    border-radius: 4px;
+    max-height: 70vh;
+    /* Generous height */
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+body.dark-mode #labbuildCommandsModalBody pre {
+    background-color: #212529;
+    border-color: #495057;
+    color: #e9ecef;
+}
