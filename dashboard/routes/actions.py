@@ -194,7 +194,7 @@ def send_trainer_email():
             "date_range_display": date_range_display_email,
             "end_day_abbr": end_day_abbr_email,
             "primary_location": primary_location_email,
-            "labbuild_course": item_from_js.get("labbuild_course", "N/A"),
+            "labbuild_course": item_from_js.get("sf_course_type", "N/A"),
             "start_end_pod_str": start_end_pod_str_email,
             "username": username_email,
             "password": password_email,
@@ -1983,6 +1983,147 @@ def prepare_trainer_pods():
         subsequent_pod_memory_factor=SUBSEQUENT_POD_MEMORY_FACTOR
     )
 
+def _generate_apm_data_for_plan(
+        local_final_build_plan_items: List[Dict], # Pass the already fetched interim items
+        local_current_apm_entries: Dict[str, Dict[str, Any]],
+        local_extended_apm_course_codes: Set[str]
+    ) -> Tuple[Dict[str, Dict[str, str]], List[str], List[str]]:
+        """
+        Generates APM usernames and passwords for the items in the build plan.
+        Returns:
+            - apm_credentials_map (Dict[apm_auth_code, {"username": str, "password": str}])
+            - all_generated_apm_commands (List[str])
+            - apm_generation_errors (List[str])
+        """
+        logger.info(f"--- (Helper) APM Data Generation Started for {len(local_final_build_plan_items)} plan items ---")
+        apm_commands_delete_local: List[str] = []
+        apm_commands_add_update_local: List[str] = []
+        errors_local: List[str] = []
+        
+        # This will store the final state including allocated usernames and passwords
+        # Key: apm_auth_course_code, Value: { vpn_auth_courses, vpn_auth_range, ..., username, password }
+        desired_apm_state_with_users: Dict[str, Dict[str, Any]] = {}
+
+        # Step 3a: Build intermediate desired state (details without username yet)
+        desired_apm_config_intermediate: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+            "all_pod_numbers": set(), "trainer_name_for_desc": "N/A", "course_type_for_desc": "N/A",
+            "labbuild_course_for_version": "N/A", "vendor_short": "xx",
+            "is_maestro_overall_for_version": False, "maestro_main_lb_for_version": None
+        })
+
+        for item_doc in local_final_build_plan_items:
+            original_sf_code = item_doc.get("original_sf_course_code", item_doc.get("sf_course_code"))
+            if not original_sf_code: continue
+
+            # Determine if this is for Student APM entry or Trainer APM entry
+            # A single interim 'doc' can lead to two APM entries (one for student, one for trainer)
+            
+            # Process Student Part from 'item_doc'
+            if item_doc.get("status") in ["student_confirmed", "trainer_confirmed"]: # trainer_confirmed implies student part is also relevant
+                student_assignments = item_doc.get("student_assignments_final", [])
+                if student_assignments:
+                    apm_auth_code_key_student = original_sf_code
+                    student_entry_details = desired_apm_config_intermediate[apm_auth_code_key_student]
+                    if student_entry_details["trainer_name_for_desc"] == "N/A": # Initialize if first time for this key
+                        student_entry_details["trainer_name_for_desc"] = item_doc.get("sf_trainer_name", "N/A")
+                        student_entry_details["course_type_for_desc"] = item_doc.get("sf_course_type", "Course")
+                        student_entry_details["vendor_short"] = (item_doc.get("vendor", "xx") or "xx").lower()
+                        maestro_config = item_doc.get("maestro_split_config_details_rule")
+                        if isinstance(maestro_config, dict) and item_doc.get("vendor") == "cp":
+                            student_entry_details["is_maestro_overall_for_version"] = True
+                            student_entry_details["maestro_main_lb_for_version"] = maestro_config.get("main_course", item_doc.get("final_labbuild_course_student", "maestro"))
+                        else:
+                            student_entry_details["labbuild_course_for_version"] = item_doc.get("final_labbuild_course_student", item_doc.get("labbuild_course", "N/A"))
+                    for asgn in student_assignments:
+                        s, e = asgn.get("start_pod"), asgn.get("end_pod")
+                        if s is not None and e is not None: 
+                            try: [student_entry_details["all_pod_numbers"].add(p) for p in range(int(s),int(e)+1)]; 
+                            except:pass
+            
+            # Process Trainer Part from 'item_doc'
+            if item_doc.get("status") == "trainer_confirmed": # Only if trainer pod is to be built
+                trainer_assignments = item_doc.get("trainer_assignment_final", [])
+                if trainer_assignments:
+                    apm_auth_code_key_trainer = f"{original_sf_code}-TP"
+                    trainer_entry_details = desired_apm_config_intermediate[apm_auth_code_key_trainer]
+                    if trainer_entry_details["trainer_name_for_desc"] == "N/A":
+                        trainer_entry_details["trainer_name_for_desc"] = "Trainer Pods"
+                        trainer_entry_details["course_type_for_desc"] = item_doc.get("sf_course_type", "Trainer Setup")
+                        trainer_entry_details["labbuild_course_for_version"] = item_doc.get("trainer_labbuild_course", "N/A")
+                        trainer_entry_details["vendor_short"] = (item_doc.get("vendor", "xx") or "xx").lower()
+                    for asgn in trainer_assignments:
+                        s, e = asgn.get("start_pod"), asgn.get("end_pod")
+                        if s is not None and e is not None: 
+                            try: [trainer_entry_details["all_pod_numbers"].add(p) for p in range(int(s),int(e)+1)]; 
+                            except:pass
+        
+        # Step 3b: Finalize intermediate state (convert pod sets to ranges, etc.)
+        for apm_auth_code, details in desired_apm_config_intermediate.items():
+            if not details["all_pod_numbers"]: continue
+            vpn_range = _create_contiguous_ranges(list(details["all_pod_numbers"]))
+            if not vpn_range: continue
+            desc = f"{details['trainer_name_for_desc']} - {details['course_type_for_desc']}"
+            ver = details["labbuild_course_for_version"]
+            if details["is_maestro_overall_for_version"] and details["maestro_main_lb_for_version"]: ver = details["maestro_main_lb_for_version"]
+            
+            desired_apm_state_with_users[apm_auth_code] = {
+                "vpn_auth_courses": desc[:250], "vpn_auth_range": vpn_range,
+                "vpn_auth_version": ver, "vpn_auth_expiry_date": "8",
+                "password": _generate_random_password(), "vendor_short": details["vendor_short"]
+                # Username to be added next
+            }
+        logger.info(f"(Helper) Prepared {len(desired_apm_state_with_users)} desired APM entries structure.")
+
+        # Step 4 & 5: Username Allocation, Generate Commands
+        # ... (This is the same complex logic as in your last working `generate_apm_commands_route`
+        #      that iterates `current_apm_entries` and `desired_apm_state_with_users` (which was named desired_apm_state_from_plan before)
+        #      to generate `apm_commands_delete_local`, `apm_commands_add_update_local`,
+        #      and populates `details["username"]` in `desired_apm_state_with_users`)
+        apm_course_code_to_username_to_keep: Dict[str, str] = {} 
+        for username, existing_details in local_current_apm_entries.items(): # Use local_
+            apm_cc = existing_details.get("vpn_auth_course_code")
+            if not apm_cc: apm_commands_delete_local.append(f"course bigip del {username}"); continue
+            if apm_cc in local_extended_apm_course_codes: # Use local_
+                if apm_cc not in apm_course_code_to_username_to_keep: apm_course_code_to_username_to_keep[apm_cc] = username
+                if apm_cc in desired_apm_state_with_users: desired_apm_state_with_users[apm_cc]["username"] = username; desired_apm_state_with_users[apm_cc]["is_update"] = True
+            elif apm_cc in desired_apm_state_with_users:
+                if apm_cc not in apm_course_code_to_username_to_keep: apm_course_code_to_username_to_keep[apm_cc] = username
+                new_d = desired_apm_state_with_users[apm_cc]
+                if existing_details.get("vpn_auth_range") != new_d["vpn_auth_range"]: apm_commands_add_update_local.append(f'course bigip range {username} "{new_d["vpn_auth_range"]}"')
+                if existing_details.get("vpn_auth_version") != new_d["vpn_auth_version"]: apm_commands_add_update_local.append(f'course bigip version {username} "{new_d["vpn_auth_version"]}"')
+                if existing_details.get("vpn_auth_courses") != new_d["vpn_auth_courses"]: apm_commands_add_update_local.append(f'course bigip description {username} "{new_d["vpn_auth_courses"]}"')
+                if str(existing_details.get("vpn_auth_expiry_date")) != str(new_d["vpn_auth_expiry_date"]): apm_commands_add_update_local.append(f'course bigip expiry_date {username} "{new_d["vpn_auth_expiry_date"]}"')
+                apm_commands_add_update_local.append(f'course bigip password {username} "{new_d["password"]}"')
+                desired_apm_state_with_users[apm_cc]["username"] = username; desired_apm_state_with_users[apm_cc]["is_update"] = True
+            else: apm_commands_delete_local.append(f"course bigip del {username}")
+        
+        used_x_nums: Dict[str,Set[int]] = defaultdict(set)
+        for _, uname_kept in apm_course_code_to_username_to_keep.items():
+            m = re.match(r"lab([a-z0-9]+)-(\d+)",uname_kept.lower());
+            if m: used_x_nums[m.group(1)].add(int(m.group(2)))
+
+        for apm_auth_c, details_final in desired_apm_state_with_users.items():
+            if details_final.get("is_update"): continue
+            v_short = details_final["vendor_short"]; uname=None; x=1
+            while True:
+                if x not in used_x_nums.get(v_short,set()): uname=f"lab{v_short}-{x}"; used_x_nums[v_short].add(x); break
+                x+=1
+            details_final["username"] = uname # Store assigned username
+            apm_commands_add_update_local.append(f'course bigip add {uname} "{details_final["password"]}" "{details_final["vpn_auth_range"]}" "{details_final["vpn_auth_version"]}" "{details_final["vpn_auth_courses"]}" "{details_final["vpn_auth_expiry_date"]}" "{apm_auth_c}"')
+
+        all_generated_commands = apm_commands_delete_local + apm_commands_add_update_local
+        logger.info(f"(Helper) APM Logic Finished. Generated {len(all_generated_commands)} commands. Errors: {errors_local}")
+        
+        # Return the map of apm_auth_code to {"username": ..., "password": ...}
+        apm_credentials_map_result: Dict[str, Dict[str, str]] = {}
+        for apm_auth_code, details_with_user in desired_apm_state_with_users.items():
+            if details_with_user.get("username") and details_with_user.get("password"):
+                apm_credentials_map_result[apm_auth_code] = {
+                    "username": details_with_user["username"],
+                    "password": details_with_user["password"]
+                }
+        
+        return all_generated_commands, apm_credentials_map_result, errors_local
 
 @bp.route('/finalize-and-display-build-plan', methods=['POST'])
 def finalize_and_display_build_plan():
@@ -2117,10 +2258,89 @@ def finalize_and_display_build_plan():
         except Exception as e_proc: logger.error(f"Error processing interim items: {e_proc}", exc_info=True); flash("Error processing review data.", "danger")
         return processed_items
 
+
+    # --- Sub-function: Process Interim Documents for Display ---
+    def _process_interim_documents(
+        batch_id_inner: str,
+        local_hosts_info_map: Dict[str, Dict[str, str]],
+        local_course_configs_map: Dict[str, Dict[str, Any]],
+        apm_credentials_map: Dict[str, Dict[str,str]] # apm_auth_code -> {"username": "...", "password": "..."}
+    ) -> List[Dict]:
+        processed_items: List[Dict] = []
+        finalized_statuses = ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]
+        if interim_alloc_collection is None: logger.error("Sub _process_interim: interim_alloc_collection is None."); return processed_items
+        
+        try:
+            cursor = interim_alloc_collection.find({"batch_review_id":batch_id_inner, "status":{"$in":finalized_statuses}}).sort([("sf_start_date",ASCENDING),("sf_course_code",ASCENDING)])
+            for doc in cursor:
+                sf_code=doc.get("sf_course_code");vendor=doc.get("vendor");sf_trainer=doc.get("sf_trainer_name");sf_pax=doc.get("sf_pax_count");start_date=doc.get("sf_start_date");end_date=doc.get("sf_end_date");f5_class_num=doc.get("f5_class_number")
+                
+                # Get APM username/password for the student part of this course
+                student_apm_auth_code = sf_code # Key for student APM entry
+                student_apm_creds = apm_credentials_map.get(student_apm_auth_code, {})
+                student_apm_user = student_apm_creds.get("username", f"lab{vendor}-?") # Fallback with '?' if not found
+                student_apm_pass = student_apm_creds.get("password", "N/A")
+
+                common_data = {"type":"Student Build","sf_course_code":sf_code,"original_sf_course_code":sf_code,"vendor":vendor,"start_date":start_date,"end_date":end_date,"status_note":doc.get("student_assignment_final_warning") or doc.get("student_assignment_warning"),"sf_trainer_name":sf_trainer,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num, 
+                               "apm_username": student_apm_user, "apm_password": student_apm_pass}
+                
+                maestro_cfg=doc.get("maestro_split_config_details_rule");is_maestro=isinstance(maestro_cfg,dict) and vendor=="cp"
+                if is_maestro:
+                    maestro_comp_assignments=doc.get("initial_interactive_sub_rows_student",[])
+                    # ... (rest of Maestro splitting logic from your previous correct version, ensuring common_data is spread) ...
+                    # Each Maestro component item will inherit the `apm_username` and `apm_password` from `common_data`
+                    # as APM entries are per original_sf_course_code for students.
+                    if not maestro_comp_assignments and doc.get("student_assignments_final"): # Fallback
+                        maestro_comp_assignments = [] # Reconstruct
+                        final_asgns=doc.get("student_assignments_final",[]);main_lb=maestro_cfg.get("main_course","m-r81");main_c=int(maestro_cfg.get("main_course_count",2));r1_lb=maestro_cfg.get("rack1_course","m-r1");r2_lb=maestro_cfg.get("rack2_course","m-r2")
+                        for i,a in enumerate(final_asgns): cur_a=a.copy();
+                        if "labbuild_course" not in cur_a: cur_a["labbuild_course"] = main_lb if i<main_c else (r1_lb if i==main_c else (r2_lb if i==main_c+1 else main_lb))
+                        maestro_comp_assignments.append(cur_a)
+                    comp_details_list=[]; total_mem=0.0; all_asgns_display=[]
+                    for comp_asgn in maestro_comp_assignments:
+                        lb=comp_asgn.get("labbuild_course") or maestro_cfg.get("main_course","maestro-r81"); asgns=[comp_asgn]; all_asgns_display.extend(asgns)
+                        hosts=list(set(a.get("host") for a in asgns if a.get("host"))); h_details=[{"name":h, **local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in hosts]
+                        mem=_get_memory_for_course_local(lb,local_course_configs_map); pods_in_seg=0
+                        if comp_asgn.get("start_pod") is not None and comp_asgn.get("end_pod") is not None: 
+                            try: pods_in_seg=int(comp_asgn.get("end_pod",0))-int(comp_asgn.get("start_pod",0))+1; 
+                            except:pass
+                        total_mem+=mem*max(1,pods_in_seg); cfg=local_course_configs_map.get(lb,{})
+                        comp_details_list.append({"component_labbuild_course":lb,"component_assignments":asgns,"component_memory_gb_one_pod":mem,"component_host_details":h_details,"component_course_config":cfg})
+                    processed_items.append({**common_data,"labbuild_course":"Maestro Course (Multi-Component)","assignments":all_asgns_display,"memory_gb_one_pod":total_mem,"host_details_for_assignments":list({d['name']:d for c in comp_details_list for d in c.get("component_host_details",[])}.values()),"course_config_details_for_passwords":local_course_configs_map.get(maestro_cfg.get("main_course","maestro-r81"),{}),"is_maestro_course":True,"maestro_component_details":comp_details_list})
+                else: # Standard Student
+                    s_asgns=doc.get("student_assignments_final",[]);s_hosts=list(set(a.get("host") for a in s_asgns if a.get("host")));s_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in s_hosts];s_lbc=doc.get("final_labbuild_course_student");s_cfg=local_course_configs_map.get(s_lbc,{}) if s_lbc else {};
+                    processed_items.append({**common_data,"labbuild_course":s_lbc,"assignments":s_asgns,"memory_gb_one_pod":doc.get("memory_gb_one_student_pod"),"host_details_for_assignments":s_hdetails,"course_config_details_for_passwords":s_cfg})
+                
+                # Trainer Part
+                if doc.get("status")=="trainer_disabled_by_rule" or doc.get("trainer_labbuild_course") or doc.get("status")=="trainer_skipped_by_user":
+                    t_lbc=doc.get("trainer_labbuild_course")
+                    trainer_apm_auth_code=f"{sf_code}-TP"
+                    trainer_apm_creds = apm_credentials_map.get(trainer_apm_auth_code, {})
+                    trainer_apm_user = trainer_apm_creds.get("username", f"lab{vendor}-X-TP" if vendor else "labxx-X-TP")
+                    trainer_apm_pass = trainer_apm_creds.get("password", "N/A")
+                    
+                    t_sfc_display = sf_code;
+                    if t_lbc or doc.get("status") in ["trainer_disabled_by_rule","trainer_skipped_by_user"]: t_sfc_display = sf_code + ("-TP (Skipped)" if not t_lbc and doc.get("status")!="trainer_confirmed" else "-TP")
+                    
+                    t_asgns=doc.get("trainer_assignment_final",[]);t_hosts=list(set(a.get("host") for a in t_asgns if a.get("host"))) if t_asgns else [];t_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in t_hosts];t_note=doc.get("trainer_assignment_final_warning") or doc.get("trainer_assignment_warning");
+                    if doc.get("status")=="trainer_disabled_by_rule":t_note=doc.get("trainer_assignment_final_warning")
+                    elif doc.get("status")=="trainer_skipped_by_user":t_note="Build skipped by user."
+                    t_cfg=local_course_configs_map.get(t_lbc,{}) if t_lbc else {}
+                    processed_items.append({"type":"Trainer Build","sf_course_code":t_sfc_display,"original_sf_course_code":sf_code,"labbuild_course":t_lbc if t_lbc else "N/A (Skipped/Disabled)","vendor":vendor,"start_date":start_date,"end_date":end_date,"assignments":t_asgns if t_asgns else [],"memory_gb_one_pod":doc.get("trainer_memory_gb_one_pod") if t_lbc else 0.0,"status_note":t_note,"sf_trainer_name":sf_trainer,"host_details_for_assignments":t_hdetails,"course_config_details_for_passwords":t_cfg,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num, 
+                                          "apm_username": trainer_apm_user, "apm_password": trainer_apm_pass})
+        except PyMongoError as e: logger.error(f"Error fetching interim items: {e}", exc_info=True); flash("Error fetching review data.", "danger")
+        except Exception as e_proc: logger.error(f"Error processing interim items: {e_proc}", exc_info=True); flash("Error processing review data.", "danger")
+        return processed_items
+
     # --- Sub-function: Fetch "Extend: True" Allocations ---
-    def _fetch_extended_allocations(local_hosts_info_map: Dict[str, Dict[str, str]]) -> List[Dict]:
-        extended_items: List[Dict] = [];
-        if alloc_collection is None: return extended_items
+    def _fetch_extended_allocations(
+        local_hosts_info_map: Dict[str, Dict[str, str]],
+        apm_credentials_map: Dict[str, Dict[str, str]] # Added to include APM user/pass
+    ) -> List[Dict]:
+        extended_items: List[Dict] = []
+        if alloc_collection is None:
+            logger.warning("_fetch_extended_allocations: alloc_collection is None.")
+            return extended_items
         try:
             cursor = alloc_collection.find({"extend": {"$regex": "^true$", "$options": "i"}})
             for tag_doc in cursor:
@@ -2130,13 +2350,19 @@ def finalize_and_display_build_plan():
                     lb_ext = course_alloc.get("course_name")
                     sdate_ext = _format_date_for_review(str(course_alloc.get("start_date", "")), f"ext {tag} s")
                     edate_ext = _format_date_for_review(str(course_alloc.get("end_date", "")), f"ext {tag} e")
-                    sfc_ext = tag
-                    if v_ext and lb_ext:
+                    
+                    sfc_ext = tag # Default APM auth code key for extended is the tag
+                    if v_ext and lb_ext: # Heuristic to derive SF code from tag
                         p = tag.split('_')
                         if len(p) > 1 and v_ext.upper() in p[0].upper():
                             pot_sfc = p[1]
                             if re.match(r'^[A-Z0-9\-]+$', pot_sfc):
                                 sfc_ext = pot_sfc
+                    
+                    # Get APM username/password for this extended item
+                    extended_apm_details = apm_credentials_map.get(sfc_ext, {})
+                    apm_user_ext = extended_apm_details.get("username", "N/A (Extended)")
+                    apm_pass_ext = extended_apm_details.get("password", "N/A (Extended)")
                     
                     asgn_details_ext = []
                     for pd_ext in course_alloc.get("pod_details", []):
@@ -2144,20 +2370,19 @@ def finalize_and_display_build_plan():
                         itemid_ext = str(pd_ext.get("pod_number") or pd_ext.get("class_number") or "N/A")
                         nested_str = ""
                         
-                        # --- CORRECTED BLOCK ---
+                        # --- CORRECTED BLOCK for F5 nested pods ---
                         if v_ext and v_ext.lower() == 'f5' and pd_ext.get("pods"):
-                            # Ensure pd_ext.get("pods") is a list before list comprehension
                             pods_data = pd_ext.get("pods", [])
                             if isinstance(pods_data, list):
                                 f5_pns = [
                                     str(np.get("pod_number"))
-                                    for np in pods_data # Use pods_data here
+                                    for np in pods_data
                                     if isinstance(np, dict) and np.get("pod_number") is not None
                                 ]
                                 if f5_pns:
                                     nested_str = f" (Pods: {', '.join(f5_pns)})"
                             else:
-                                logger.warning(f"Tag '{tag}', Course '{lb_ext}': 'pods' field is not a list: {pods_data}")
+                                logger.warning(f"Tag '{tag}', Course '{lb_ext}': 'pods' field is not a list: {type(pods_data)}. Skipping nested pods string.")
                         # --- END CORRECTED BLOCK ---
                                 
                         asgn_details_ext.append({"host": h_ext, "pods": f"{itemid_ext}{nested_str}"})
@@ -2168,7 +2393,9 @@ def finalize_and_display_build_plan():
                         "vendor": v_ext or "N/A", "start_date": sdate_ext, "end_date": edate_ext,
                         "status_note": f"Keep Running (Tag: {tag})", "assignments": asgn_details_ext,
                         "sf_trainer_name": course_alloc.get("trainer", "N/A"),
-                        "sf_pax_count": course_alloc.get("pax", "N/A")
+                        "sf_pax_count": course_alloc.get("pax", "N/A"),
+                        "apm_username": apm_user_ext, # Add APM username
+                        "apm_password": apm_pass_ext   # Add APM password
                     })
         except PyMongoError as e:
             logger.error(f"Error fetching extended items: {e}", exc_info=True)
@@ -2251,8 +2478,56 @@ def finalize_and_display_build_plan():
         return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id_outer))
 
     hosts_map_main, configs_map_main = _fetch_supporting_data()
-    processed_interim_items_main = _process_interim_documents(batch_review_id_outer, hosts_map_main, configs_map_main)
-    extended_items_list_main = _fetch_extended_allocations(hosts_map_main) # Pass hosts_map if needed by it
+    
+    # --- Generate APM data (usernames, passwords, commands) on page load ---
+    # Fetch current APM entries and extended APM course codes for the helper
+    current_apm_entries_for_helper: Dict[str, Dict[str, Any]] = {}
+    try:
+        apm_list_url = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
+        response = requests.get(apm_list_url, timeout=15); response.raise_for_status()
+        current_apm_entries_for_helper = response.json()
+    except Exception as e: logger.error(f"FinalizePage: Error fetching current APM entries for helper: {e}")
+
+    extended_apm_codes_for_helper: Set[str] = set()
+    try:
+        if alloc_collection is not None:
+            cursor = alloc_collection.find({"extend": "true"}, {"tag": 1, "courses.apm_vpn_auth_course_code": 1, "_id": 0})
+            for doc_ext in cursor: # ... (populate extended_apm_codes_for_helper)
+                found_ext = False;
+                for ca_ext in doc_ext.get("courses",[]):
+                    if ca_ext.get("apm_vpn_auth_course_code"): extended_apm_codes_for_helper.add(ca_ext["apm_vpn_auth_course_code"]); found_ext=True
+                if not found_ext and doc_ext.get("tag"): extended_apm_codes_for_helper.add(doc_ext.get("tag"))
+    except PyMongoError as e_ext: logger.error(f"FinalizePage: Error fetching extended APM codes for helper: {e_ext}")
+
+    # Fetch plan items for APM logic (all confirmed for the current session)
+    plan_items_for_apm_helper: List[Dict] = []
+    if interim_alloc_collection is not None:
+        try:
+            # If batch_review_id_outer is None or empty, this fetches all confirmed items,
+            # which is what we want for a fresh APM generation on page load.
+            query_filter_apm_helper = {"status": {"$in": ["student_confirmed", "trainer_confirmed"]}}
+            if batch_review_id_outer: # Scope to batch if ID is present
+                 query_filter_apm_helper["batch_review_id"] = batch_review_id_outer
+            
+            apm_plan_cursor = interim_alloc_collection.find(query_filter_apm_helper)
+            plan_items_for_apm_helper = list(apm_plan_cursor)
+        except PyMongoError as e_apm_fetch_helper:
+            logger.error(f"FinalizePage: Error fetching plan items for APM logic helper: {e_apm_fetch_helper}")
+            # Continue with empty list, errors will be reported by helper
+
+    # Call the APM logic helper
+    _, apm_credentials_map, apm_generation_errors = _generate_apm_data_for_plan(
+        plan_items_for_apm_helper,
+        current_apm_entries_for_helper,
+        extended_apm_codes_for_helper
+    )
+    
+    if apm_generation_errors:
+        flash("Note: Errors occurred during APM data pre-generation: " + " | ".join(apm_generation_errors), "info")
+            
+    # Now process interim documents for display, passing the apm_credentials_map
+    processed_interim_items_main = _process_interim_documents(batch_review_id_outer, hosts_map_main, configs_map_main, apm_credentials_map)
+    extended_items_list_main = _fetch_extended_allocations(hosts_map_main, apm_credentials_map)
     
     final_list_for_display_and_json_main = processed_interim_items_main + extended_items_list_main
     _sort_final_list(final_list_for_display_and_json_main)
@@ -2274,9 +2549,9 @@ def finalize_and_display_build_plan():
 
     return render_template(
         'final_review_schedule.html',
-        all_items_for_review=sanitized_all_items_for_review_main, # For Jinja rendering
-        buildable_items_json=buildable_json_str_main,       # For JS scheduling form
-        all_review_items_json=all_review_json_str_main, # For JS email modal
+        all_items_for_review=sanitized_all_items_for_review_main,
+        buildable_items_json=buildable_json_str_main,
+        all_review_items_json=all_review_json_str_main,
         batch_review_id=batch_review_id_outer,
         current_theme=current_theme,
     )
@@ -3230,271 +3505,60 @@ def _create_contiguous_ranges(pod_numbers: List[Union[int,str]]) -> str:
 
 @bp.route('/generate-apm-commands', methods=['POST'])
 def generate_apm_commands_route():
-    batch_review_id_from_request = request.json.get('batch_review_id')
-    logger.info(f"--- APM Command Generation Started (Batch ID context from request: {batch_review_id_from_request}) ---")
+    batch_review_id_req = request.json.get('batch_review_id') # For context/logging
+    logger.info(f"--- APM Command Generation Route Called (Batch ID context: {batch_review_id_req}) ---")
 
-    if interim_alloc_collection is None or alloc_collection is None:
-        logger.error("APM Gen: Critical DB collection(s) None."); return jsonify({"error": "DB service unavailable."}), 500
-
-    apm_commands_delete: List[str] = []
-    apm_commands_add_update: List[str] = [] # Will hold both 'add' and 'update field' commands
-    errors: List[str] = []
-
-    # --- Step 1: Fetch Current APM Entries ---
-    current_apm_entries: Dict[str, Dict[str, Any]] = {}
+    # Fetch necessary current data for the APM logic helper
+    current_apm_entries_route: Dict[str, Dict[str, Any]] = {}
     try:
-        apm_list_url = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
-        logger.info(f"Fetching current APM entries from {apm_list_url}...")
-        response = requests.get(apm_list_url, timeout=15)
-        response.raise_for_status()
-        current_apm_entries = response.json()
-        logger.info(f"Fetched {len(current_apm_entries)} current APM entries.")
-    except requests.exceptions.Timeout:
-        errors.append(f"Timeout fetching current APM entries from {apm_list_url}.")
-        logger.error(f"Timeout fetching current APM entries from {apm_list_url}.")
-    except requests.exceptions.RequestException as e:
-        errors.append(f"Error fetching current APM entries: {e}")
-        logger.error(f"Error fetching current APM entries: {e}", exc_info=True)
-    except json.JSONDecodeError as e:
-        errors.append(f"Error decoding current APM entries (not valid JSON): {e}")
-        logger.error(f"Error decoding current APM entries: {e}", exc_info=True)
+        apm_list_url_route = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
+        response_route = requests.get(apm_list_url_route, timeout=15); response_route.raise_for_status()
+        current_apm_entries_route = response_route.json()
+    except Exception as e_route: 
+        logger.error(f"APM Route: Error fetching current APM entries: {e_route}")
+        return jsonify({"commands": ["# ERROR: Could not fetch current APM entries from server."], "message": f"Error fetching current APM: {e_route}", "error": True}), 500
 
-    # --- Step 2: Identify Extended APM Course Codes (from alloc_collection) ---
-    extended_apm_course_codes: Set[str] = set()
-    try:
-        extended_tags_cursor = alloc_collection.find({"extend": "true"}, {"tag": 1, "courses.apm_vpn_auth_course_code": 1, "_id": 0})
-        for doc in extended_tags_cursor:
-            found_specific_code_in_doc = False
-            for course_alloc in doc.get("courses", []): # Course allocations within the extended tag
-                specific_apm_code = course_alloc.get("apm_vpn_auth_course_code") # Check if a specific APM code is stored
-                if specific_apm_code:
-                    extended_apm_course_codes.add(specific_apm_code)
-                    found_specific_code_in_doc = True
-            if not found_specific_code_in_doc: # Fallback if no specific code, use the tag itself
-                tag = doc.get("tag")
-                if tag: extended_apm_course_codes.add(tag)
-        logger.info(f"Found {len(extended_apm_course_codes)} extended APM course codes/tags: {extended_apm_course_codes}")
-    except PyMongoError as e:
-        errors.append(f"Database error fetching extended allocations: {e}")
-        logger.error(f"Database error fetching extended allocations: {e}", exc_info=True)
+    extended_apm_codes_route: Set[str] = set()
+    try: # Fetch extended codes
+        if alloc_collection is not None:
+            cursor_route = alloc_collection.find({"extend": "true"}, {"tag": 1, "courses.apm_vpn_auth_course_code": 1, "_id": 0})
+            for doc_route in cursor_route:
+                found_route = False;
+                for ca_route in doc_route.get("courses",[]):
+                    if ca_route.get("apm_vpn_auth_course_code"): extended_apm_codes_route.add(ca_route["apm_vpn_auth_course_code"]); found_route=True
+                if not found_route and doc_route.get("tag"): extended_apm_codes_route.add(doc_route.get("tag"))
+    except PyMongoError as e_ext_route: logger.error(f"APM Route: Error fetching extended: {e_ext_route}")
 
-    # --- Step 3: Prepare `desired_apm_config_intermediate` from the Build Plan ---
-    # This dictionary groups all pod assignments by the intended `vpn_auth_course_code`.
-    desired_apm_config_intermediate: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
-        "all_pod_numbers": set(),
-        "trainer_name_for_desc": "N/A",
-        "course_type_for_desc": "N/A",
-        "labbuild_course_for_version": "N/A",
-        "vendor_short": "xx",
-        "is_maestro_overall_for_version": False, # Flag to help determine APM version for Maestro
-        "maestro_main_lb_for_version": None     # Specific LabBuild course of main Maestro component
-    })
+    plan_items_for_route_apm: List[Dict] = []
+    if interim_alloc_collection is not None:
+        try:
+            # Fetch all confirmed items, as batch_id might be lost if user reloads final review page
+            # Or, if JS always sends batch_id, use it:
+            query_filter_route = {"status": {"$in": ["student_confirmed", "trainer_confirmed"]}}
+            if batch_review_id_req: # If JS sends it, use it to scope.
+                 query_filter_route["batch_review_id"] = batch_review_id_req
+            plan_cursor_route = interim_alloc_collection.find(query_filter_route)
+            plan_items_for_route_apm = list(plan_cursor_route)
+        except PyMongoError as e_plan_route:
+            logger.error(f"APM Route: Error fetching plan items: {e_plan_route}")
+            return jsonify({"commands": ["# ERROR: Could not fetch build plan."], "message": f"DB error: {e_plan_route}", "error": True}), 500
     
-    final_build_plan_items: List[Dict] = []
-    try:
-        # Fetch items from the current batch that are confirmed for building
-        # No batch_review_id filter here as per new requirement
-        plan_cursor = interim_alloc_collection.find({
-            "status": {"$in": ["student_confirmed", "trainer_confirmed"]}
-        })
-        final_build_plan_items = list(plan_cursor)
-        logger.info(f"Fetched {len(final_build_plan_items)} items from interim_alloc_collection with status 'student_confirmed' or 'trainer_confirmed'.")
-        if not final_build_plan_items and not errors:
-             errors.append(f"No confirmed student or trainer builds found in the interim collection for APM entries (Batch context from request: {batch_review_id_from_request}).")
-
-        for item_doc in final_build_plan_items: # Each 'item_doc' is a full document from interim_alloc_collection
-            original_sf_code = item_doc.get("original_sf_course_code", item_doc.get("sf_course_code"))
-            if not original_sf_code:
-                logger.warning(f"Skipping item from build plan due to missing original_sf_course_code: {item_doc.get('_id')}")
-                continue
-
-            # Determine if this interim doc represents the student part or the trainer part for APM
-            # based on its own fields and status.
-            
-            # Check Student Part
-            if item_doc.get("status") in ["student_confirmed", "trainer_confirmed"]: # trainer_confirmed implies student part was also processed
-                student_assignments = item_doc.get("student_assignments_final", [])
-                if student_assignments: # Only process if there are student assignments
-                    apm_auth_code_key_student = original_sf_code
-                    student_entry_details = desired_apm_config_intermediate[apm_auth_code_key_student]
-
-                    # Set these only if not already set (e.g., by a previous item for the same SF code)
-                    if student_entry_details["trainer_name_for_desc"] == "N/A":
-                        student_entry_details["trainer_name_for_desc"] = item_doc.get("sf_trainer_name", "N/A")
-                        student_entry_details["course_type_for_desc"] = item_doc.get("sf_course_type", "Course")
-                        student_entry_details["vendor_short"] = (item_doc.get("vendor", "xx") or "xx").lower()
-                        
-                        maestro_config = item_doc.get("maestro_split_config_details_rule")
-                        if isinstance(maestro_config, dict) and item_doc.get("vendor") == "cp":
-                            student_entry_details["is_maestro_overall_for_version"] = True
-                            student_entry_details["maestro_main_lb_for_version"] = maestro_config.get("main_course", item_doc.get("final_labbuild_course_student", "maestro"))
-                        else:
-                            student_entry_details["labbuild_course_for_version"] = item_doc.get("final_labbuild_course_student", item_doc.get("labbuild_course", "N/A"))
-                    
-                    for asgn in student_assignments:
-                        start_pod, end_pod = asgn.get("start_pod"), asgn.get("end_pod")
-                        if start_pod is not None and end_pod is not None:
-                            try:
-                                for p_num in range(int(start_pod), int(end_pod) + 1):
-                                    student_entry_details["all_pod_numbers"].add(p_num)
-                            except ValueError: logger.warning(f"Invalid student pod numbers in assignment: {asgn} for {original_sf_code}")
-                else:
-                    logger.debug(f"No 'student_assignments_final' found for SF Code {original_sf_code} in item {item_doc.get('_id')}")
-
-
-            # Check Trainer Part (only if status is trainer_confirmed)
-            if item_doc.get("status") == "trainer_confirmed":
-                trainer_assignments = item_doc.get("trainer_assignment_final", [])
-                if trainer_assignments: # Only process if there are trainer assignments
-                    apm_auth_code_key_trainer = f"{original_sf_code}-TP"
-                    trainer_entry_details = desired_apm_config_intermediate[apm_auth_code_key_trainer]
-
-                    if trainer_entry_details["trainer_name_for_desc"] == "N/A":
-                        trainer_entry_details["trainer_name_for_desc"] = "Trainer Pods"
-                        trainer_entry_details["course_type_for_desc"] = item_doc.get("sf_course_type", "Trainer Setup")
-                        trainer_entry_details["labbuild_course_for_version"] = item_doc.get("trainer_labbuild_course", "N/A")
-                        trainer_entry_details["vendor_short"] = (item_doc.get("vendor", "xx") or "xx").lower()
-
-                    for asgn in trainer_assignments:
-                        start_pod, end_pod = asgn.get("start_pod"), asgn.get("end_pod")
-                        if start_pod is not None and end_pod is not None:
-                            try:
-                                for p_num in range(int(start_pod), int(end_pod) + 1):
-                                    trainer_entry_details["all_pod_numbers"].add(p_num)
-                            except ValueError: logger.warning(f"Invalid trainer pod numbers in assignment: {asgn} for {original_sf_code}")
-                else:
-                    logger.debug(f"No 'trainer_assignment_final' found for SF Code {original_sf_code} in item {item_doc.get('_id')} with status trainer_confirmed")
-
-        # Finalize `desired_apm_state_from_plan` from `desired_apm_config_intermediate`
-        desired_apm_state_from_plan: Dict[str, Dict[str, Any]] = {} # Changed name for clarity
-        for apm_auth_code, details in desired_apm_config_intermediate.items():
-            if not details["all_pod_numbers"]:
-                logger.warning(f"APM entry for '{apm_auth_code}' has no pod numbers after accumulation from all items. Skipping this APM entry.")
-                continue
-            
-            vpn_range_str = _create_contiguous_ranges(list(details["all_pod_numbers"]))
-            if not vpn_range_str:
-                logger.warning(f"Could not generate contiguous VPN range for APM entry '{apm_auth_code}' with pods {details['all_pod_numbers']}. Skipping.")
-                continue
-
-            description = f"{details['trainer_name_for_desc']} - {details['course_type_for_desc']}"
-            
-            apm_version = details["labbuild_course_for_version"]
-            # For Maestro, version should be the main component's LabBuild course if available
-            if details["is_maestro_overall_for_version"] and details["maestro_main_lb_for_version"]:
-                apm_version = details["maestro_main_lb_for_version"]
-            
-            desired_apm_state_from_plan[apm_auth_code] = {
-                "vpn_auth_courses": description[:250], 
-                "vpn_auth_range": vpn_range_str,
-                "vpn_auth_version": apm_version, 
-                "vpn_auth_expiry_date": "8",
-                "password": _generate_random_password(), 
-                "vendor_short": details["vendor_short"]
-            }
-        logger.info(f"Prepared {len(desired_apm_state_from_plan)} desired APM entries from build plan: {list(desired_apm_state_from_plan.keys())}")
-
-    except PyMongoError as e_mongo_plan: 
-        errors.append(f"DB error fetching/processing build plan: {e_mongo_plan}")
-        logger.error(f"Error with interim_alloc_collection: {e_mongo_plan}", exc_info=True)
-    except Exception as e_prepare_desired: 
-        errors.append(f"Error preparing desired APM state: {e_prepare_desired}")
-        logger.error(f"Error preparing desired APM state: {e_prepare_desired}", exc_info=True)
-
-    # --- Step 4 & 5: Username Allocation, Generate Delete/Add/Update Commands ---
-    apm_course_code_to_username_to_keep: Dict[str, str] = {} 
+    # Call the refactored APM logic
+    all_commands, _, apm_errors = _generate_apm_data_for_plan(
+        plan_items_for_route_apm,
+        current_apm_entries_route,
+        extended_apm_codes_route
+    )
     
-    for username, existing_details in current_apm_entries.items():
-        apm_cc = existing_details.get("vpn_auth_course_code")
-        if not apm_cc: 
-            logger.warning(f"Existing APM entry {username} missing vpn_auth_course_code. Marking for deletion.")
-            apm_commands_delete.append(f"course bigip del {username}")
-            continue
-
-        if apm_cc in extended_apm_course_codes:
-            logger.debug(f"Keeping extended APM entry: {username} (APM Course Code: {apm_cc})")
-            if apm_cc not in apm_course_code_to_username_to_keep: 
-                apm_course_code_to_username_to_keep[apm_cc] = username
-            # If an extended course is also in the new plan, its details will be updated if different.
-            if apm_cc in desired_apm_state_from_plan:
-                desired_apm_state_from_plan[apm_cc]["username"] = username # Mark for update with existing username
-                desired_apm_state_from_plan[apm_cc]["is_update"] = True 
-        elif apm_cc in desired_apm_state_from_plan:
-            logger.debug(f"Existing APM entry {username} (APM Course Code: {apm_cc}) matches a course in the new plan. Will update.")
-            if apm_cc not in apm_course_code_to_username_to_keep:
-                apm_course_code_to_username_to_keep[apm_cc] = username
-            
-            desired_apm_state_from_plan[apm_cc]["username"] = username # Mark for update
-            desired_apm_state_from_plan[apm_cc]["is_update"] = True
-        else: # Not extended and not in the new plan
-            logger.debug(f"Marking for deletion (not extended, not in new plan): {username} (APM Course Code: {apm_cc})")
-            apm_commands_delete.append(f"course bigip del {username}")
-    
-    if apm_commands_delete: logger.info(f"Generated {len(apm_commands_delete)} APM deletion commands.")
-
-    # Allocate usernames for new entries and generate add/update commands
-    used_x_numbers_by_vendor_session: Dict[str, Set[int]] = defaultdict(set)
-    for _, username_kept in apm_course_code_to_username_to_keep.items(): # Populate from all kept/to-be-updated usernames
-        match = re.match(r"lab([a-z0-9]+)-(\d+)", username_kept.lower())
-        if match: used_x_numbers_by_vendor_session[match.group(1)].add(int(match.group(2)))
-    logger.debug(f"Initial used X numbers for username allocation (from kept/updated entries): {dict(used_x_numbers_by_vendor_session)}")
-
-    for apm_auth_code, details in desired_apm_state_from_plan.items():
-        username_for_entry = details.get("username") # Will be set if it's an update or reused extended
-        
-        if not username_for_entry: # This is a new APM entry needing a lab<vendor>-X username
-            vendor_short = details["vendor_short"]
-            x = 1
-            while True:
-                if x not in used_x_numbers_by_vendor_session.get(vendor_short, set()):
-                    username_for_entry = f"lab{vendor_short}-{x}"
-                    used_x_numbers_by_vendor_session[vendor_short].add(x)
-                    logger.info(f"Assigning NEW APM username '{username_for_entry}' for vpn_auth_course_code '{apm_auth_code}'.")
-                    break
-                x += 1
-            details["username"] = username_for_entry # Store assigned username
-            # Generate ADD command
-            apm_commands_add_update.append(
-                f'course bigip add {username_for_entry} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["vpn_auth_version"]}" "{details["vpn_auth_courses"]}" "{details["vpn_auth_expiry_date"]}" "{apm_auth_code}"'
-            )
-        elif details.get("is_update"): # This is an existing entry being updated
-            # Check if current_apm_entries has this username to compare against
-            if username_for_entry in current_apm_entries:
-                existing_details_for_update = current_apm_entries[username_for_entry]
-                logger.debug(f"Comparing for update: User '{username_for_entry}', APM Code '{apm_auth_code}'. Existing: {existing_details_for_update.get('vpn_auth_range')}, New: {details['vpn_auth_range']}")
-                if existing_details_for_update.get("vpn_auth_range") != details["vpn_auth_range"]:
-                    apm_commands_add_update.append(f'course bigip range {username_for_entry} "{details["vpn_auth_range"]}"')
-                if existing_details_for_update.get("vpn_auth_version") != details["vpn_auth_version"]:
-                    apm_commands_add_update.append(f'course bigip version {username_for_entry} "{details["vpn_auth_version"]}"')
-                if existing_details_for_update.get("vpn_auth_courses") != details["vpn_auth_courses"]:
-                    apm_commands_add_update.append(f'course bigip description {username_for_entry} "{details["vpn_auth_courses"]}"')
-                if str(existing_details_for_update.get("vpn_auth_expiry_date")) != str(details["vpn_auth_expiry_date"]):
-                    apm_commands_add_update.append(f'course bigip expiry_date {username_for_entry} "{details["vpn_auth_expiry_date"]}"')
-                # Always update password for entries in the current plan, whether new or update
-                apm_commands_add_update.append(f'course bigip password {username_for_entry} "{details["password"]}"')
-            else: # Should not happen if username came from current_apm_entries
-                logger.error(f"Consistency error: Username '{username_for_entry}' marked for update but not in current_apm_entries.")
-                # Fallback to an add command just in case, though this indicates a logic flaw
-                apm_commands_add_update.append(
-                    f'course bigip add {username_for_entry} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["vpn_auth_version"]}" "{details["vpn_auth_courses"]}" "{details["vpn_auth_expiry_date"]}" "{apm_auth_code}"'
-                )
-    
-    if apm_commands_add_update: logger.info(f"Generated {len(apm_commands_add_update)} APM add/field-update commands.")
-
-
-    # --- Final Output ---
-    all_commands = apm_commands_delete + apm_commands_add_update
-    # Recalculate counts based on actual commands generated
     num_actual_adds = sum(1 for cmd in all_commands if " add " in cmd)
-    num_actual_updates = sum(1 for cmd in all_commands if any(k_word in cmd for k_word in [" range ", " version ", " description ", " expiry_date ", " password "])) - num_actual_adds # Avoid double counting 'add' if it also sets password
     num_actual_deletes = sum(1 for cmd in all_commands if " del " in cmd)
-
+    num_actual_updates = len(all_commands) - num_actual_adds - num_actual_deletes
     final_message = f"Generated {len(all_commands)} APM commands ({num_actual_deletes} deletions, {num_actual_adds} adds, {num_actual_updates} field updates)."
+
+    if apm_errors:
+        final_message = "Errors occurred during APM generation: " + " | ".join(apm_errors) + ". " + final_message
+        return jsonify({"commands": ["# Errors occurred. Review messages and generated commands.", *apm_errors, *all_commands], "message": final_message, "error": True}), 200
+    if not all_commands: return jsonify({"commands": ["# No APM changes identified."], "message": "No APM changes identified."})
     
-    if errors:
-        final_message = "Errors occurred: " + " | ".join(errors) + ". " + final_message
-        logger.error(f"APM Command Generation completed with errors: {' | '.join(errors)}")
-        return jsonify({"commands": ["# Errors occurred. Review messages and generated commands.", *errors, *all_commands], "message": final_message, "error": True}), 200
-    if not all_commands: return jsonify({"commands": ["# No APM changes identified based on the plan."], "message": "No APM changes identified."})
-    logger.info(f"APM Command Generation Successful. {final_message}")
+    logger.info(f"APM Route: Command Generation Successful. {final_message}")
     return jsonify({"commands": all_commands, "message": final_message})

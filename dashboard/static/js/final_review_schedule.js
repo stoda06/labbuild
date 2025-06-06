@@ -63,7 +63,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     event.preventDefault();
                 }
             }
-            // console.log("Submitting build/teardown plans from final_review_schedule.js...");
         });
     }
 
@@ -143,10 +142,10 @@ document.addEventListener('DOMContentLoaded', function() {
         const emailsDataGrouped = new Map();
         studentCoursesRelevantForEmail.forEach(courseItem => {
             const trainer = courseItem.sf_trainer_name;
-            const originalSfCode = courseItem.original_sf_course_code || courseItem.sf_course_code;
+            const originalSfCode = courseItem.original_sf_course_code || courseItem.sf_course_code; // Group by original SF code
             if (!emailsDataGrouped.has(trainer)) { emailsDataGrouped.set(trainer, new Map()); }
             if (!emailsDataGrouped.get(trainer).has(originalSfCode)) { emailsDataGrouped.get(trainer).set(originalSfCode, []); }
-            emailsDataGrouped.get(trainer).get(originalSfCode).push(courseItem);
+            emailsDataGrouped.get(trainer).get(originalSfCode).push(courseItem); // Add the whole item
         });
 
         if (emailsDataGrouped.size === 0) {
@@ -161,6 +160,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
         emailsDataGrouped.forEach((coursesBySfCodeMap, trainerName) => {
             coursesBySfCodeMap.forEach((courseItemsForThisSfCode, sfCodeForEmail) => {
+                // courseItemsForThisSfCode is now a list of student build items (including Maestro components)
+                // for this specific trainer and original SF course code.
+                
                 const emailItemId = `email-${trainerName.replace(/\s+/g, '_')}-${sfCodeForEmail.replace(/\W/g, '')}`;
                 let emailSectionTitle = `To: ${trainerName} (for SF Course: ${sfCodeForEmail})`;
 
@@ -181,6 +183,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     </button>
                                 </div>
                               </div>`;
+                
                 const emailSubject = `Lab Allocation for ${sfCodeForEmail}`;
                 emailHtml += `<div class="mb-2">
                                 <label for="${emailItemId}-subject" class="form-label form-label-sm fw-bold">Subject:</label>
@@ -192,9 +195,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let singleSfCourseEmailBodyHTML = `<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><title>${escapeHtml(emailSubject)}</title><style>body {font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333;} table {border-collapse: collapse; width: 100%; margin-bottom: 15px; border: 1px solid #cccccc;} th, td {border: 1px solid #dddddd; text-align: left; padding: 8px; vertical-align: top;} th {background-color: #f0f0f0; font-weight: bold; color: #333333;} p {margin-bottom: 10px; line-height: 1.5;} .footer {font-size: 9pt; color: #777777; margin-top: 20px;}</style></head><body>`;
                 singleSfCourseEmailBodyHTML += `<p>Dear ${trainerName},</p><p>Here are the details for your course allocation (${sfCodeForEmail}):</p>`;
-                singleSfCourseEmailBodyHTML += `<table><thead><tr><th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th><th>Course Name/Component</th><th>Start/End Pod</th><th>Username</th><th>Password</th><th>Students</th><th>Vendor Pods</th><th>Version</th><th>Virtual Host</th><th>vCenter</th><th>RAM (GB)</th></tr></thead><tbody>`;
+                singleSfCourseEmailBodyHTML += `<table><thead><tr><th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th><th>Course Name</th><th>Start/End Pod</th><th>Username</th><th>Password</th><th>Students</th><th>Vendor Pods</th><th>Version</th><th>Virtual Host</th><th>vCenter</th><th>RAM (GB)</th></tr></thead><tbody>`;
 
-                courseItemsForThisSfCode.forEach(item => {
+                courseItemsForThisSfCode.forEach(item => { // Iterate through each component/course for this email
                     const studentPax = item.sf_pax_count || 'N/A';
                     const assignments = item.assignments || [];
                     let startEndPodStr = "N/A", vendorPodsCount = 0, firstPodNum = null;
@@ -206,25 +209,49 @@ document.addEventListener('DOMContentLoaded', function() {
                         const hostInfo = (item.host_details_for_assignments||[]).find(hd=>hd.name===primaryHostName)||{};
                         primaryLocation=hostInfo.location||"Virtual"; primaryVCenter=hostInfo.vcenter||"N/A";
                     }
-                    const vendorShortCode = (item.vendor||"xx").toLowerCase();
-                    const username = firstPodNum ? `lab${vendorShortCode}-${firstPodNum}` : `lab${vendorShortCode}-X`;
-                    let password = "UseProvidedPassword"; const courseCfg = item.course_config_details_for_passwords||{};
-                    if(courseCfg.student_password)password=courseCfg.student_password; else if(courseCfg.password)password=courseCfg.password;
-                    const startDateFormatted = getDayAbbreviation(item.start_date); const endDateFormatted = getDayAbbreviation(item.end_date);
+                    
+                    // ** Use APM username and password from the item **
+                    const apmUsername = item.apm_username || `lab${(item.vendor || "xx").toLowerCase()}-X`;
+                    const apmPassword = item.apm_password || "UseProvidedPassword";
+
+                    const startDateFormatted = getDayAbbreviation(item.start_date);
+                    const endDateFormatted = getDayAbbreviation(item.end_date);
                     const dateRange = (startDateFormatted===endDateFormatted||!item.end_date||item.end_date==="N/A")?startDateFormatted:`${startDateFormatted}-${endDateFormatted}`;
-                    const courseNameDisplayForEmail = item.is_maestro_component ? (item.maestro_component_name || item.labbuild_course) : item.labbuild_course;
+                    
+                    // ** Use sf_course_type for "Course Name" column **
+                    // For Maestro components, item.labbuild_course is the component name (e.g., maestro-r81)
+                    // For standard courses, item.labbuild_course is the main LabBuild course.
+                    // The email should show sf_course_type for the "Course Name" column.
+                    // If it's a Maestro component, we might want to show the component's LabBuild name instead of repeating SF Course Type.
+                    let courseNameForEmailColumn = item.sf_course_type || item.labbuild_course || "N/A";
+                    if (item.is_maestro_course && item.is_maestro_component && item.maestro_component_name) { // item.is_maestro_component was set in Python
+                        courseNameForEmailColumn = item.maestro_component_name; // Display component name for Maestro parts
+                    } else if (item.is_maestro_course) { // Top-level Maestro item (if not split for email rows)
+                        courseNameForEmailColumn = item.sf_course_type || "Maestro Course";
+                    }
+
+
+                    // Version column still uses the specific LabBuild course name for this row
+                    const versionForEmail = item.labbuild_course || "N/A";
+
 
                     singleSfCourseEmailBodyHTML += `<tr>
                                         <td>${escapeHtml(sfCodeForEmail)}</td><td>${escapeHtml(dateRange)}</td><td>${escapeHtml(endDateFormatted)}</td>
-                                        <td>${escapeHtml(primaryLocation)}</td><td>${escapeHtml(courseNameDisplayForEmail)}</td><td>${escapeHtml(startEndPodStr)}</td>
-                                        <td>${escapeHtml(username)}</td><td>${escapeHtml(password)}</td><td style="text-align:center;">${escapeHtml(studentPax)}</td>
-                                        <td style="text-align:center;">${escapeHtml(vendorPodsCount)}</td><td>${escapeHtml(courseNameDisplayForEmail)}</td>
+                                        <td>${escapeHtml(primaryLocation)}</td>
+                                        <td>${escapeHtml(courseNameForEmailColumn)}</td>
+                                        <td>${escapeHtml(startEndPodStr)}</td>
+                                        <td>${escapeHtml(apmUsername)}</td>
+                                        <td>${escapeHtml(apmPassword)}</td>
+                                        <td style="text-align:center;">${escapeHtml(studentPax)}</td>
+                                        <td style="text-align:center;">${escapeHtml(vendorPodsCount)}</td>
+                                        <td>${escapeHtml(versionForEmail)}</td>
                                         <td>${escapeHtml(primaryHostName)}${vendorPodsCount>0?` (${escapeHtml(startEndPodStr)})`:''}</td>
-                                        <td>${escapeHtml(primaryVCenter)}</td><td style="text-align:right;">${escapeHtml((item.memory_gb_one_pod || 0).toFixed(1))}</td>
+                                        <td>${escapeHtml(primaryVCenter)}</td>
+                                        <td style="text-align:right;">${escapeHtml((item.memory_gb_one_pod || 0).toFixed(1))}</td>
                                       </tr>`;
                 });
                 singleSfCourseEmailBodyHTML += `</tbody></table><p>Best regards,<br>Your Training Team</p><p class="footer">This is an automated notification. Please do not reply directly to this email.</p></body></html>`;
-
+                
                 const tempDiv = document.createElement('div'); tempDiv.innerHTML = emailHtml;
                 const iframeElement = tempDiv.querySelector(`#${emailItemId}-body-iframe`);
                 if (iframeElement) { iframeElement.setAttribute('data-initial-html', singleSfCourseEmailBodyHTML); }
@@ -233,7 +260,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
 
         trainerEmailsContainer.innerHTML = allEmailsHtml || '<p class="text-info">No student courses with trainers assigned.</p>';
-
+        
         document.querySelectorAll('.email-body-iframe').forEach(iframe => {
             const initialHtml = iframe.dataset.initialHtml;
             if (initialHtml) {
@@ -259,14 +286,15 @@ document.addEventListener('DOMContentLoaded', function() {
             return { success: false, message: "Client-side configuration error: Send URL missing." };
         }
         try {
+            const payload = {
+                trainer_name: trainerName,
+                edited_subject: subject,
+                edited_html_body: htmlBody,
+                course_item_to_email: courseItemsForPayloadList // This is the LIST of items for THIS email
+            };
             const response = await fetch(sendEmailUrl, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    trainer_name: trainerName,
-                    edited_subject: subject,
-                    edited_html_body: htmlBody,
-                    course_item_to_email: courseItemsForPayloadList
-                })
+                body: JSON.stringify(payload)
             });
             const contentType = response.headers.get("content-type");
             if (contentType && contentType.indexOf("application/json") !== -1) {
@@ -315,6 +343,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 const subject = subjectInput.value;
                 const htmlBody = iframe.contentWindow.document.documentElement.outerHTML;
 
+                // This list contains all "Student Build" items (including Maestro components)
+                // for this specific trainer and this specific original SF course code.
                 const courseItemsPayloadForThisEmail = allReviewItemsDataForEmail.filter(item =>
                     item.type === "Student Build" &&
                     item.sf_trainer_name === trainerName &&
@@ -353,7 +383,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 for (const section of emailSections) {
                     const sendButton = section.querySelector('.send-one-email-btn');
-                    if (!sendButton || sendButton.classList.contains('btn-success')) {
+                    if (!sendButton || sendButton.classList.contains('btn-success')) { // Already successfully sent or no button
                         if(sendButton && sendButton.classList.contains('btn-success')) successCount++;
                         continue;
                     }
@@ -380,9 +410,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 alert(`Bulk send attempt complete. Success: ${successCount}, Failed: ${failCount}.`);
             });
         }
-    } // End addEmailActionListenersForEach
-
-
+    }
     // --- APM Commands Modal JavaScript ---
     const generateApmCommandsBtn = document.getElementById('generateApmCommandsBtn');
     const apmLoadingIndicator = document.getElementById('apmLoadingIndicator');
