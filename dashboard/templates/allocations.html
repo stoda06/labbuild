@@ -1,405 +1,536 @@
 {# dashboard/templates/allocations.html #}
 {% extends 'base.html' %}
 
-{# Sets the title of the browser tab or window #}
 {% block title %}Current Allocations{% endblock %}
 
+{% block head %}
+    {{ super() }}
+    <style>
+        .allocation-table th,
+        .allocation-table td {
+            font-size: 0.85rem;        
+            vertical-align: middle;
+            padding: 0.4rem 0.5rem;    
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .allocation-table th {
+            white-space: nowrap;        
+        }
+        .allocation-table td {
+            white-space: normal;        
+            word-break: break-word;     
+        }
+        .allocation-table td.tag-cell-merged {
+            vertical-align: middle !important; 
+            padding-top: 0.6rem; 
+        }
+
+        /* Custom Striping Classes */
+        .tag-group-shade-0 { /* Corresponds to row_class_idx = 0 */
+            background-color: var(--bs-table-bg); /* Transparent or base table bg */
+        }
+        /* Odd groups */
+        .tag-group-shade-1 { /* Corresponds to row_class_idx = 1 */
+            background-color: var(--bs-table-striped-bg); /* Bootstrap's striped color */
+        }
+
+        /* Dark Mode overrides for custom striping */
+        body.dark-mode .tag-group-shade-0 {
+            background-color: var(--bs-table-bg); /* Dark mode table bg */
+        }
+        body.dark-mode .tag-group-shade-1 {
+            background-color: var(--bs-table-striped-bg); /* Dark mode striped bg */
+        }
+
+        .action-forms form {
+            margin-bottom: 0;
+            display: inline-block;
+            margin-left: 1px; 
+            margin-right: 1px;
+        }
+        .action-btn {
+            background: none; border: none; padding: 0.1rem 0.3rem; 
+            line-height: 1; font-size: 0.9rem; 
+            opacity: 0.7; 
+            transition: opacity 0.2s ease, color 0.2s ease;
+            vertical-align: middle; cursor: pointer;
+        }
+        .action-btn:hover { opacity: 1; }
+        .action-btn.text-danger { color: var(--bs-danger); }
+        .action-btn.text-warning { color: var(--bs-warning); }
+        .action-btn.text-secondary { color: #6c757d; }
+        .action-btn.text-info { color: var(--bs-info); }
+        html.dark-mode .action-btn.text-danger { color: #ff8a80; }
+        html.dark-mode .action-btn.text-warning { color: #ffd76d; }
+        html.dark-mode .action-btn.text-secondary { color: #adb5bd; }
+        html.dark-mode .action-btn.text-info { color: #66d9ef; }
+
+        .prtg-link { vertical-align: middle; padding: 0 0.2rem !important; }
+        .col-status i { margin: 0 0.2rem; }
+        
+        .pagination-controls { 
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+            padding: 0.5rem 0;
+        }
+
+        .power-toggle-btn.text-danger { color: var(--bs-danger); } 
+        .power-toggle-btn.text-secondary { color: #6c757d; }       
+        html.dark-mode .power-toggle-btn.text-danger { color: #ff8a80; }
+        html.dark-mode .power-toggle-btn.text-secondary { color: #adb5bd; }
+
+        .extend-toggle-btn.text-success { color: var(--bs-success); } 
+        .extend-toggle-btn.text-danger { color: var(--bs-danger); }   
+        html.dark-mode .extend-toggle-btn.text-success { color: var(--status-success-dark-text); }
+        html.dark-mode .extend-toggle-btn.text-danger { color: var(--status-failed-dark-text); }
+
+        .allocation-table .text-center { text-align: center; }
+        .allocation-table .text-end { text-align: right; }
+        .col-checkbox { width: 45px; text-align: center; } 
+        .col-tag { min-width: 130px; max-width: 180px;} /* Adjusted width */
+        .col-vendor { width: 60px; }
+        .col-course { min-width: 150px; max-width: 220px;} /* Adjusted width */
+        .col-date { width: 100px; } /* New class for date columns */
+        .col-type { width: 80px; }
+        .col-number { 
+            width: 100px; 
+            text-align: center; 
+            white-space: normal; 
+        }
+        .col-host { min-width: 120px; max-width: 160px;} /* Adjusted width */
+        .col-status { width: 85px; text-align: center; white-space: nowrap;}
+        .col-actions { min-width: 160px; white-space: nowrap; }
+
+        .bulk-actions-bar {
+            padding: 0.75rem 1rem;
+            background-color: var(--bs-card-cap-bg);
+            border: 1px solid var(--bs-card-border-color);
+            border-radius: 0.375rem;
+            margin-bottom: 1rem;
+            display: none; 
+            flex-wrap: wrap; 
+            gap: 0.75rem; 
+        }
+        body.dark-mode .bulk-actions-bar {
+            background-color: var(--card-header-bg-dark);
+            border-color: var(--card-border-dark);
+        }
+        .bulk-actions-bar .form-select-sm { max-width: 200px; flex-shrink: 0;}
+        .bulk-actions-bar .btn-sm { flex-shrink: 0; }
+        .bulk-actions-bar > span { vertical-align: middle; font-weight: bold; }
+        .pod-list-inline {
+            font-size: 0.9em; 
+            color: #555;
+        }
+        body.dark-mode .pod-list-inline {
+            color: #bbb;
+        }
+    </style>
+{% endblock %}
+
+
 {% block content %}
-{# Inline styles specific to this page for table layout and appearance #}
-<style>
-    /* Base styling for table cells */
-    .allocation-table th, .allocation-table td {
-        font-size: 0.9rem;      /* Slightly smaller font */
-        vertical-align: middle; /* Center content vertically */
-        padding-top: 0.4rem;    /* Reduce vertical padding */
-        padding-bottom: 0.4rem;
-    }
-    /* Ensure action forms display inline and have slight spacing */
-    .action-forms form {
-        margin-bottom: 0;
-        display: inline-block;
-        margin-left: 2px;
-        margin-right: 2px;
-    }
-    /* Style for delete/action buttons (icons) */
-    .action-btn { /* More generic class */
-        background: none;
-        border: none;
-        padding: 0.1rem 0.4rem;
-        line-height: 1;
-        font-size: 1rem;
-        opacity: 0.65;
-        transition: opacity 0.2s ease, color 0.2s ease;
-        vertical-align: middle;
-        cursor: pointer;
-    }
-    .action-btn:hover {
-        opacity: 1;
-    }
-    .action-btn.text-danger { color: var(--bs-danger); }
-    .action-btn.text-danger:hover { color: var(--bs-danger); } /* Keep color on hover */
-    .action-btn.text-warning { color: var(--bs-warning); }
-    .action-btn.text-warning:hover { color: var(--bs-warning); }
-    .action-btn.text-secondary { color: #6c757d; } /* Neutral grey */
-    .action-btn.text-secondary:hover { color: #5a6268; }
-
-    /* Dark mode overrides for action buttons */
-    html.dark-mode .action-btn.text-danger { color: #ff8a80; }
-    html.dark-mode .action-btn.text-danger:hover { color: #ff5252; }
-    html.dark-mode .action-btn.text-warning { color: #ffd76d; }
-    html.dark-mode .action-btn.text-warning:hover { color: #ffc94a; }
-    html.dark-mode .action-btn.text-secondary { color: #adb5bd; }
-    html.dark-mode .action-btn.text-secondary:hover { color: #ced4da; }
-
-
-    /* Style for PRTG link button */
-    .prtg-link {
-        vertical-align: middle;
-        padding: 0 0.25rem !important;
-    }
-
-    /* Styles for Header Rows - Grouping Visualization */
-    .header-row td {
-        font-weight: bold;
-        background-color: #f1f3f5; /* Light Grey base for headers (Light Mode) */
-        padding-top: 0.6rem;
-        padding-bottom: 0.6rem;
-        border-bottom: 1px solid #dee2e6;
-        border-top: 1px solid #dee2e6;
-    }
-    /* TAG Header - Most prominent */
-    .tag-header td {
-        font-size: 1.05em;
-        color: #212529;     /* Dark standard text */
-    }
-    /* COURSE Header - Indented, slightly less prominent */
-    .course-header td {
-        padding-left: 25px !important;
-        font-style: normal;
-        font-weight: 600;   /* Semi-bold */
-        color: #495057;     /* Darker Grey */
-        background-color: #f8f9fa; /* Very light grey, almost white */
-    }
-    /* HOST Header - Most indented, muted */
-    .host-header td {
-        padding-left: 50px !important;
-        font-weight: 600;
-        color: #6c757d;     /* Muted Grey */
-        background-color: #ffffff; /* White background */
-    }
-
-    /* Dark Mode Header Overrides - Using subtle greys */
-    html.dark-mode .header-row td {
-         background-color: #2c3034; /* Darker base for headers */
-         border-color: #454b50;
-    }
-    html.dark-mode .tag-header td {
-         color: #e9ecef; /* Light text */
-    }
-    html.dark-mode .course-header td {
-         color: #ced4da; /* Lighter grey */
-         background-color: #262a2e; /* Slightly lighter than base header */
-    }
-    html.dark-mode .host-header td {
-         color: #adb5bd; /* Muted light grey */
-         background-color: #212529; /* Match main dark background */
-    }
-
-    /* Data Rows */
-    .data-row td:first-child {
-        padding-left: 75px !important; /* Indent data under host */
-    }
-    .data-row td {
-        font-size: 0.85rem; /* Slightly smaller data font */
-    }
-    /* Ensure data rows get correct dark mode background */
-    html.dark-mode .data-row td {
-         background-color: inherit; /* Should inherit from body/card */
-    }
-    /* Container for pagination controls */
-    .pagination-controls {
-        margin-top: 1rem; /* Space above controls */
-    }
-     /* Power Toggle Button Specifics */
-    .power-toggle-btn {
-        font-size: 1.1rem; /* Slightly larger icon */
-    }
-    .power-toggle-btn.text-danger { color: var(--bs-danger); } /* Red when ON */
-    .power-toggle-btn.text-secondary { color: #6c757d; } /* Grey when OFF */
-    html.dark-mode .power-toggle-btn.text-danger { color: #ff8a80; } /* Lighter red */
-    html.dark-mode .power-toggle-btn.text-secondary { color: #adb5bd; } /* Lighter grey */
-
-</style>
-
-{# --- Page Header --- #}
 <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1>Current Allocations</h1>
-   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+  <h1>Current Allocations</h1>
+  <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
 </div>
-
-{# --- Filter Form --- #}
+<div class="mb-3 text-end">
+    <a href="{{ url_for('actions.export_allocations_excel') }}" class="btn btn-success btn-sm">
+        <i class="fas fa-file-excel"></i> Export to Excel
+    </a>
+</div>
 <div class="card mb-4">
-    <div class="card-header">Filter Allocations</div>
-    <div class="card-body">
-        <form action="{{ url_for('main.view_allocations') }}" method="GET" class="row g-3">
-             <div class="col-md-3"><label for="filter_tag" class="form-label">Tag (contains)</label><input type="text" class="form-control form-control-sm" id="filter_tag" name="filter_tag" value="{{ current_filters.get('filter_tag', '') }}"></div>
-             <div class="col-md-2"><label for="filter_vendor" class="form-label">Vendor (exact)</label><input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}"></div>
-             <div class="col-md-3"><label for="filter_course" class="form-label">Course (contains)</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
-             <div class="col-md-2"><label for="filter_host" class="form-label">Host (contains)</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
-             <div class="col-md-2"><label for="filter_number" class="form-label">Pod/Class # (exact)</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
-             <div class="col-12"><button type="submit" class="btn btn-primary btn-sm">Filter</button> <a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm">Clear Filters</a></div>
-        </form>
-    </div>
+  <div class="card-header">Filter Allocations</div>
+  <div class="card-body">
+    <form action="{{ url_for('main.view_allocations') }}" method="GET" class="row g-3 align-items-end">
+      <div class="col-md-3 col-lg-2"><label for="filter_tag" class="form-label">Tag</label><input type="text" class="form-control form-control-sm" id="filter_tag" name="filter_tag" value="{{ current_filters.get('filter_tag', '') }}"></div>
+      <div class="col-md-3 col-lg-2"><label for="filter_vendor" class="form-label">Vendor</label><input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_filters.get('filter_vendor', '') }}"></div>
+      <div class="col-md-3 col-lg-3"><label for="filter_course" class="form-label">Course</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
+      <div class="col-md-3 col-lg-2"><label for="filter_host" class="form-label">Host</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
+      <div class="col-md-3 col-lg-1"><label for="filter_number" class="form-label">Pod/Class #</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
+      <div class="col-md-6 col-lg-2">
+            <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
+            <a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm w-100 mt-1">Clear Filters</a>
+      </div>
+    </form>
+  </div>
 </div>
 
-{# --- Allocation Table Card --- #}
+<div class="bulk-actions-bar" id="bulkActionsBar">
+    <span id="selectedItemsCount" class="me-3">0 items selected</span>
+    <form id="bulkActionSubmitActualForm" method="POST" class="d-inline-flex align-items-center" style="gap: 0.5rem;">
+        <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputForSubmit">
+        {% for key, value in current_filters.items() %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endfor %}
+        <input type="hidden" name="page" value="{{ current_page }}">
+
+        <div class="btn-group" role="group">
+            <button type="button" class="btn btn-sm btn-outline-success bulk-action-trigger" data-action="power_on" title="Power ON selected"><i class="fas fa-play"></i> On</button>
+            <button type="button" class="btn btn-sm btn-outline-danger bulk-action-trigger" data-action="power_off" title="Power OFF selected"><i class="fas fa-stop"></i> Off</button>
+        </div>
+        <div class="btn-group ms-2" role="group">
+            <button type="button" class="btn btn-sm btn-danger bulk-action-trigger" data-action="teardown_infra" title="Teardown Infrastructure"><i class="fas fa-fire-alt"></i> Infra</button>
+            <button type="button" class="btn btn-sm btn-warning bulk-action-trigger" data-action="delete_db" title="Delete DB Entries"><i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i> DB</button>
+        </div>
+    </form>
+</div>
+
 <div class="card">
-  {# Display total count of actual data items found after filtering #}
-  <div class="card-header">Allocation List ({{ total_data_items }} total pods/classes matching filters)</div>
-  <div class="card-body p-0"> {# Remove padding for table to touch edges #}
-    {# Check if allocation_list (the paginated slice) has items #}
+  <div class="card-header">
+      Allocation List
+      {% if pagination_by_tags %}
+          (Page {{ current_page }} of {{ total_pages }} Tags
+          {%- if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number -%}
+              , Total Matching Tags: {{ total_display_count }}, Total Matching Items: {{ total_items_overall }}
+          {%- else -%}
+              , Total Tags: {{ total_display_count }}, Total Items: {{ total_items_overall }}
+          {%- endif -%})
+      {% else %} 
+          {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
+              (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }}) 
+          {% else %}
+              (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }}) 
+          {% endif %}
+      {% endif %}
+  </div>
+  <div class="card-body p-0">
     {% if allocation_list %}
       <div class="table-responsive">
-        {# Use a standard table ID #}
-        <table class="table table-sm table-hover mb-0 allocation-table" id="allocations-table">
+        <table class="table table-sm table-hover mb-0 allocation-table" id="allocationsTable"> 
           <thead class="table-light">
-            {# Define table headers #}
             <tr>
-              <th>Scope / Item</th>
-              <th>Type</th>
-              <th>Number</th>
-              <th>Nested Pods (F5)</th>
-              <th>PRTG</th>
-              <th class="text-end">Actions</th>
+              <th class="col-checkbox"><input type="checkbox" class="form-check-input" id="selectAllAllocationsCheckbox" title="Select/Deselect All Visible"></th>
+              <th class="col-tag">Tag</th>
+              <th class="col-vendor">Vendor</th>
+              <th class="col-course">Course Name</th>
+              <th class="col-date">Start Date</th> {# New Column #}
+              <th class="col-date">End Date</th>   {# New Column #}
+              <th class="col-type">Type</th>
+              <th class="col-number">Number / Contained Pods</th>
+              <th class="col-host">Host</th>
+              <th class="col-status">Status</th>
+              <th class="col-actions text-end">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {# Loop through the paginated list passed from Flask #}
+            {% set current_tag_for_shade = '' %}
+            {% set shade_index = 0 %} 
             {% for item in allocation_list %}
-              {# Conditional rendering based on row_type #}
-              {% if item.row_type == 'tag_header' %}
-                {# Render a Tag Header Row #}
-                <tr class="header-row tag-header" data-row-type="tag_header">
-                  {# Span most columns, leave space for actions #}
-                  <td colspan="5"><strong>Tag:</strong> {{ item.tag }}</td>
-                  {# Actions for Tag Row #}
-                  <td class="text-end action-forms">
-                      {# Power Toggle for ENTIRE Tag #}
-                       <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline" onsubmit="return confirm('Toggle power (Start/Stop) for ALL items in Tag \'{{ item.tag }}\'?')">
-                           <input type="hidden" name="scope" value="tag">
-                           <input type="hidden" name="tag" value="{{ item.tag }}">
-                           {# Indicate a 'toggle' action - backend determines start/stop per group #}
-                           <input type="hidden" name="current_state" value="toggle">
-                            {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                           <button type="submit" class="action-btn power-toggle-btn text-secondary" title="Toggle Power for ALL items in Tag '{{ item.tag }}'">
-                               <i class="fas fa-power-off"></i>
-                           </button>
-                       </form>
+              {% if item.tag != current_tag_for_shade %}
+                {% set current_tag_for_shade = item.tag %}
+                {% set shade_index = 1 - shade_index %} 
+              {% endif %}
+              {% set row_shade_class = 'tag-group-shade-' ~ shade_index %}
 
-                      {# Teardown ENTIRE Tag (Infrastructure) - Use Dumpster Icon #}
-                      <form action="{{ url_for('actions.teardown_tag') }}" method="POST" class="d-inline" onsubmit="return confirm('TEARDOWN ALL resources (VMs, networks, etc.) for Tag \'{{ item.tag }}\'? This affects ALL courses/hosts under this tag and CANNOT be easily undone.')">
-                          <input type="hidden" name="tag" value="{{ item.tag }}">
-                           {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                          <button type="submit" class="action-btn delete-btn text-danger" title="Teardown ALL Resources for Tag '{{ item.tag }}'">
-                              <i class="fas fa-dumpster"></i> {# Dumpster Icon #}
-                          </button>
-                      </form>
-
-                      {# Delete Tag DB Entry Only #}
-                      <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry for ENTIRE Tag \'{{ item.tag }}\'? This affects all courses and pods under this tag. This CANNOT be undone.')">
-                          <input type="hidden" name="delete_level" value="tag_db">
-                          <input type="hidden" name="tag" value="{{ item.tag }}">
-                           {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                          <button type="submit" class="action-btn delete-btn text-warning" title="Delete ENTIRE Tag '{{ item.tag }}' DB Entry Only">
-                              <i class="fas fa-database"></i><i class="fas fa-times"></i>
-                          </button>
-                      </form>
-                  </td>
-                </tr>
-              {% elif item.row_type == 'course_header' %}
-                {# Render a Course Header Row - No actions typically needed here #}
-                <tr class="header-row course-header" data-row-type="course_header">
-                  <td colspan="6"><strong>Course:</strong> {{ item.course_name }}</td>
-                </tr>
-              {% elif item.row_type == 'host_header' %}
-                 {# Render a Host Header Row - No actions typically needed here #}
-                 <tr class="header-row host-header" data-row-type="host_header">
-                  <td colspan="6"><strong>Host:</strong> {{ item.host }}</td>
-                </tr>
-              {% elif item.row_type == 'data' %}
-                {# Render an actual Data Row #}
-                <tr class="data-row" data-row-type="data">
-                  <td></td> {# Empty first cell for indentation via CSS #}
-                  {# Type Column #}
-                  <td>
-                      {% if item.type == 'f5_class' %}
-                          <span class="badge bg-info text-dark">F5 Class</span>
-                      {% elif item.type == 'pod' %}
-                          <span class="badge bg-secondary">Pod</span>
-                      {% else %}
-                          {{ item.type | capitalize }}
-                      {% endif %}
-                  </td>
-                  {# Number Column #}
-                  <td>{{ item.number }}</td>
-                  {# Nested Pods Column #}
-                  <td>
-                      {% if item.type == 'f5_class' and item.nested_pods %}
-                          {{ item.nested_pods | join(', ') }}
-                      {% else %}
-                          -
-                      {% endif %}
-                  </td>
-                  {# PRTG Column #}
-                  <td>
-                      {% if item.prtg_url %}
-                          <a href="{{ item.prtg_url }}" target="_blank" class="btn btn-outline-info btn-sm p-0 px-1 me-1 prtg-link" title="View PRTG for Item {{ item.number }}"><i class="fas fa-chart-line fa-xs"></i></a>
-                      {% else %}
-                          <span class="text-muted">N/A</span>
-                      {% endif %}
-                  </td>
-                  {# Actions Column #}
-                  <td class="text-end action-forms">
-                        {# Power Toggle for Individual Item #}
-                        <form action="{{ url_for('actions.toggle_power') }}" method="POST"
-                                class="d-inline power-toggle-form"
-                                {# Add data attributes for confirmation message parts #}
-                                data-action="{{ 'Stop' if item.poweron else 'Start' }}"
-                                data-item-type="{{ item.type }}"
-                                data-item-number="{{ item.number }}"
-                                >
-                            <input type="hidden" name="scope" value="item">
-                            <input type="hidden" name="tag" value="{{ item.tag }}">
-                            <input type="hidden" name="item_type" value="{{ item.type }}">
-                            <input type="hidden" name="item_number" value="{{ item.number }}">
-                            <input type="hidden" name="host" value="{{ item.host }}">
-                            <input type="hidden" name="vendor" value="{{ item.vendor }}">
-                            <input type="hidden" name="course" value="{{ item.course_name }}">
-                            <input type="hidden" name="current_state" value="{{ 'on' if item.poweron else 'off' }}">
-                            {# Pass class context if it's an F5 pod #}
-                            {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}
-                                <input type="hidden" name="item_class_number" value="{{ item.class_number }}">
-                            {% endif %}
-                             {# Pass filters back #}
-                            {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                            {# Set icon color based on item.poweron #}
-                            <button type="submit" class="action-btn power-toggle-btn {{ 'text-danger' if item.poweron else 'text-secondary' }}" title="{{ 'Stop' if item.poweron else 'Start' }} Item {{ item.number }}">
-                                <i class="fas fa-power-off"></i>
-                            </button>
-                        </form>
-
-                        {# Teardown Item Form #}
-                         <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown {{ item.type }} {{ item.number }}? This deletes VMs.')">
-                           <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
-                           {# Pass context #}
-                           <input type="hidden" name="tag" value="{{ item.tag }}">
-                           <input type="hidden" name="host" value="{{ item.host }}">
-                           <input type="hidden" name="vendor" value="{{ item.vendor }}">
-                           <input type="hidden" name="course" value="{{ item.course_name }}">
-                           {% if item.type == 'pod' %} <input type="hidden" name="pod_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'f5_class' %} <input type="hidden" name="class_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
-                           {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                           <button type="submit" class="action-btn delete-btn text-danger" title="Teardown {{ item.type }} {{ item.number }}">
-                               <i class="fas fa-trash-alt"></i>
-                           </button>
-                         </form>
-
-                        {# DB Delete Item Form #}
-                         <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE DB entry ONLY for {{ item.type }} {{ item.number }}?')">
-                           <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
-                           {# Pass context #}
-                           <input type="hidden" name="tag" value="{{ item.tag }}">
-                           <input type="hidden" name="course" value="{{ item.course_name }}">
-                           {% if item.type == 'pod' %} <input type="hidden" name="pod_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'f5_class' %} <input type="hidden" name="class_number" value="{{ item.number }}"> {% endif %}
-                           {% if item.type == 'pod' and item.vendor.lower() == 'f5' and item.class_number %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
-                            {# Pass filters back #}
-                           {% for key, value in current_filters.items() %}<input type="hidden" name="filter_{{ key.replace('filter_', '') }}" value="{{ value }}">{% endfor %}
-                           <button type="submit" class="action-btn delete-btn text-warning" title="Delete DB Entry Only for {{ item.type }} {{ item.number }}">
-                               <i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i>
-                           </button>
-                         </form>
-                  </td>
-                </tr>
-              {% endif %} {# End conditional rendering for item.row_type #}
-            {% endfor %} {# End Item Loop #}
+              <tr class="data-row {{ row_shade_class }}" 
+                  data-tag="{{ item.tag }}" 
+                  data-vendor="{{ item.vendor }}" 
+                  data-course="{{ item.course_name }}"
+                  data-host="{{ item.host }}"
+                  data-item-type="{{ item.type }}"
+                  data-item-number="{{ item.number }}"
+                  data-class-number="{{ item.class_number if item.class_number is not none else '' }}"
+                  data-pod-number="{{ item.pod_number if item.pod_number is not none else '' }}"
+                  data-power-state="{{ 'on' if item.poweron else 'off' }}"
+                  data-extend-state="{{ 'true' if item.is_extended else 'false' }}">
+                <td class="col-checkbox"><input type="checkbox" class="row-checkbox form-check-input"></td>
+                
+                {% if item._is_first_in_tag_group %}
+                <td class="col-tag tag-cell-merged" title="{{ item.tag }}" rowspan="{{ item.tag_rowspan if item.tag_rowspan > 0 else 1 }}">
+                    {{ item.tag }}
+                </td>
+                {% endif %}
+                
+                <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A' }}</td>
+                <td class="col-course" title="{{ item.course_name }}">{{ item.course_name }}</td>
+                <td class="col-date">
+                    <span class="local-datetime" data-timestamp="{{ item.course_start_date_iso }}">
+                        {{ item.course_start_date }}
+                    </span>
+                </td>
+                <td class="col-date">
+                    <span class="local-datetime" data-timestamp="{{ item.course_end_date_iso }}">
+                        {{ item.course_end_date }}
+                    </span>
+                </td>
+                <td class="col-type">
+                    {% if item.type == 'f5_class' %}<span class="badge bg-info text-dark" title="F5 Class">F5 Cls</span>
+                    {% elif item.type == 'pod' %}<span class="badge bg-secondary" title="Pod">Pod</span>
+                    {% else %}<span class="text-muted">?</span>{% endif %}
+                </td>
+                <td class="col-number">
+                    {{ item.number }}
+                    {% if item.type == 'f5_class' and item.nested_pods_str and item.nested_pods_str != '-' %}
+                        <br><small class="pod-list-inline">(Pods: {{ item.nested_pods_str }})</small>
+                    {% endif %}
+                </td>
+                <td class="col-host" title="{{ item.host }}">{{ item.host }}</td>
+                <td class="col-status text-center">
+                     <i class="fas fa-power-off mx-1 {{ 'text-danger' if item.poweron else 'text-secondary' }}"
+                        title="Power: {{ 'On' if item.poweron else 'Off' }}"></i>
+                     <i class="fas {{ 'fa-lock' if item.is_extended else 'fa-lock-open' }} mx-1 {{ 'text-danger' if item.is_extended else 'text-success' }}"
+                        title="Tag Pod Reuse: {{ 'Prevented (Locked)' if item.is_extended else 'Allowed (Unlocked)' }}"></i>
+                </td>
+                <td class="col-actions text-end action-forms">
+                    {% if item.prtg_url %}
+                        <a href="{{ item.prtg_url }}" target="_blank" class="action-btn prtg-link" title="View PRTG for {{ item.type }} {{ item.number }}"><i class="fas fa-chart-line text-info"></i></a>
+                    {% endif %}
+                    <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline power-toggle-form">
+                        <input type="hidden" name="scope" value="item">
+                        <input type="hidden" name="tag" value="{{ item.tag }}">
+                        <input type="hidden" name="item_type" value="{{ item.type }}">
+                        <input type="hidden" name="item_number" value="{{ item.number }}">
+                        <input type="hidden" name="host" value="{{ item.host }}">
+                        <input type="hidden" name="vendor" value="{{ item.vendor }}">
+                        <input type="hidden" name="course" value="{{ item.course_name }}">
+                        <input type="hidden" name="current_state" value="{{ 'on' if item.poweron else 'off' }}">
+                        {% if item.type == 'pod' and item.vendor and item.vendor.lower() == 'f5' and item.class_number is not none %}
+                            <input type="hidden" name="item_class_number" value="{{ item.class_number }}">
+                        {% endif %}
+                        {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
+                        <input type="hidden" name="page" value="{{ current_page }}">
+                        <button type="submit" class="action-btn power-toggle-btn {{ 'text-danger' if item.poweron else 'text-secondary' }}" title="{{ 'Stop' if item.poweron else 'Start' }} Item {{ item.number }}">
+                            <i class="fas fa-power-off"></i>
+                        </button>
+                    </form>
+                    <form action="{{ url_for('actions.toggle_tag_extend') }}" method="POST" class="d-inline"
+                             title="Toggle Pod Reuse for ENTIRE TAG '{{ item.tag }}' (Currently: {{ 'Locked - No Reuse' if item.is_extended else 'Unlocked - Allow Reuse' }})">
+                        <input type="hidden" name="tag_name" value="{{ item.tag }}">
+                        <input type="hidden" name="current_extend_status" value="{{ 'true' if item.is_extended else 'false' }}">
+                        {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
+                        <input type="hidden" name="page" value="{{ current_page }}">
+                        <button type="submit" class="action-btn extend-toggle-btn {{ 'text-danger' if item.is_extended else 'text-success' }}">
+                            <i class="fas {{ 'fa-lock' if item.is_extended else 'fa-lock-open' }}"></i>
+                        </button>
+                   </form>
+                    <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" 
+                          onsubmit="return confirm('Teardown INFRASTRUCTURE for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'? This deletes VMs and related network resources.')">
+                       <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
+                       <input type="hidden" name="tag" value="{{ item.tag }}">
+                       <input type="hidden" name="host" value="{{ item.host }}">
+                       <input type="hidden" name="vendor" value="{{ item.vendor }}">
+                       <input type="hidden" name="course" value="{{ item.course_name }}">
+                       {% if item.pod_number is not none %}<input type="hidden" name="pod_number" value="{{ item.pod_number }}">{% endif %}
+                       {% if item.class_number is not none %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
+                       {% if item.type == 'pod' and item.vendor and item.vendor.lower() == 'f5' and item.class_number is not none %}
+                           <input type="hidden" name="class_number" value="{{ item.class_number }}">
+                       {% endif %}
+                       {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
+                       <input type="hidden" name="page" value="{{ current_page }}">
+                       <button type="submit" class="action-btn delete-btn text-danger" title="Teardown {{ item.type }} {{ item.number }} Infrastructure">
+                           <i class="fas fa-fire-alt"></i>
+                       </button>
+                    </form>
+                    <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" 
+                          onsubmit="return confirm('DELETE Database Entry ONLY for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'? VMs will NOT be affected.')">
+                       <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
+                       <input type="hidden" name="tag" value="{{ item.tag }}">
+                       <input type="hidden" name="course" value="{{ item.course_name }}">
+                       {% if item.pod_number is not none %}<input type="hidden" name="pod_number" value="{{ item.pod_number }}">{% endif %}
+                       {% if item.class_number is not none %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
+                       {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
+                       <input type="hidden" name="page" value="{{ current_page }}">
+                       <button type="submit" class="action-btn delete-btn text-warning" title="Delete DB Entry Only for {{ item.type }} {{ item.number }}">
+                           <i class="fas fa-database"></i><i class="fas fa-times" style="font-size:0.6em; vertical-align: super;"></i>
+                       </button>
+                    </form>
+                </td>
+              </tr>
+            {% endfor %}
           </tbody>
         </table>
-      </div> {# End table-responsive #}
+      </div>
 
-      {# --- Server-Side Pagination Controls --- #}
+      {# --- PAGINATION CONTROLS --- #}
       {% if total_pages > 1 %}
         <nav aria-label="Allocation pagination" class="p-3 pagination-controls">
           <ul class="pagination pagination-sm justify-content-center mb-0">
-            {# Previous Page Link #}
-            <li class="page-item {{ 'disabled' if current_page == 1 else '' }}">
+            <li class="page-item {% if current_page == 1 %}disabled{% endif %}">
               <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page-1, **pagination_args) }}">Previous</a>
             </li>
-            {# Page Number Links (Example with ellipsis) #}
-            {% set page_window = 2 %}
+            {% set page_window = 2 %} 
+            {% set show_first_ellipsis = false %}
+            {% set show_last_ellipsis = false %}
             {% for page_num in range(1, total_pages + 1) %}
-                {% if page_num == 1 or page_num == total_pages or (page_num >= current_page - page_window and page_num <= current_page + page_window) %}
-                     <li class="page-item {{ 'active' if page_num == current_page else '' }}">
-                         <a class="page-link" href="{{ url_for('main.view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a>
-                     </li>
-                {% elif page_num == 2 and current_page > page_window + 2 %}
-                     <li class="page-item disabled"><span class="page-link">...</span></li>
-                {% elif page_num == total_pages - 1 and current_page < total_pages - page_window - 1 %}
-                     <li class="page-item disabled"><span class="page-link">...</span></li>
+                {% if page_num == 1 or page_num == total_pages or 
+                      (page_num >= current_page - page_window and page_num <= current_page + page_window) %}
+                    <li class="page-item {% if page_num == current_page %}active{% endif %}">
+                        <a class="page-link" href="{{ url_for('main.view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a>
+                    </li>
+                {% elif page_num < current_page and not show_first_ellipsis and page_num > 1 %}
+                    {% if page_num == 2 and current_page - page_window > 2 %}
+                        {% set show_first_ellipsis = true %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% endif %}
+                {% elif page_num > current_page and not show_last_ellipsis and page_num < total_pages %}
+                     {% if page_num == total_pages - 1 and current_page + page_window < total_pages - 1 %}
+                        {% set show_last_ellipsis = true %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% endif %}
                 {% endif %}
             {% endfor %}
-            {# Next Page Link #}
-            <li class="page-item {{ 'disabled' if current_page == total_pages else '' }}">
+            <li class="page-item {% if current_page == total_pages %}disabled{% endif %}">
               <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page+1, **pagination_args) }}">Next</a>
             </li>
           </ul>
         </nav>
       {% endif %}
-      {# --- End Pagination Controls --- #}
+      {# --- END PAGINATION CONTROLS --- #}
 
-    {% else %} {# If allocation_list (paginated slice) is empty #}
-      <p class="p-3">No allocations found matching filters{% if current_page > 1 %} for this page{% endif %}.</p>
+    {% else %}
+      <p class="p-3 text-muted">
+          No allocations found
+          {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
+               matching your filter criteria. <a href="{{ url_for('main.view_allocations') }}">Clear filters</a>?
+          {% else %}
+               in the database.
+          {% endif %}
+       </p>
     {% endif %}
-  </div> {# End card-body #}
-</div> {# End card #}
+  </div> 
+</div>
+
+<form id="bulkActionSubmitActualForm" method="POST" style="display: none;">
+    <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputForSubmit">
+    {% for key, value_param in current_filters.items() %}{# Renamed value to value_param #}
+        <input type="hidden" name="{{ key }}" value="{{ value_param }}">
+    {% endfor %}
+    <input type="hidden" name="page" value="{{ current_page }}">
+</form>
 
 {% endblock %}
 
 {% block scripts %}
-  {{ super() }} {# Include base scripts (dark mode, timezone) #}
+  {{ super() }}
   <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const tableBody = document.getElementById('allocations-tbody');
+    document.addEventListener('DOMContentLoaded', function () {
+      const selectAllCheckbox = document.getElementById('selectAllAllocationsCheckbox');
+      const rowCheckboxes = document.querySelectorAll('#allocationsTable .row-checkbox');
+      const bulkActionsBar = document.getElementById('bulkActionsBar');
+      const selectedItemsCountSpan = document.getElementById('selectedItemsCount');
+      
+      const bulkActionSubmitActualForm = document.getElementById('bulkActionSubmitActualForm');
+      const selectedItemsJsonInputForSubmit = document.getElementById('selectedItemsJsonInputForSubmit');
+      const bulkActionTriggerButtons = document.querySelectorAll('.bulk-action-trigger');
 
-        if (tableBody) {
-            tableBody.addEventListener('submit', function(event) {
-                // Check if the submitted form is one of our power toggle forms
-                if (event.target && event.target.classList.contains('power-toggle-form')) {
-                    const form = event.target;
-                    // Retrieve data from attributes
-                    const action = form.dataset.action || 'Toggle'; // Fallback text
-                    const itemType = form.dataset.itemType || 'item';
-                    const itemNumber = form.dataset.itemNumber || '?';
 
-                    // Construct the confirmation message
-                    const message = `Are you sure you want to ${action} ${itemType} ${itemNumber}?`;
+      function updateBulkActionsBarVisibility() {
+          if (!bulkActionsBar || !selectedItemsCountSpan) return;
+          const selectedCount = document.querySelectorAll('#allocationsTable .row-checkbox:checked').length;
+          selectedItemsCountSpan.textContent = `${selectedCount} item${selectedCount !== 1 ? 's' : ''} selected`;
+          bulkActionsBar.style.display = (selectedCount > 0) ? 'flex' : 'none'; 
+      }
 
-                    // Show confirmation dialog
-                    if (!confirm(message)) {
-                        event.preventDefault(); // Prevent form submission if user cancels
-                    }
-                    // If user confirms, the form submits normally
+      if (selectAllCheckbox) {
+          selectAllCheckbox.addEventListener('change', function() {
+              rowCheckboxes.forEach(checkbox => { checkbox.checked = this.checked; });
+              updateBulkActionsBarVisibility();
+          });
+      }
+
+      rowCheckboxes.forEach(checkbox => {
+          checkbox.addEventListener('change', function() {
+              if (selectAllCheckbox) {
+                if (!this.checked) {
+                    selectAllCheckbox.checked = false;
+                } else {
+                    const allChecked = Array.from(rowCheckboxes).every(cb => cb.checked);
+                    selectAllCheckbox.checked = allChecked;
                 }
-                // You can add similar logic for other forms if their confirm messages become complex
-            });
-        } else {
-            console.warn("Could not find table body 'allocations-tbody' to attach submit listener.");
-        }
+              }
+              updateBulkActionsBarVisibility();
+          });
+      });
+
+      function getSelectedItemsDataForBulk() {
+          const selectedData = [];
+          document.querySelectorAll('#allocationsTable .row-checkbox:checked').forEach(checkbox => {
+              const row = checkbox.closest('tr.data-row');
+              if (row) {
+                  selectedData.push({
+                      tag: row.dataset.tag,
+                      vendor: row.dataset.vendor,
+                      course: row.dataset.course,
+                      host: row.dataset.host,
+                      item_type: row.dataset.itemType,
+                      item_number: row.dataset.itemNumber,
+                      pod_number: row.dataset.podNumber || null, 
+                      class_number: row.dataset.classNumber || null,
+                      current_power_state: row.dataset.powerState,
+                      current_extend_state: row.dataset.extendState 
+                  });
+              }
+          });
+          return selectedData;
+      }
+
+      bulkActionTriggerButtons.forEach(button => {
+          button.addEventListener('click', function() {
+              const action = this.dataset.action; 
+              const selectedItems = getSelectedItemsDataForBulk();
+
+              if (selectedItems.length === 0) {
+                  alert("Please select at least one item.");
+                  return;
+              }
+
+              let confirmMsg = `Are you sure you want to perform '${action.replace(/_/g, ' ')}' on ${selectedItems.length} item(s)?`;
+              if (action === 'teardown_infra') {
+                  confirmMsg += " This is IRREVERSIBLE and deletes VMs/networks.";
+              } else if (action === 'delete_db') {
+                  confirmMsg += " This only deletes database entries, not VMs.";
+              }
+              
+              if (!confirm(confirmMsg)) {
+                  return;
+              }
+
+              if (bulkActionSubmitActualForm && selectedItemsJsonInputForSubmit) {
+                  selectedItemsJsonInputForSubmit.value = JSON.stringify(selectedItems);
+                  let actionUrl = "";
+                  if (action === 'power_on') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='start') }}";
+                  else if (action === 'power_off') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='stop') }}";
+                  else if (action === 'teardown_infra') actionUrl = "{{ url_for('actions.bulk_teardown_items') }}";
+                  else if (action === 'delete_db') actionUrl = "{{ url_for('actions.bulk_db_delete_items') }}";
+                  
+                  if (actionUrl) {
+                      bulkActionSubmitActualForm.action = actionUrl;
+                      bulkActionSubmitActualForm.submit();
+                  } else {
+                      alert("Selected bulk action ('" + action + "') is not configured.");
+                  }
+              } else {
+                  alert("Error: Bulk action form components not found.");
+              }
+          });
+      });
+
+      const individualActionForms = document.querySelectorAll('.action-forms form');
+      individualActionForms.forEach(form => {
+          form.addEventListener('submit', function(event) {
+              const onsubmitAttr = form.getAttribute('onsubmit');
+              if (onsubmitAttr && onsubmitAttr.includes('confirm(')) {
+                // Native confirm is handled by the browser based on its return value
+              }
+              const filterParams = new URLSearchParams(window.location.search);
+              filterParams.forEach((value_param, key_param) => { // Renamed to avoid conflict
+                  if ((key_param.startsWith('filter_') || key_param === 'page') && 
+                      !form.querySelector(`input[name="${key_param}"]`)) {
+                      const hiddenInput = document.createElement('input');
+                      hiddenInput.type = 'hidden'; hiddenInput.name = key_param; hiddenInput.value = value_param;
+                      form.appendChild(hiddenInput);
+                  }
+              });
+          });
+      });
+
+      updateBulkActionsBarVisibility(); 
+      // Ensure local times are updated after initial render and any dynamic updates
+      if (typeof updateLocalTimes === "function") { 
+          updateLocalTimes(); 
+      }
     });
   </script>
 {% endblock %}

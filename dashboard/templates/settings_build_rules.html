@@ -1,0 +1,458 @@
+{# dashboard/templates/settings_build_rules.html #}
+{% extends 'base.html' %}
+
+{% block title %}Build Rules Settings{% endblock %}
+
+{% block head %}
+{{ super() }}
+{# Add specific CSS if needed #}
+<style>
+    .rules-table th,
+    .rules-table td {
+        vertical-align: middle;
+        font-size: 0.9rem;
+    }
+
+    .rules-table td pre {
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        padding: 5px;
+        border-radius: 3px;
+        max-height: 100px;
+        overflow-y: auto;
+        font-size: 0.8rem;
+        margin-bottom: 0;
+    }
+
+    body.dark-mode .rules-table td pre {
+        background-color: #333;
+        border-color: #555;
+        color: #eee;
+    }
+
+    .condition-item,
+    .action-item,
+    .priority-item {
+        margin-bottom: 0.5rem;
+    }
+
+    textarea.form-control-sm {
+        font-size: 0.8rem;
+        font-family: monospace;
+    }
+
+    .btn-action-group button,
+    .btn-action-group a {
+        margin-left: 5px;
+    }
+
+    .modal-body textarea {
+        min-height: 150px;
+    }
+
+    /* Ensure textarea is usable */
+</style>
+{% endblock %}
+
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1>Build Automation Rules</h1>
+    <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+</div>
+
+{# --- Button to Trigger Add Rule Modal --- #}
+<div class="mb-3">
+    <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addRuleModal">
+        <i class="fas fa-plus"></i> Add New Rule
+    </button>
+</div>
+
+
+{# --- Rules Table --- #}
+<div class="card">
+    <div class="card-header">Existing Build Rules (Sorted by Priority)</div>
+    <div class="card-body p-0">
+        {% if rules %}
+        <div class="table-responsive">
+            <table class="table table-sm table-striped table-hover mb-0 rules-table">
+                <thead class="table-light">
+                    <tr>
+                        <th>Priority</th>
+                        <th>Rule Name</th>
+                        <th>Conditions</th>
+                        <th>Actions</th>
+                        <th class="text-end">Manage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for rule in rules %}
+                    <tr data-rule-id="{{ rule._id }}">
+                        <td class="text-center">{{ rule.priority }}</td>
+                        <td>{{ rule.rule_name }}</td>
+                        {# Display Conditions and Actions as formatted JSON #}
+                        <td>
+                            <pre><code>{{ rule.conditions | tojson(indent=2) }}</code></pre>
+                        </td>
+                        <td>
+                            <pre><code>{{ rule.actions | tojson(indent=2) }}</code></pre>
+                        </td>
+                        <td class="text-end btn-action-group">
+                            <button type="button" class="btn btn-sm btn-info clone-rule-btn" data-bs-toggle="modal"
+                                data-bs-target="#addRuleModal" data-rule-name="{{ rule.rule_name | e }}"
+                                data-rule-priority="{{ rule.priority + 1 }}" {# Default cloned priority slightly lower
+                                #} data-rule-conditions='{{ rule.conditions | tojson }}'
+                                data-rule-actions='{{ rule.actions | tojson }}' title="Clone Rule">
+                                <i class="fas fa-clone"></i>
+                            </button>
+                            {# Edit Button (Triggers Edit Modal) #}
+                            <button type="button" class="btn btn-sm btn-warning edit-rule-btn" data-bs-toggle="modal"
+                                data-bs-target="#editRuleModal" data-rule-id="{{ rule._id }}"
+                                data-rule-name="{{ rule.rule_name | e }}" {# Escape name just in case #}
+                                data-rule-priority="{{ rule.priority }}" {# *** USE SINGLE QUOTES FOR THESE ATTRIBUTES
+                                *** #} {# *** REMOVE |safe (tojson is already safe for this context when HTML quotes are
+                                correct) *** #} data-rule-conditions='{{ rule.conditions | tojson }}'
+                                data-rule-actions='{{ rule.actions | tojson }}' title="Edit Rule">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            {# Delete Button (Triggers Delete Form) #}
+                            <form action="{{ url_for('actions.delete_build_rule', rule_id=rule._id) }}" method="POST"
+                                class="d-inline"
+                                onsubmit="return confirm('Are you sure you want to delete rule \'{{ rule.rule_name }}\'?')">
+                                {# Add CSRF token if needed #}
+                                <button type="submit" class="btn btn-sm btn-danger" title="Delete Rule">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="p-3 text-muted">No build rules found in the database.</p>
+        {% endif %}
+    </div>{# End card-body #}
+</div>{# End card #}
+
+{# --- Add Rule Modal --- #}
+<div class="modal fade" id="addRuleModal" tabindex="-1" aria-labelledby="addRuleModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form action="{{ url_for('actions.add_build_rule') }}" method="POST">
+                {# Add CSRF token if needed #}
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addRuleModalLabel">Add New Build Rule</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3 row">
+                        <div class="col-md-8">
+                            <label for="add_rule_name" class="form-label">Rule Name <span
+                                    class="text-danger">*</span></label>
+                            <input type="text" class="form-control form-control-sm" id="add_rule_name" name="rule_name"
+                                required>
+                            <small class="form-text text-muted">Descriptive name (e.g., "PAN Cortex Hosts", "F5 Admin
+                                Course").</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="add_priority" class="form-label">Priority <span
+                                    class="text-danger">*</span></label>
+                            <input type="number" class="form-control form-control-sm" id="add_priority" name="priority"
+                                required min="1" value="50">
+                            <small class="form-text text-muted">Lower number runs first.</small>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="add_conditions" class="form-label">Conditions (JSON) <span
+                                class="text-danger">*</span></label>
+                        <textarea class="form-control form-control-sm" id="add_conditions" name="conditions" rows="6"
+                            placeholder='{
+  "vendor": "pa",
+  "course_type_contains": ["Firewall: Configure Extended Features"]
+}' required>{}</textarea>
+                        <small class="form-text text-muted">Enter valid JSON. Example keys: "vendor",
+                            "course_type_contains" (list), "course_code_contains" (list), "course_code_not_contains"
+                            (list).</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="add_actions" class="form-label">Actions (JSON) <span
+                                class="text-danger">*</span></label>
+                        <textarea class="form-control form-control-sm" id="add_actions" name="actions" rows="6"
+                            placeholder='{
+  "set_labbuild_course": "1110-210",
+  "host_priority": ["nightbird", "hotshot"],
+  "allow_spillover": true,
+  "start_pod_number": 1
+}' required>{}</textarea>
+                        <small class="form-text text-muted">Enter valid JSON. Example keys: "set_labbuild_course",
+                            "host_priority" (list), "allow_spillover" (boolean), "start_pod_number" (number),
+                            "set_max_pods" (number).</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-primary">Save New Rule</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+{# --- Edit Rule Modal --- #}
+<div class="modal fade" id="editRuleModal" tabindex="-1" aria-labelledby="editRuleModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            {# The action URL will be set dynamically by JS or you can use a generic one if your backend handles rule_id
+            #}
+            <form id="editRuleForm" action="{{ url_for('actions.update_build_rule') }}" method="POST">
+                <input type="hidden" id="edit_rule_id" name="rule_id"> {# Hidden input for ID #}
+                {# Add CSRF token if needed #}
+                <div class="modal-header">
+                    <h5 class="modal-title" id="editRuleModalLabel">Edit Build Rule</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3 row">
+                        <div class="col-md-8">
+                            <label for="edit_rule_name" class="form-label">Rule Name <span
+                                    class="text-danger">*</span></label>
+                            <input type="text" class="form-control form-control-sm" id="edit_rule_name" name="rule_name"
+                                required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="edit_priority" class="form-label">Priority <span
+                                    class="text-danger">*</span></label>
+                            <input type="number" class="form-control form-control-sm" id="edit_priority" name="priority"
+                                required min="1">
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="edit_conditions" class="form-label">Conditions (JSON) <span
+                                class="text-danger">*</span></label>
+                        <textarea class="form-control form-control-sm" id="edit_conditions" name="conditions" rows="6"
+                            required></textarea>
+                        <small class="form-text text-muted">Edit the conditions JSON.</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="edit_actions" class="form-label">Actions (JSON) <span
+                                class="text-danger">*</span></label>
+                        <textarea class="form-control form-control-sm" id="edit_actions" name="actions" rows="6"
+                            required></textarea>
+                        <small class="form-text text-muted">Edit the actions JSON.</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+    const addRuleModalElement = document.getElementById('addRuleModal');
+    const editRuleModalElement = document.getElementById('editRuleModal');
+
+    // --- Logic for Populating ADD Modal (for New or Clone) ---
+    if (addRuleModalElement) {
+        addRuleModalElement.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget; // Button that triggered the modal
+            const form = addRuleModalElement.querySelector('form');
+            const modalTitle = addRuleModalElement.querySelector('.modal-title');
+
+            // Always reset form and clear dynamic error messages first
+            if (form) form.reset();
+            addRuleModalElement.querySelectorAll('.dynamic-error-msg').forEach(el => el.remove());
+
+            // Get form elements from the ADD modal
+            const ruleNameInput = addRuleModalElement.querySelector('#add_rule_name');
+            const priorityInput = addRuleModalElement.querySelector('#add_priority');
+            const conditionsTextarea = addRuleModalElement.querySelector('#add_conditions');
+            const actionsTextarea = addRuleModalElement.querySelector('#add_actions');
+
+            if (!modalTitle || !ruleNameInput || !priorityInput || !conditionsTextarea || !actionsTextarea) {
+                console.error("Add/Clone modal: One or more form elements not found. Check IDs.");
+                return;
+            }
+
+            if (button && button.classList.contains('clone-rule-btn')) {
+                // This is a CLONE operation
+                modalTitle.textContent = 'Clone Rule';
+
+                const ruleName = button.getAttribute('data-rule-name');
+                const priority = button.getAttribute('data-rule-priority'); // Already incremented in data-*
+                const conditionsJsonString = button.getAttribute('data-rule-conditions');
+                const actionsJsonString = button.getAttribute('data-rule-actions');
+
+                console.log("--- Clone Modal Data (from button attributes) ---");
+                console.log("Original Name:", ruleName);
+                console.log("Suggested Priority:", priority);
+                console.log("Raw Conditions Attr:", conditionsJsonString);
+                console.log("Raw Actions Attr:", actionsJsonString);
+
+                ruleNameInput.value = ruleName ? `Clone of ${ruleName}` : 'Cloned Rule';
+                priorityInput.value = priority || '51'; // Use priority from button or a slightly higher default
+
+                // Populate Conditions Textarea
+                let conditionsObject = {}; // Default to empty
+                if (conditionsJsonString && conditionsJsonString.trim() !== "") {
+                    try {
+                        conditionsObject = JSON.parse(conditionsJsonString);
+                    } catch (e) {
+                        console.error("Error parsing conditions JSON for clone:", e, "\nOriginal Conditions String:", conditionsJsonString);
+                        // If parsing fails for clone, show the raw string and an error
+                        conditionsTextarea.value = conditionsJsonString;
+                        const errorMsg = document.createElement('small');
+                        errorMsg.className = 'text-danger d-block dynamic-error-msg';
+                        errorMsg.textContent = 'Error: Original conditions JSON is invalid.';
+                        conditionsTextarea.parentNode.insertBefore(errorMsg, conditionsTextarea.nextSibling);
+                    }
+                }
+                // Set the textarea value from the parsed (or defaulted) object, unless an error already set it
+                if (conditionsTextarea.value.trim() === "" || conditionsTextarea.value.trim() === "{}") {
+                    conditionsTextarea.value = JSON.stringify(conditionsObject, null, 2);
+                }
+
+
+                // Populate Actions Textarea
+                let actionsObject = {}; // Default to empty
+                if (actionsJsonString && actionsJsonString.trim() !== "") {
+                    try {
+                        actionsObject = JSON.parse(actionsJsonString);
+                    } catch (e) {
+                        console.error("Error parsing actions JSON for clone:", e, "\nOriginal Actions String:", actionsJsonString);
+                        actionsTextarea.value = actionsJsonString;
+                        const errorMsg = document.createElement('small');
+                        errorMsg.className = 'text-danger d-block dynamic-error-msg';
+                        errorMsg.textContent = 'Error: Original actions JSON is invalid.';
+                        actionsTextarea.parentNode.insertBefore(errorMsg, actionsTextarea.nextSibling);
+                    }
+                }
+                // Set the textarea value from the parsed (or defaulted) object, unless an error already set it
+                if (actionsTextarea.value.trim() === "" || actionsTextarea.value.trim() === "{}") {
+                    actionsTextarea.value = JSON.stringify(actionsObject, null, 2);
+                }
+
+            } else {
+                // This is a regular "Add New Rule" operation
+                modalTitle.textContent = 'Add New Rule';
+                // Ensure default values for a brand new rule
+                if (!ruleNameInput.value) ruleNameInput.value = ''; // Default name if needed
+                if (!priorityInput.value) priorityInput.value = '50'; // Default priority
+                if (conditionsTextarea.value.trim() === "") conditionsTextarea.value = '{}'; // Default empty JSON
+                if (actionsTextarea.value.trim() === "") actionsTextarea.value = '{}';
+            }
+        });
+
+        addRuleModalElement.addEventListener('hidden.bs.modal', function () {
+            const form = addRuleModalElement.querySelector('form');
+            if (form) form.reset();
+            addRuleModalElement.querySelectorAll('.dynamic-error-msg').forEach(el => el.remove());
+            const modalTitle = addRuleModalElement.querySelector('.modal-title');
+            if (modalTitle) modalTitle.textContent = 'Add New Rule'; // Reset title
+        });
+    }
+
+    if (editRuleModalElement) {
+        editRuleModalElement.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            if (!button) {
+                console.error("Edit modal: No relatedTarget button found.");
+                return;
+            }
+
+            // --- Get raw attribute values ---
+            const ruleId = button.getAttribute('data-rule-id');
+            const ruleName = button.getAttribute('data-rule-name');
+            const priority = button.getAttribute('data-rule-priority');
+            let conditionsJsonString = button.getAttribute('data-rule-conditions');
+            let actionsJsonString = button.getAttribute('data-rule-actions');
+
+            // --- Log raw attribute values for debugging ---
+            console.log("--- Edit Modal Data ---");
+            console.log("ID:", ruleId);
+            console.log("Name:", ruleName);
+            console.log("Priority:", priority);
+            console.log("Raw Conditions Attr:", conditionsJsonString);
+            console.log("Raw Actions Attr:", actionsJsonString);
+
+            // Modal elements
+            const modalTitle = editRuleModalElement.querySelector('.modal-title');
+            const ruleIdInput = editRuleModalElement.querySelector('#edit_rule_id');
+            const ruleNameInput = editRuleModalElement.querySelector('#edit_rule_name');
+            const priorityInput = editRuleModalElement.querySelector('#edit_priority');
+            const conditionsTextarea = editRuleModalElement.querySelector('#edit_conditions');
+            const actionsTextarea = editRuleModalElement.querySelector('#edit_actions');
+
+            if (!modalTitle || !ruleIdInput || !ruleNameInput || !priorityInput || !conditionsTextarea || !actionsTextarea) {
+                console.error("Edit modal: One or more form elements not found. Check IDs.");
+                return;
+            }
+
+            // Clear previous dynamic error messages
+            editRuleModalElement.querySelectorAll('.dynamic-error-msg').forEach(el => el.remove());
+
+
+            // Populate basic fields
+            modalTitle.textContent = 'Edit Rule: ' + (ruleName || 'N/A');
+            ruleIdInput.value = ruleId || '';
+            ruleNameInput.value = ruleName || '';
+            priorityInput.value = priority || '';
+
+            // --- Process Conditions JSON ---
+            let conditionsObject = {}; // Default to empty object
+            if (conditionsJsonString && conditionsJsonString.trim() !== "") {
+                try {
+                    // Browsers automatically unescape HTML entities when getAttribute is called
+                    conditionsObject = JSON.parse(conditionsJsonString);
+                } catch (e) {
+                    console.error("Error parsing conditions JSON:", e, "\nOriginal Conditions String:", conditionsJsonString);
+                    const errorMsg = document.createElement('small');
+                    errorMsg.className = 'text-danger d-block dynamic-error-msg';
+                    errorMsg.textContent = 'Invalid JSON in conditions. Displaying raw data.';
+                    conditionsTextarea.parentNode.insertBefore(errorMsg, conditionsTextarea.nextSibling);
+                    conditionsTextarea.value = conditionsJsonString; // Show raw string
+                }
+            }
+            // Always set textarea value, even if it's just from an empty object
+            conditionsTextarea.value = JSON.stringify(conditionsObject, null, 2);
+
+
+            // --- Process Actions JSON ---
+            let actionsObject = {}; // Default to empty object
+            if (actionsJsonString && actionsJsonString.trim() !== "") {
+                try {
+                    actionsObject = JSON.parse(actionsJsonString);
+                } catch (e) {
+                    console.error("Error parsing actions JSON:", e, "\nOriginal Actions String:", actionsJsonString);
+                    const errorMsg = document.createElement('small');
+                    errorMsg.className = 'text-danger d-block dynamic-error-msg';
+                    errorMsg.textContent = 'Invalid JSON in actions. Displaying raw data.';
+                    actionsTextarea.parentNode.insertBefore(errorMsg, actionsTextarea.nextSibling);
+                    actionsTextarea.value = actionsJsonString; // Show raw string
+                }
+            }
+            actionsTextarea.value = JSON.stringify(actionsObject, null, 2);
+
+        });
+
+        editRuleModalElement.addEventListener('hidden.bs.modal', function () {
+            const form = editRuleModalElement.querySelector('form');
+            if (form) form.reset();
+            editRuleModalElement.querySelectorAll('.dynamic-error-msg').forEach(el => el.remove());
+            const modalTitle = editRuleModalElement.querySelector('.modal-title');
+            if (modalTitle) modalTitle.textContent = 'Edit Build Rule';
+        });
+    } else {
+        console.warn("Edit Rule Modal element ('editRuleModal') not found.");
+    }
+</script>
+{% endblock %}

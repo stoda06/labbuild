@@ -1,91 +1,251 @@
+{# dashboard/templates/base.html #}
 <!doctype html>
-<html lang="en">
+<html lang="en" data-bs-theme="{{ 'dark' if current_theme == 'dark' else 'light' }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}LabBuild Dashboard{% endblock %}</title>
+    
     {% block head %}
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" ...>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" ...>
+    {# Bootstrap CSS #}
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    {# Font Awesome #}
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    {# Your main custom stylesheet #}
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {# Favicon #}
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+
     {% endblock %}
   </head>
-  {# Apply class server-side based on cookie #}
-  <body class="{{ 'dark-mode' if current_theme == 'dark' else '' }}">
+  <body class="{{ 'dark-mode-override' if current_theme == 'dark' else 'light-mode-override' }}">
 
-    <nav class="navbar">
+    <nav class="navbar navbar-expand-lg fixed-top border-bottom shadow-sm bg-body-tertiary"> {# Use bg-body-tertiary for BS theming #}
       <div class="container-fluid">
-        <a class="navbar-brand" href="{{ url_for('main.index') }}">LabBuild Dashboard</a>
-        {# --- Add Allocations Link --- #}
-        <div class="navbar-links">
-             <a href="{{ url_for('main.view_allocations') }}" class="nav-link">Allocations</a>
-             <a href="{{ url_for('main.view_upcoming_courses') }}" class="nav-link">Upcoming Courses</a>
-             <a href="{{ url_for('main.terminal') }}" class="nav-link">Terminal</a> {# Link to terminal if you kept it #}
-             {# Add other links here if needed #}
-        </div>
-        {# --- End Allocations Link --- #}
-        <button class="toggle-mode ms-auto" id="darkModeToggle" title="Toggle light/dark mode">
-            <i class="fas"></i> {# Icon set by JS below #}
+        <a class="navbar-brand fw-bold" href="{{ url_for('main.index') }}">
+            LabBuild
+        </a>
+        
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNavbarLinks" aria-controls="mainNavbarLinks" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
         </button>
+
+        <div class="collapse navbar-collapse" id="mainNavbarLinks">
+            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                 <li class="nav-item"><a href="{{ url_for('main.index') }}" class="nav-link px-2 {% if request.endpoint == 'main.index' %}active text-primary fw-semibold{% endif %}">Dashboard</a></li>
+                 <li class="nav-item"><a href="{{ url_for('main.view_allocations') }}" class="nav-link px-2 {% if request.endpoint == 'main.view_allocations' %}active text-primary fw-semibold{% endif %}">Allocations</a></li>
+                 <li class="nav-item"><a href="{{ url_for('main.view_upcoming_courses') }}" class="nav-link px-2 {% if request.endpoint == 'main.view_upcoming_courses' %}active text-primary fw-semibold{% endif %}">Upcoming</a></li>
+                 <li class="nav-item"><a href="{{ url_for('main.terminal') }}" class="nav-link px-2 {% if request.endpoint == 'main.terminal' %}active text-primary fw-semibold{% endif %}">Terminal</a></li>
+                 <li class="nav-item"><a href="{{ url_for('main.all_logs') }}" class="nav-link px-2 {% if request.endpoint == 'main.all_logs' or request.endpoint == 'main.log_detail' %}active text-primary fw-semibold{% endif %}">Logs</a></li>
+            </ul>
+        </div>
+
+        <div class="d-flex align-items-center">
+            <div class="notification-bell-container dropdown">
+                <button class="notification-bell-btn btn" id="notificationBellBtn" title="Notifications" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">
+                    <i class="fas fa-bell"></i>
+                    {% set notification_count = past_due_notifications | length if past_due_notifications else 0 %}
+                    {% if notification_count > 0 %}
+                    <span class="notification-badge" id="notificationBadge">
+                        {{ notification_count if notification_count <= 9 else '9+' }}
+                    </span>
+                    {% endif %}
+                </button>
+                <div class="dropdown-menu dropdown-menu-end notifications-dropdown shadow border-0 py-0 mt-1" id="notificationsDropdown" aria-labelledby="notificationBellBtn">
+                    {% include '_notifications_dropdown.html' %}
+                </div>
+            </div>
+            
+            <button class="btn btn-outline-secondary ms-2" type="button" id="sidebarToggle" title="Settings & More">
+                <i class="fas fa-cog"></i>
+            </button>
+        </div>
       </div>
     </nav>
+    
+    <div class="sidebar" id="settingsSidebar">
+        <div class="sidebar-header">
+            <h5 class="mb-0">Settings & More</h5>
+            <button type="button" class="btn-close" id="sidebarClose" aria-label="Close"></button>
+        </div>
+        <ul class="nav flex-column">
+            <li class="nav-item d-lg-none"><a class="nav-link {% if request.endpoint == 'main.index' %}active{% endif %}" href="{{ url_for('main.index') }}"><i class="fas fa-tachometer-alt fa-fw me-2"></i>Dashboard</a></li>
+            <li class="nav-item d-lg-none"><a class="nav-link {% if request.endpoint == 'main.view_allocations' %}active{% endif %}" href="{{ url_for('main.view_allocations') }}"><i class="fas fa-tasks fa-fw me-2"></i>Allocations</a></li>
+            <li class="nav-item d-lg-none"><a class="nav-link {% if request.endpoint == 'main.view_upcoming_courses' %}active{% endif %}" href="{{ url_for('main.view_upcoming_courses') }}"><i class="fas fa-calendar-alt fa-fw me-2"></i>Upcoming</a></li>
+            <li class="nav-item d-lg-none"><a class="nav-link {% if request.endpoint == 'main.terminal' %}active{% endif %}" href="{{ url_for('main.terminal') }}"><i class="fas fa-terminal fa-fw me-2"></i>Terminal</a></li>
+            <li class="nav-item d-lg-none"><a class="nav-link {% if request.endpoint == 'main.all_logs' or request.endpoint == 'main.log_detail' %}active{% endif %}" href="{{ url_for('main.all_logs') }}"><i class="fas fa-scroll fa-fw me-2"></i>Logs</a></li>
+            <li class="nav-item d-lg-none"><hr class="sidebar-divider my-2"></li>
 
-    <main class="container mt-4">
-        {# Flash Messages #}
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            <div class="position-relative" style="z-index: 1050;">
-            {% for category, message in messages %}
-              <div class="alert alert-{{ category or 'info' }} alert-dismissible fade show" role="alert">
-                {{ message }} <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-              </div>
-            {% endfor %}
-            </div>
-          {% endif %}
-        {% endwith %}
+            <li class="nav-item">
+                <a class="nav-link {% if request.blueprint == 'settings' and request.endpoint.endswith('view_build_rules') %}active{% endif %}" href="{{ url_for('settings.view_build_rules') }}">
+                    <i class="fas fa-sitemap fa-fw me-2"></i>Build Rules
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link {% if request.blueprint == 'settings' and request.endpoint.endswith('view_course_configs') %}active{% endif %}" href="{{ url_for('settings.view_course_configs') }}">
+                    <i class="fas fa-book fa-fw me-2"></i>Course Configs
+                </a>
+            </li>
+            <li class="nav-item"><hr class="sidebar-divider my-2"></li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" id="darkModeToggleSidebar" title="Toggle light/dark mode">
+                     <i class="fas fa-fw me-2"></i> 
+                     <span id="darkModeToggleSidebarText">Toggle Mode</span>
+                </a>
+            </li>
+        </ul>
+    </div>
 
-        {% block content %}{% endblock %}
-    </main>
+    <div class="main-content" id="mainContent">
+        <main class="container-fluid pt-4 px-md-4 px-2"> {# Added pt-4 for spacing below fixed navbar #}
+            {% with messages = get_flashed_messages(with_categories=true) %}
+              {% if messages %}
+                <div class="position-relative mb-3" style="z-index: 1050;">
+                {% for category, message in messages %}
+                  <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show" role="alert">
+                    {{ message }} <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                  </div>
+                {% endfor %}
+                </div>
+              {% endif %}
+            {% endwith %}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 
     {% block scripts %}
-    {# --- Dark Mode JS (Cookie Version) --- #}
     <script>
-        const toggleButton = document.getElementById('darkModeToggle');
-        const body = document.body;
-        const icon = toggleButton.querySelector('i');
+      // --- Dark Mode JS ---
+      const darkModeButtonSidebar = document.getElementById('darkModeToggleSidebar');
+      const bodyElementForTheme = document.body;
+      const htmlElementForTheme = document.documentElement;
 
-        function updateIcon() {
-            if (body.classList.contains('dark-mode')) {
-                icon.classList.remove('fa-moon'); icon.classList.add('fa-sun');
-            } else {
-                icon.classList.remove('fa-sun'); icon.classList.add('fa-moon');
-            }
+      function applyThemePreference() {
+          const currentTheme = document.cookie.split('; ').find(row => row.startsWith('theme='))?.split('=')[1] || 
+                               (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); // System preference fallback
+          
+          bodyElementForTheme.classList.remove('dark-mode-override', 'light-mode-override'); 
+          bodyElementForTheme.classList.add(currentTheme === 'dark' ? 'dark-mode-override' : 'light-mode-override');
+          htmlElementForTheme.setAttribute('data-bs-theme', currentTheme);
+          
+          if (darkModeButtonSidebar) {
+              const iconElement = darkModeButtonSidebar.querySelector('i.fas');
+              const textElement = darkModeButtonSidebar.querySelector('span#darkModeToggleSidebarText');
+              if (iconElement) {
+                  iconElement.className = 'fas fa-fw me-2 '; 
+                  iconElement.classList.add(currentTheme === 'dark' ? 'fa-sun' : 'fa-moon');
+              }
+              if (textElement) textElement.textContent = currentTheme === 'dark' ? 'Light Mode' : 'Dark Mode';
+          }
+      }
+      applyThemePreference(); // Apply on initial load
+      document.addEventListener('DOMContentLoaded', applyThemePreference);
+
+      if (darkModeButtonSidebar) {
+          darkModeButtonSidebar.addEventListener('click', (event) => {
+              event.preventDefault(); 
+              let currentTheme = htmlElementForTheme.getAttribute('data-bs-theme');
+              const newMode = currentTheme === 'dark' ? 'light' : 'dark';
+              document.cookie = `theme=${newMode}; path=/; max-age=${365*24*60*60}; SameSite=Lax; Secure`;
+              applyThemePreference();
+              const iconElement = darkModeButtonSidebar.querySelector('i.fas');
+              if (iconElement) {
+                  iconElement.classList.add('rotate');
+                  setTimeout(() => { iconElement.classList.remove('rotate'); }, 500);
+              }
+          });
+      }
+    </script>
+
+    <script>
+        // --- Client-side Timezone Conversion JS ---
+        function formatLocalDateTime(isoString) {
+            if (!isoString || isoString === "N/A") return 'N/A';
+            try { 
+                const date = new Date(isoString); 
+                if (isNaN(date.getTime())) { return 'Invalid Date'; }
+                const options = { 
+                    year: 'numeric', month: 'short', day: 'numeric', 
+                    hour: 'numeric', minute: '2-digit', hour12: true, 
+                    // timeZoneName: 'short' // Optional: can make it verbose
+                }; 
+                return new Intl.DateTimeFormat(navigator.language || 'en-US', options).format(date); 
+            } catch (e) { return 'Date Error'; }
+         }
+        function updateLocalTimes() {
+            document.querySelectorAll('.local-datetime').forEach(span => { 
+                const isoTimestamp = span.dataset.timestamp; 
+                if (isoTimestamp && !span.classList.contains('js-time-formatted')) { 
+                    span.textContent = formatLocalDateTime(isoTimestamp); 
+                    span.classList.add('js-time-formatted'); 
+                } else if (!isoTimestamp && !span.classList.contains('js-time-formatted')) { 
+                    span.textContent = 'N/A'; 
+                    span.classList.add('js-time-formatted'); 
+                } 
+            });
+         }
+        document.addEventListener('DOMContentLoaded', updateLocalTimes);
+    </script>
+    
+    <script>
+        // --- Sidebar Toggle JS ---
+        const sidebarToggleBtn = document.getElementById('sidebarToggle');
+        const sidebarCloseBtn = document.getElementById('sidebarClose');
+        const settingsSidebarEl = document.getElementById('settingsSidebar');
+        // const mainContentEl = document.getElementById('mainContent'); // No longer shifting content
+
+        function openSettingsSidebar() {
+            if (settingsSidebarEl) settingsSidebarEl.classList.add('open');
         }
-        document.addEventListener('DOMContentLoaded', updateIcon); // Set initial icon
+        function closeSettingsSidebar() {
+            if (settingsSidebarEl) settingsSidebarEl.classList.remove('open');
+        }
 
-        toggleButton.addEventListener('click', () => {
-            body.classList.toggle('dark-mode');
-            const isDarkMode = body.classList.contains('dark-mode');
-            const newMode = isDarkMode ? 'dark' : 'light';
-            const maxAge = 365 * 24 * 60 * 60;
-            document.cookie = `theme=${newMode}; path=/; max-age=${maxAge}; SameSite=Lax`;
-            updateIcon(); // Update icon on toggle
-            icon.classList.add('rotate'); setTimeout(() => { icon.classList.remove('rotate'); }, 500);
+        if (sidebarToggleBtn) {
+            sidebarToggleBtn.addEventListener('click', function(event) {
+                event.stopPropagation();
+                if (settingsSidebarEl && settingsSidebarEl.classList.contains('open')) {
+                    closeSettingsSidebar();
+                } else {
+                    openSettingsSidebar();
+                }
+            });
+        }
+        if (sidebarCloseBtn) {
+            sidebarCloseBtn.addEventListener('click', closeSettingsSidebar);
+        }
+
+        document.addEventListener('click', function(event) {
+            if (settingsSidebarEl && settingsSidebarEl.classList.contains('open')) {
+                const isClickInsideSidebar = settingsSidebarEl.contains(event.target);
+                const isClickOnToggle = sidebarToggleBtn ? sidebarToggleBtn.contains(event.target) || event.target === sidebarToggleBtn : false;
+                if (!isClickInsideSidebar && !isClickOnToggle) {
+                    closeSettingsSidebar();
+                }
+            }
         });
     </script>
 
-    {# --- Client-side Timezone Conversion JS --- #}
     <script>
-        function formatLocalDateTime(isoString) {
-            if (!isoString) return 'N/A';
-            try { const date = new Date(isoString); if (isNaN(date.getTime())) return 'Invalid Date'; const options = { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short' }; return new Intl.DateTimeFormat(undefined, options).format(date); } catch (e) { console.error("Fmt date err:", isoString, e); return 'Invalid Date'; }
-         }
-        function updateLocalTimes() {
-            document.querySelectorAll('.local-datetime').forEach(span => { const isoTimestamp = span.dataset.timestamp; if (isoTimestamp && !span.classList.contains('js-formatted-time')) { span.textContent = formatLocalDateTime(isoTimestamp); span.classList.add('js-formatted-time'); } else if (!isoTimestamp && !span.classList.contains('js-formatted-time')) { span.textContent = 'N/A'; span.classList.add('js-formatted-time'); } });
-         }
-        document.addEventListener('DOMContentLoaded', updateLocalTimes); // Run on initial load
+        // --- Notification Bell (Bootstrap Dropdown handles toggle) ---
+        // The badge count is rendered server-side by Jinja.
+        // Clear actions are form POSTs causing page reload.
+        document.addEventListener('DOMContentLoaded', function() {
+            const notificationsDropdownEl = document.getElementById('notificationsDropdown');
+            if (notificationsDropdownEl) {
+                // Event delegation for clear forms if they are dynamically loaded or for general good practice
+                notificationsDropdownEl.addEventListener('submit', function (event) {
+                    if (event.target.classList.contains('clear-single-form-server') || 
+                        event.target.classList.contains('clear-all-form-server')) { // Assuming you add this class to clear all form
+                        // Optional: disable button on submit
+                        const submitBtn = event.target.querySelector('button[type="submit"]');
+                        if (submitBtn) submitBtn.disabled = true;
+                    }
+                });
+            }
+        });
     </script>
     {% endblock %}
   </body>

@@ -9,6 +9,7 @@ from flask.json.provider import DefaultJSONProvider
 from bson import ObjectId
 import datetime
 import pytz
+from flask_cors import CORS
 
 # Ensure project root is in path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,6 +25,18 @@ from .extensions import (
     shutdown_resources # Import the cleanup function
 )
 from .utils import format_datetime # Import needed utils
+
+try:
+    from .tasks import purge_old_mongodb_logs # If in tasks.py
+except ImportError:
+    # Fallback if you create a separate scheduled_tasks.py or similar
+    # from .scheduled_tasks import purge_old_mongodb_logs
+    # For now, let's define a dummy if not found, to prevent app crash
+    def purge_old_mongodb_logs(retention_days=90):
+        logging.getLogger('dashboard.init').error("purge_old_mongodb_logs function not found!")
+
+LOG_RETENTION_DAYS_CONFIG = int(os.getenv("LOG_RETENTION_DAYS", "90"))
+
 
 # --- Custom JSON Provider (Keep Here or Move to utils?) ---
 class BsonJSONProvider(DefaultJSONProvider):
@@ -49,47 +62,52 @@ def create_app():
     """Flask application factory."""
     app = Flask(__name__, instance_relative_config=True)
 
-    # --- Configuration ---
-    # Load default config and override with instance config if available
     app.config.from_mapping(
         SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "dev-secret-key"),
-        # Default REDIS_URL, can be overridden by instance config or env
         REDIS_URL=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        # Add other default configs if needed
     )
-    # Optionally load from a config file if you create one (e.g., instance/config.py)
-    # app.config.from_pyfile('config.py', silent=True)
-
-    # --- Setup Logging ---
-    app.logger.setLevel(logging.INFO) # Set default level
-    # You might want more sophisticated logging setup here later
-
-    # --- Apply Custom JSON Provider ---
+    
+    app.logger.setLevel(logging.INFO) 
     app.json = BsonJSONProvider(app)
-
-    # --- Initialize Extensions (using objects from extensions.py) ---
-    # The connections are already established in extensions.py
-    # We just need to make sure the app context works if needed by extensions later.
-    # For scheduler, ensure it's started
+    CORS(app) 
+    
     try:
         if scheduler and not scheduler.running:
             scheduler.start()
             app.logger.info("Scheduler started successfully via app factory.")
-        elif not scheduler:
-             app.logger.error("Scheduler object not initialized.")
-    except Exception as e:
-        app.logger.error(f"Error starting scheduler in app factory: {e}")
 
-    # --- Register Blueprints ---
-    from .routes import main, actions, api, sse
+            # --- ADD THE LOG PURGE JOB ---
+            job_id_purge = 'purge_mongo_logs_weekly'
+            if not scheduler.get_job(job_id_purge): # Add job only if it doesn't exist
+                scheduler.add_job(
+                    id=job_id_purge,
+                    func=purge_old_mongodb_logs,
+                    trigger='cron',
+                    day_of_week='thu', # Run every Thursday
+                    hour=2,            # At 2 AM (server time, as per scheduler's timezone)
+                    minute=30,
+                    args=[LOG_RETENTION_DAYS_CONFIG], # Pass retention period
+                    misfire_grace_time=3600 # Allow 1 hour for misfires
+                )
+                app.logger.info(f"Scheduled weekly MongoDB log purge job (ID: {job_id_purge}) "
+                                f"to run every Thursday at 2:30 AM (server time), "
+                                f"retaining logs for {LOG_RETENTION_DAYS_CONFIG} days.")
+            else:
+                app.logger.info(f"Weekly MongoDB log purge job (ID: {job_id_purge}) already scheduled.")
+
+        elif not scheduler:
+             app.logger.error("Scheduler object not initialized. Cannot schedule log purge.")
+    except Exception as e:
+        app.logger.error(f"Error starting scheduler or adding purge job in app factory: {e}", exc_info=True)
+
+    from .routes import main, actions, api, sse, settings
     app.register_blueprint(main.bp)
     app.register_blueprint(actions.bp)
     app.register_blueprint(api.bp)
     app.register_blueprint(sse.bp)
+    app.register_blueprint(settings.bp)
 
-    # --- Register Cleanup ---
-    atexit.register(shutdown_resources) # Ensure cleanup happens on exit
-
+    atexit.register(shutdown_resources) 
     app.logger.info("Flask app created successfully.")
     app.logger.info(f"--- DEBUG [App Factory]: REDIS_URL = {app.config['REDIS_URL']} ---")
 

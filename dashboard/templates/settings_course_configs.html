@@ -1,0 +1,230 @@
+{# dashboard/templates/settings_course_configs.html #}
+{% extends 'base.html' %}
+
+{% block title %}Course Configurations{% endblock %}
+
+{# Link to the new CSS file #}
+{% block head %}
+    {{ super() }}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/settings_course_configs.css') }}">
+{% endblock %}
+
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+   <h1>Course Configurations</h1>
+   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+</div>
+
+{# --- Filter Form with Results Per Page Selector --- #}
+<div class="card mb-4">
+    <div class="card-header">Filter Configurations</div>
+    <div class="card-body">
+      <form action="{{ url_for('settings.view_course_configs') }}" method="GET" class="row g-3 align-items-end">
+        <div class="col-md-3">
+          <label for="filter_vendor" class="form-label">Vendor</label>
+          <input type="text" class="form-control form-control-sm" id="filter_vendor" name="filter_vendor" value="{{ current_params.get('filter_vendor', '') }}">
+        </div>
+        <div class="col-md-4">
+          <label for="filter_course_name" class="form-label">Course Name (contains)</label>
+          <input type="text" class="form-control form-control-sm" id="filter_course_name" name="filter_course_name" value="{{ current_params.get('filter_course_name', '') }}">
+        </div>
+        <div class="col-md-2">
+            <label for="per_page" class="form-label">Per Page</label>
+            <select class="form-select form-select-sm" id="per_page" name="per_page" onchange="this.form.submit()">
+                {% for option in per_page_options %}
+                <option value="{{ option }}" {% if option == current_params.per_page|int %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-3">
+          <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
+          <a href="{{ url_for('settings.view_course_configs') }}" class="btn btn-secondary btn-sm w-100 mt-1">Clear Filters</a>
+        </div>
+      </form>
+    </div>
+</div>
+{# --- End Filter Form --- #}
+
+{# --- Button to Trigger Add Config Modal --- #}
+<div class="mb-3">
+    <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addConfigModal">
+        <i class="fas fa-plus"></i> Add New Course Configuration
+    </button>
+</div>
+
+{# --- Configs Table --- #}
+<div class="card">
+    <div class="card-header">Existing Course Configurations (Sorted by Vendor, then Name)</div>
+    <div class="card-body p-0">
+        {% if configs %}
+            <div class="table-responsive">
+                <table class="table table-sm table-striped table-hover mb-0 configs-table">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Vendor</th>
+                            <th>Course Name</th>
+                            <th>Full Configuration (JSON Preview)</th>
+                            <th class="text-end">Manage</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for config_doc in configs %}
+                        <tr data-config-id="{{ config_doc._id }}">
+                            <td>{{ config_doc.vendor_shortcode | upper }}</td>
+                            <td>{{ config_doc.course_name }}</td>
+                            <td>
+                                {# Display a snippet or key parts; full view in modal #}
+                                {# For simplicity, we'll show the start of the JSON. #}
+                                {# Alternatively, you could select a few key fields to display here. #}
+                                {% set display_config = config_doc.copy() %}
+                                {% set _ = display_config.pop('_id', None) %}
+                                <pre><code>{{ display_config | tojson(indent=2) }}</code></pre>
+                            </td>
+                            <td class="text-end btn-action-group">
+                                <button type="button" class="btn btn-sm btn-warning edit-config-btn"
+                                        data-bs-toggle="modal" data-bs-target="#editConfigModal"
+                                        data-config-id="{{ config_doc._id }}"
+                                        {# Pass the entire config_doc as a JSON string,
+                                           Jinja's tojson filter handles escaping for HTML attributes.
+                                           Use single quotes for the HTML attribute value. #}
+                                        data-config-json='{{ config_doc | tojson }}'
+                                        title="Edit Configuration">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <form action="{{ url_for('actions.delete_course_config', config_id=config_doc._id) }}" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete course config \'{{ config_doc.course_name }}\'? This is irreversible.')">
+                                    {# Add CSRF token here if using Flask-WTF or similar #}
+                                    <button type="submit" class="btn btn-sm btn-danger" title="Delete Configuration">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {# --- PAGINATION CONTROLS --- #}
+            {% if total_pages > 1 %}
+            <nav aria-label="Course Configs pagination" class="p-3">
+                <ul class="pagination pagination-sm justify-content-center mb-0">
+                    {# Previous Page Link #}
+                    <li class="page-item {{ 'disabled' if current_page == 1 else '' }}">
+                        <a class="page-link" href="{{ url_for('settings.view_course_configs', page=current_page-1, **current_params) }}">Previous</a>
+                    </li>
+
+                    {# Page Number Links (Example with limited display) #}
+                    {% set page_window = 2 %} {# How many pages to show around current page #}
+                    {% for page_num in range(1, total_pages + 1) %}
+                        {% if page_num == 1 or page_num == total_pages or
+                              (page_num >= current_page - page_window and page_num <= current_page + page_window) %}
+                            <li class="page-item {{ 'active' if page_num == current_page else '' }}">
+                                <a class="page-link" href="{{ url_for('settings.view_course_configs', page=page_num, **current_params) }}">{{ page_num }}</a>
+                            </li>
+                        {% elif page_num == 2 and current_page > page_window + 2 %}
+                            <li class="page-item disabled"><span class="page-link">...</span></li>
+                        {% elif page_num == total_pages - 1 and current_page < total_pages - page_window - 1 %}
+                            <li class="page-item disabled"><span class="page-link">...</span></li>
+                        {% endif %}
+                    {% endfor %}
+
+                    {# Next Page Link #}
+                    <li class="page-item {{ 'disabled' if current_page == total_pages else '' }}">
+                        <a class="page-link" href="{{ url_for('settings.view_course_configs', page=current_page+1, **current_params) }}">Next</a>
+                    </li>
+                </ul>
+            </nav>
+            {% endif %}
+            {# --- END PAGINATION CONTROLS --- #}
+        {% else %}
+        <p class="p-3 text-muted">
+          No course configurations found
+          {% if current_params.filter_vendor or current_params.filter_course_name %}
+              matching your filter criteria. <a href="{{ url_for('settings.view_course_configs') }}">Clear filters</a> to see all.
+          {% else %}
+              in the database.
+          {% endif %}
+      </p>
+        {% endif %}
+    </div>{# End card-body #}
+</div>{# End card #}
+
+{# --- Add Config Modal --- #}
+<div class="modal fade" id="addConfigModal" tabindex="-1" aria-labelledby="addConfigModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg"> {# Use modal-lg for wider modal #}
+    <div class="modal-content">
+      <form action="{{ url_for('actions.add_course_config') }}" method="POST">
+        {# Add CSRF token if needed #}
+        <div class="modal-header">
+          <h5 class="modal-title" id="addConfigModalLabel">Add New Course Configuration</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+            <div class="alert alert-info small">
+                <strong>Important:</strong> Your JSON must include top-level string keys:
+                <code>"course_name"</code> and <code>"vendor_shortcode"</code>.
+                Structure other fields like <code>"components"</code>, <code>"memory_gb_per_pod"</code> as needed.
+            </div>
+            <div class="mb-3">
+              <label for="add_config_json" class="form-label">Full Configuration (JSON) <span class="text-danger">*</span></label>
+              <textarea class="form-control form-control-sm" id="add_config_json" name="config_json" rows="20" placeholder='Example:
+{
+  "course_name": "MY-NEW-COURSE",
+  "vendor_shortcode": "cp",
+  "description": "My new Checkpoint course.",
+  "memory_gb_per_pod": 8,
+  "components": [
+    { "component_name": "MGMT", "base_vm": "CP-R81.20-MGMT-TMPL", "clone_name": "cp-pod{X}-mgmt" }
+  ],
+  "networks": [ ... ]
+}' required></textarea> {# Textarea is initially empty, JS will fill with skeleton #}
+              <small class="form-text text-muted">Enter the complete valid JSON for the new course configuration.</small>
+            </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-primary">Save New Configuration</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{# --- Edit Config Modal --- #}
+<div class="modal fade" id="editConfigModal" tabindex="-1" aria-labelledby="editConfigModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg"> {# Use modal-lg for wider modal #}
+    <div class="modal-content">
+      <form action="{{ url_for('actions.update_course_config') }}" method="POST">
+        <input type="hidden" id="edit_config_id" name="config_id"> {# Hidden input for ID #}
+        {# Add CSRF token if needed #}
+        <div class="modal-header">
+          <h5 class="modal-title" id="editConfigModalLabel">Edit Course Configuration</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+            <div class="alert alert-info small">
+                Edit the JSON below. Ensure <code>"course_name"</code> and <code>"vendor_shortcode"</code> remain valid.
+                Modifying <code>"course_name"</code> might impact existing build rules if they refer to the old name.
+            </div>
+            <div class="mb-3">
+              <label for="edit_config_json" class="form-label">Full Configuration (JSON) <span class="text-danger">*</span></label>
+              <textarea class="form-control form-control-sm" id="edit_config_json" name="config_json" rows="20" required></textarea>
+               <small class="form-text text-muted">Edit the complete JSON configuration.</small>
+            </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{# Link to the new JS file #}
+{% block scripts %}
+    {{ super() }}
+    <script src="{{ url_for('static', filename='js/settings_course_configs.js') }}" defer></script>
+{% endblock %}

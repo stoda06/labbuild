@@ -3,6 +3,7 @@ from managers.network_manager import NetworkManager
 from managers.resource_pool_manager import ResourcePoolManager
 from pyVmomi import vim
 from monitor.prtg import PRTGManager
+from typing import Dict, Any, Optional, List # Added List
 
 import logging
 logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
@@ -251,143 +252,197 @@ def teardown_class(service_instance, course_config):
             nm.logger.error(f'Failed to delete switch {switch_name}.')
 
 
-def add_monitor(pod_config, db_client, prtg_server=None):
+def add_monitor(
+    entity_config: Dict[str, Any], # Can be class_config or pod_config
+    db_client: Any, # pymongo.MongoClient instance
+    prtg_server_preference: Optional[str] = None
+) -> Optional[str]: # Returns URL of the first successfully added monitor or None
     """
-    Adds or updates a PRTG monitor for a given pod configuration.
+    Adds or updates PRTG monitors for an F5 entity (class or pod).
 
-    This function performs the following steps:
-      1. Extracts and validates the pod number from the pod_config.
-      2. Determines a base IP address based on the course name and host details:
-         - If the course name contains "maestro", a specific base IP is used.
-         - Otherwise, a default base IP is used.
-      3. Computes a new IP address by adding the pod number to the last octet of the base IP.
-         - If the computed last octet exceeds 255, the function returns None.
-      4. Retrieves the PRTG server configuration for vendor "cp" from the MongoDB database.
-         - If a specific prtg_server name is provided, it filters the servers to use only the matching one.
-      5. Iterates over the filtered servers:
-         - Retrieves the current number of "up" sensors and the sensor count required by the template.
-         - Skips any server that would exceed the sensor limit (499) if the new monitor is added.
-         - Extracts required PRTG configuration details (container ID and monitor name) from pod_config.
-         - Searches for an existing monitor:
-             * If found and inactive, updates its IP and enables it.
-             * Otherwise, clones a new monitor from the template, sets its IP, and enables it.
-         - Constructs and returns the monitor URL if the operation is successful.
-      6. If no server could add or update the monitor, logs an error and returns None.
+    Handles multiple PRTG entries defined in the configuration.
+    Selects a PRTG server based on availability or preference.
 
     Args:
-        pod_config (dict): Dictionary containing the pod configuration. Expected keys include:
-            - "host_fqdn": The fully qualified domain name of the host.
-            - "pod_number": The pod number (should be convertible to an integer).
-            - "course_name": The course name, used to determine the base IP.
-            - "prtg": A sub-dictionary with keys:
-                - "object": The template device object ID.
-                - "container": The PRTG container (group) ID.
-                - "name": The monitor name to be used.
-        db_client (MongoClient): An active MongoDB client used to access the "labbuild_db" database.
-        prtg_server (str, optional): Specific PRTG server name to use. If provided, only the server
-            with a matching "name" field in the configuration will be used. Defaults to None.
+        entity_config: Configuration dictionary for the F5 class or pod.
+                       Expected to contain "prtg" list, "class_number",
+                       and optionally "pod_number".
+        db_client: Active MongoDB client.
+        prtg_server_preference (str, optional): Specific PRTG server name to target.
 
     Returns:
-        str or None: The URL of the added or updated PRTG monitor if successful, or None if the operation fails.
+        Optional[str]: URL of the first successfully created/updated PRTG monitor,
+                       or None if all attempts fail or no PRTG config exists.
     """
-    # Set up logging for the monitor addition process.
+    class_number = entity_config.get("class_number")
+    pod_number = entity_config.get("pod_number") # Will be None for class-level monitors
 
-    # Extract the short host name from the fully qualified domain name.
-    host = pod_config["host_fqdn"].split(".")[0]
+    if class_number is None:
+        logger.error("F5 add_monitor: class_number missing in entity_config.")
+        return None
 
-    # Validate and convert the pod number to an integer.
+    prtg_entries = entity_config.get("prtg")
+    if not isinstance(prtg_entries, list) or not prtg_entries:
+        logger.info(f"No PRTG entries found in config for F5 Class {class_number}" + (f" Pod {pod_number}" if pod_number else "") + ". Skipping monitor setup.")
+        return None
+
+    # --- 1. Get Configured F5 PRTG Servers ---
     try:
-        class_number = int(pod_config.get("class_number"))
-    except (TypeError, ValueError):
-        logger.error("Invalid or missing class number in pod_config.")
-        return None
-
-    # Determine the base IP address based on the course name.
-    base_ip = "172.26.2.200" if host.lower() == "hotshot" else "172.30.2.200"
-
-    # Split the base IP into its constituent parts.
-    base_ip_parts = base_ip.split('.')
-    try:
-        # Convert the last octet of the base IP to an integer.
-        base_last_octet = int(base_ip_parts[3])
-    except ValueError:
-        logger.error("Invalid base IP: %s", base_ip)
-        return None
-
-    # Compute the new last octet by adding the pod number.
-    new_last_octet = base_last_octet + class_number
-    if new_last_octet > 255:
-        logger.error("Resulting IP's last octet (%s) exceeds 255.", new_last_octet)
-        return None
-
-    # Reconstruct the new IP address using the first three octets and the new last octet.
-    new_ip = ".".join(base_ip_parts[:3] + [str(new_last_octet)])
-    logger.debug("Computed new IP for PRTG monitor: %s", new_ip)
-
-    # Access the PRTG configuration from the "labbuild_db" database.
-    db = db_client["labbuild_db"]
-    collection = db["prtg"]
-    server_data = collection.find_one({"vendor_shortcode": "ot"})
-    if not server_data or "servers" not in server_data:
-        logger.error("No PRTG server configuration found for vendor 'ot'.")
-        return None
-
-    # If a specific PRTG server is specified, filter the servers to match that name.
-    if prtg_server:
-        servers = [server for server in server_data["servers"] if server.get("name") == prtg_server]
-        if not servers:
-            logger.error("PRTG server '%s' not found in configuration.", prtg_server)
+        db = db_client["labbuild_db"]
+        prtg_db_config = db["prtg"].find_one({"vendor_shortcode": "ot"}) # Query for 'f5' vendor
+        if not prtg_db_config or not prtg_db_config.get("servers"):
+            logger.error("No PRTG server configuration found for vendor 'f5' in database.")
             return None
-    else:
-        servers = server_data["servers"]
+        all_f5_servers = prtg_db_config["servers"]
+    except Exception as e:
+        logger.error(f"Failed to retrieve F5 PRTG server configuration from DB: {e}", exc_info=True)
+        return None
 
-    # Iterate over the selected servers to attempt monitor creation or update.
-    for server in servers:
-        # Create a PRTGManager instance for interacting with the server.
-        prtg_obj = PRTGManager(server["url"], server["apitoken"])
-        # Retrieve the current count of sensors that are up.
-        current_sensor_count = prtg_obj.get_up_sensor_count()
-        # Get the sensor count required by the template device.
-        template_obj_id = pod_config.get("prtg", {}).get("object")
-        template_sensor_count = prtg_obj.get_template_sensor_count(template_obj_id)
-        # Skip this server if adding the new sensor would exceed the sensor limit.
-        if (current_sensor_count + template_sensor_count) >= 499:
-            logger.info("Server %s would exceed sensor limits (current: %s, template: %s); skipping.",
-                        server["url"], current_sensor_count, template_sensor_count)
-            continue
+    first_successful_monitor_url: Optional[str] = None
 
-        # Extract necessary configuration details for the monitor from pod_config.
-        container_id = pod_config.get("prtg", {}).get("container")
-        clone_name = pod_config.get("prtg", {}).get("name")
-        if not container_id or not clone_name or not template_obj_id:
-            logger.error("Missing required PRTG configuration in pod_config (container, name, or object).")
-            continue
+    for prtg_entry in prtg_entries:
+        try:
+            monitor_name = prtg_entry.get("name")
+            container_id = prtg_entry.get("container")
+            template_id = prtg_entry.get("object")
 
-        # Search for an existing monitor device by container and monitor name.
-        device_id = prtg_obj.search_device(container_id, clone_name)
-        if device_id:
-            # If the device exists but is not enabled, update its IP and enable it.
-            if not prtg_obj.get_device_status(device_id):
-                prtg_obj.set_device_ip(device_id, new_ip)
-                prtg_obj.enable_device(device_id)
-        else:
-            # If no device exists, clone a new device from the template.
-            device_id = prtg_obj.clone_device(template_obj_id, container_id, clone_name)
-            if not device_id:
-                logger.error("Failed to clone device for %s.", clone_name)
+
+            # --- 2. Calculate Target IP based on monitor_name ---
+            target_ip: Optional[str] = None
+            host_short = entity_config.get("host_fqdn", "").split(".")[0].lower() # e.g., "hotshot", "k2"
+
+            if "f5vr" in monitor_name: # e.g., f5vr-{Y}
+                # IP: 172.30.2.200 + class_number (last octet)
+                # This logic implies class_number is used like a pod_number for IP offset
+                # base_ip = "172.30.2.200" # Default, adjust if host-dependent
+                # Example host-dependent:
+                base_ip = "172.26.2.200" if host_short == "hotshot" else "172.30.2.200"
+                parts = base_ip.split(".")
+                new_last_octet = int(parts[3]) + class_number
+                if 0 <= new_last_octet <= 255:
+                    target_ip = ".".join(parts[:3] + [str(new_last_octet)])
+                else:
+                    logger.error(f"IP calc error for '{monitor_name}': last octet {new_last_octet} out of range.")
+                    continue
+            elif "f5-bigip" in monitor_name: # e.g., f5-bigip{X}
+                if pod_number is None: logger.warning(f"Skipping '{monitor_name}': requires pod number for IP calc."); continue
+                # IP: 192.168.0.31 + pod_number (second to last octet)
+                base_ip_bigip = "192.168.0.31" # Base from requirement
+                parts = base_ip_bigip.split(".") # Should be ['192', '168', '0', '31']
+                # Add to the third octet (index 2)
+                new_third_octet = int(parts[2]) + pod_number
+                if 0 <= new_third_octet <= 255:
+                    target_ip = ".".join([parts[0], parts[1], str(new_third_octet), parts[3]])
+                else:
+                    logger.error(f"IP calc error for '{monitor_name}': third octet {new_third_octet} out of range.")
+                    continue
+            elif "w10" in monitor_name: # e.g., f5-pod{X}-w10
+                if pod_number is None: logger.warning(f"Skipping '{monitor_name}': requires pod number for IP calc."); continue
+                # IP: 172.30.2.100 + pod_number (last octet)
+                # base_ip_w10 = "172.30.2.100" # Default, adjust if host-dependent
+                base_ip_w10 = "172.26.2.100" if host_short == "hotshot" else "172.30.2.100"
+                parts = base_ip_w10.split(".")
+                new_last_octet_w10 = int(parts[3]) + pod_number
+                if 0 <= new_last_octet_w10 <= 255:
+                    target_ip = ".".join(parts[:3] + [str(new_last_octet_w10)])
+                else:
+                    logger.error(f"IP calc error for '{monitor_name}': last octet {new_last_octet_w10} out of range.")
+                    continue
+            else:
+                logger.warning(f"Unknown monitor name pattern for IP calculation: '{monitor_name}'. Skipping IP set for this monitor.")
+                # We might still create the monitor without an IP if that's desired, or continue to skip it.
+                # For now, let's assume an IP is critical.
+                continue 
+            
+            if not target_ip: # Should be caught by continues above, but defensive
+                logger.error(f"Target IP could not be calculated for monitor '{monitor_name}'.")
                 continue
-            # Set the new IP address for the cloned device.
-            prtg_obj.set_device_ip(device_id, new_ip)
-            # Enable the newly cloned device; if it fails, log an error.
-            if not prtg_obj.enable_device(device_id):
-                logger.error("Failed to enable monitor %s.", device_id)
+            
+            logger.debug(f"Target IP for monitor '{monitor_name}': {target_ip}")
+
+            # --- 3. Search All F5 Servers and Delete Existing Monitors with this resolved name ---
+            deleted_on_any_server = False
+            for server_info in all_f5_servers:
+                s_url, s_token, s_name = server_info.get("url"), server_info.get("apitoken"), server_info.get("name", server_info.get("url"))
+                if not s_url or not s_token: continue
+                try:
+                    prtg_search_mgr = PRTGManager(s_url, s_token)
+                    existing_id = prtg_search_mgr.search_device(container_id, monitor_name)
+                    if existing_id:
+                        logger.warning(f"Found existing monitor '{monitor_name}' (ID: {existing_id}) on server {s_name}. Deleting...")
+                        if prtg_search_mgr.delete_monitor_by_id(existing_id):
+                            logger.info(f"Successfully deleted monitor ID {existing_id} from {s_name}.")
+                            deleted_on_any_server = True
+                        else:
+                            logger.error(f"Failed to delete monitor ID {existing_id} from {s_name}.")
+                except Exception as e_del:
+                    logger.error(f"Error checking/deleting monitor '{monitor_name}' on server {s_name}: {e_del}")
+            
+            # --- 4. Select Target Server for Creation ---
+            target_prtg_server_details = None
+            if prtg_server_preference:
+                target_prtg_server_details = next((s for s in all_f5_servers if s.get("name") == prtg_server_preference), None)
+                if not target_prtg_server_details:
+                    logger.error(f"Specified target PRTG server '{prtg_server_preference}' not found in F5 config.")
+                    continue # Try next PRTG entry in pod_config
+            else:
+                for server_info_select in all_f5_servers:
+                    s_url, s_token, s_name = server_info_select.get("url"), server_info_select.get("apitoken"), server_info_select.get("name", server_info_select.get("url"))
+                    if not s_url or not s_token: continue
+                    try:
+                        prtg_cap_mgr = PRTGManager(s_url, s_token)
+                        current_sensors = prtg_cap_mgr.get_up_sensor_count()
+                        template_sensors = prtg_cap_mgr.get_template_sensor_count(template_id)
+                        # Example sensor limit, adjust as needed
+                        if (current_sensors + template_sensors) < 4990: # F5 might have higher limits or different templates
+                            logger.info(f"Selected server {s_name} for '{monitor_name}' (Sensors: {current_sensors}+{template_sensors} < 4990)")
+                            target_prtg_server_details = server_info_select
+                            break
+                        else:
+                            logger.warning(f"Server {s_name} for '{monitor_name}' skipped: capacity {current_sensors}+{template_sensors} >= 4990.")
+                    except Exception as e_cap:
+                        logger.error(f"Error checking capacity for '{monitor_name}' on server {s_name}: {e_cap}")
+            
+            if not target_prtg_server_details:
+                logger.error(f"No suitable PRTG server found for creating monitor '{monitor_name}'.")
+                continue # Try next PRTG entry in pod_config
+
+            # --- 5. Create New Monitor on Target Server ---
+            final_server_url = target_prtg_server_details.get("url")
+            final_api_token = target_prtg_server_details.get("apitoken")
+            final_server_name = target_prtg_server_details.get("name", final_server_url)
+
+            if not final_server_url or not final_api_token:
+                logger.error(f"Target server {final_server_name} for '{monitor_name}' has incomplete config.")
                 continue
 
-        # Construct the monitor URL based on the server URL and device ID.
-        monitor_url = f"{server['url']}/device.htm?id={device_id}"
-        logger.info("PRTG monitor added successfully: %s", monitor_url)
-        return monitor_url
+            logger.info(f"Attempting to create monitor '{monitor_name}' (IP: {target_ip}) on server: {final_server_name}")
+            prtg_create_mgr = PRTGManager(final_server_url, final_api_token)
+            
+            new_device_id = prtg_create_mgr.clone_device(template_id, container_id, monitor_name)
+            if not new_device_id:
+                logger.error(f"Failed to clone device '{monitor_name}' on {final_server_name}.")
+                continue
 
-    # If the loop completes without returning, no server was able to add/update the monitor.
-    logger.error("Failed to add/update monitor on any available PRTG server.")
-    return None
+            if not prtg_create_mgr.set_device_ip(new_device_id, target_ip):
+                logger.error(f"Failed to set IP '{target_ip}' for new device ID {new_device_id} ('{monitor_name}') on {final_server_name}.")
+                # Consider deleting the partially created device
+                prtg_create_mgr.delete_monitor_by_id(new_device_id)
+                continue
+            
+            if not prtg_create_mgr.enable_device(new_device_id):
+                logger.error(f"Failed to enable monitor ID {new_device_id} ('{monitor_name}') on {final_server_name}.")
+                # Consider deleting
+                prtg_create_mgr.delete_monitor_by_id(new_device_id)
+                continue
+            
+            current_monitor_url = f"{final_server_url}/device.htm?id={new_device_id}"
+            logger.info(f"Successfully created and enabled PRTG monitor '{monitor_name}': {current_monitor_url}")
+            if first_successful_monitor_url is None:
+                first_successful_monitor_url = current_monitor_url # Capture the first success
+
+        except Exception as e_entry:
+            logger.error(f"Error processing PRTG entry {prtg_entry.get('name', 'Unknown')}: {e_entry}", exc_info=True)
+            # Continue to the next PRTG entry in the list
+
+    return first_successful_monitor_url # Return the URL of the first one that succeeded

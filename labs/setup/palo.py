@@ -1,6 +1,7 @@
 from managers.vm_manager import VmManager
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.network_manager import NetworkManager
+from managers.folder_manager import FolderManager
 from monitor.prtg import PRTGManager
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
@@ -225,8 +226,11 @@ def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False
 def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, selected_components=None):
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
+    folder_mgr = FolderManager(service_instance)
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
+    target_folder_name = f'pa-pod{pod}-folder'
+    
     
     # Optionally filter components.
     components_to_build = pod_config["components"]
@@ -244,10 +248,27 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
     
     # STEP 2: Create resource pool.
+    if "cliffjumper" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-cl"
+    elif "unicron" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-un"
+    elif "nightbird" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-ni"
+    elif "ultramagnus" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa-ul"
+    elif "hotshot" in pod_config["host_fqdn"]:
+        parent_resource_pool = "pa"
+        
     group_name = f'pa-pod{pod_config["pod_number"]}'
-    if not ResourcePoolManager(service_instance).create_resource_pool("pa", group_name, host_fqdn=pod_config["host_fqdn"]):
+    if not ResourcePoolManager(service_instance).create_resource_pool(parent_resource_pool, group_name, host_fqdn=pod_config["host_fqdn"]):
         return False, "create_resource_pool", f"Failed creating resource pool {group_name}"
     vmm.logger.info(f'Created resource pool {group_name}')
+
+    logger.info(f"Ensuring folder '{target_folder_name}' for pod {pod}.")
+    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name): # Parent folder is vendor code
+        return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
+    # if not folder_mgr.assign_user_to_folder(target_folder_name, domain_user, role_name):
+    #     return False, "assign_role_to_folder", f"Failed assigning role to '{target_folder_name}'"
     
     # STEP 3: Clone/configure each component.
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm"):
@@ -259,10 +280,12 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", "Base snapshot"):
                 return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
             vmm.logger.info(f'Creating linked clone for {component["clone_name"]}.')
-            if not vmm.create_linked_clone(component["base_vm"], component["clone_name"], "base", group_name):
+            if not vmm.create_linked_clone(component["base_vm"], component["clone_name"], "base", 
+                                           group_name, directory_name=target_folder_name):
                 return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
         else:
-            if not vmm.clone_vm(component["base_vm"], component["clone_name"], group_name):
+            if not vmm.clone_vm(component["base_vm"], component["clone_name"], 
+                                group_name, directory_name=target_folder_name):
                 return False, "clone_vm", f"Failed cloning VM for {component['clone_name']}"
         
         # Update VM network settings.
@@ -300,8 +323,10 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
 def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None):
     vm_manager = VmManager(service_instance)
     network_manager = NetworkManager(service_instance)
+    folder_mgr = FolderManager(service_instance)
     pod = int(pod_config["pod_number"])
     snapshot_name = "base"
+    target_folder_name = f'pa-cortex-folder'
     
     # Optionally filter components.
     components_to_build = pod_config["components"]
@@ -317,6 +342,10 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         if not network_manager.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
     
+    logger.info(f"Ensuring folder '{target_folder_name}' for pod {pod}.")
+    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name): # Parent folder is vendor code
+        return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
+    
     # STEP 2: Clone/configure each component.
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm"):
         host_prefix = pod_config["host_fqdn"].split(".")[0]
@@ -330,6 +359,8 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
             resource_pool = component["component_name"] + "-ul"
         elif host_prefix == "unicron":
             resource_pool = component["component_name"] + "-un"
+        elif host_prefix == "hotshot":
+            resource_pool = component["component_name"] + "-ho"
         else:
             resource_pool = component["component_name"]
 
@@ -340,10 +371,10 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
         if not full:
             if not vm_manager.snapshot_exists(component["base_vm"], "base") and not vm_manager.create_snapshot(component["base_vm"], "base", "Base snapshot"):
                 return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
-            if not vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool):
+            if not vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool, directory_name=target_folder_name):
                 return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
         else:
-            if not vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool):
+            if not vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool, directory_name=target_folder_name):
                 return False, "clone_vm", f"Failed cloning VM for {component['clone_name']}"
         
         # STEP 3: Update VM network, connect networks and create snapshot.
@@ -400,12 +431,13 @@ def teardown_1100(service_instance, pod_config):
 
 def teardown_1110(service_instance, pod_config):
     
+    vm_manager = VmManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
     nm = NetworkManager(service_instance)
     group_name = f'pa-pod{pod_config["pod_number"]}'
+    folder_name = f'pa-pod{pod_config["pod_number"]}-folder'
 
-    rpm.poweroff_all_vms(group_name)
-    rpm.logger.info(f'Power-off all VMs in {group_name}')
+    vm_manager.delete_folder(folder_name, force=True)
     rpm.delete_resource_pool(group_name)
     rpm.logger.info(f'Removed resource pool {group_name} and all its VMs.')
 

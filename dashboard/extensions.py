@@ -22,7 +22,7 @@ from constants import (
     DB_NAME, OPERATION_LOG_COLLECTION, LOG_COLLECTION,
     COURSE_CONFIG_COLLECTION, HOST_COLLECTION, ALLOCATION_COLLECTION,
     COURSE_MAPPING_RULES_COLLECTION, INTERIM_ALLOCATION_COLLECTION,
-    BUILD_RULES_COLLECTION
+    BUILD_RULES_COLLECTION, TRAINER_EMAIL_COLLECTION
 )
 
 # --- Configuration ---
@@ -48,6 +48,7 @@ course_mapping_rules_collection = None
 scheduler = None
 interim_alloc_collection = None
 build_rules_collection = None
+trainer_email_collection = None
 
 if not MONGO_HOST:
     logger.critical("MONGO_HOST environment variable not set. Database/Scheduler unavailable.")
@@ -71,6 +72,7 @@ else:
         course_mapping_rules_collection = db[COURSE_MAPPING_RULES_COLLECTION]
         interim_alloc_collection = db[INTERIM_ALLOCATION_COLLECTION]
         build_rules_collection = db[BUILD_RULES_COLLECTION]
+        trainer_email_collection = db[TRAINER_EMAIL_COLLECTION]
         logger.info("Successfully connected App MongoDB client.")
 
         # Scheduler client
@@ -106,12 +108,14 @@ else:
         mongo_client_scheduler = None
         db = None
         scheduler = None
+        trainer_email_collection = None
     except Exception as e:
         logger.critical(f"Unexpected error during MongoDB/Scheduler initialization: {e}", exc_info=True)
         mongo_client_app = None
         mongo_client_scheduler = None
         db = None
         scheduler = None
+        trainer_email_collection = None
 
 def shutdown_resources():
     """Shutdown scheduler and close DB connections."""

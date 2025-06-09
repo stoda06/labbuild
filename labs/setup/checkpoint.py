@@ -6,8 +6,10 @@ from managers.resource_pool_manager import ResourcePoolManager
 from managers.permission_manager import PermissionManager
 from tqdm import tqdm
 import re
+from typing import Optional, Dict, List, Tuple
 from monitor.prtg import PRTGManager
 from tqdm import tqdm
+from pyVmomi import vim
 
 import logging
 logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
@@ -60,95 +62,208 @@ def update_network_dict(network_dict, pod_number):
     return updated_network_dict
 
 
-def build_cp_pod(service_instance, pod_config, rebuild=False, thread=4, full=False, selected_components=None) -> tuple:
+def increment_string(s: Optional[str]) -> str:
+    """
+    Increment the trailing numeric part of a string.
+    If the string ends with '-<number>', increments that number.
+    Otherwise, appends '-1'.
+    Handles None or empty string by returning 'snapshot-1' (or a more generic default).
+    """
+    if not s:
+        return "snapshot-1" # Default for empty or None, can be adjusted
+
+    # Regex to find a hyphen followed by digits at the end of the string
+    match = re.search(r'^(.*)-(\d+)$', s)
+
+    if match:
+        prefix = match.group(1) # The part before "-<number>"
+        number = int(match.group(2))
+        return f"{prefix}-{number + 1}"
+    else:
+        # If no "-<number>" suffix is found, append "-1" to the original string
+        return f"{s}-1"
+
+
+# --- Main Build Function ---
+def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thread: int = 4,
+                 full: bool = False, selected_components: Optional[List[str]] = None,
+                 clonefrom: Optional[int] = None,
+                 source_pod_vms: Optional[Dict[str, str]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Builds a Checkpoint pod, with optional --clonefrom functionality.
+    """
     vm_mgr = VmManager(service_instance)
     folder_mgr = FolderManager(service_instance)
     network_mgr = NetworkManager(service_instance)
     rp_mgr = ResourcePoolManager(service_instance)
+    # permission_mgr = PermissionManager(service_instance) # If needed for permissions
 
-    pod_number = pod_config["pod_number"]
-    domain_user = f"vcenter.rededucation.com\\labcp-{pod_number}"
-    role = "labcp-0-role"
+    target_pod_number = pod_config["pod_number"]
+    domain_user = f"vcenter.rededucation.com\\labcp-{target_pod_number}" # For the target pod
+    role_name = "labcp-0-role" # Consistent role name
 
-    if "maestro" in pod_config["course_name"]:
-        folder_name = f"cp-maestro-{pod_number}-folder"
-        group_name = f"cp-maestro-pod{pod_number}"
-        rp_name = f"cp-maestro-pod{pod_number}"
+    # --- Determine Target Resource Pool and Folder Names ---
+    if "maestro" in pod_config["course_name"].lower():
+        target_group_name = f'cp-maestro-pod{target_pod_number}'
+        target_folder_name = f'cp-maestro-{target_pod_number}-folder'
     else:
-        folder_name = f"cp-pod{pod_number}-folder"
-        group_name = f"cp-pod{pod_number}"
-        rp_name = f"{pod_config['vendor_shortcode']}-pod{pod_number}"
+        target_group_name = f'cp-pod{target_pod_number}'
+        target_folder_name = f'cp-pod{target_pod_number}-folder'
+    
+    target_resource_pool_name = target_group_name # CP RPs are often named same as group
 
-    # STEP 1: Network resources (with progress bar)
-    for net in tqdm(pod_config["networks"], desc=f"Pod {pod_number} → network setup", unit="net"):
-        vswitch_result = network_mgr.create_vswitch(pod_config["host_fqdn"], net["switch_name"])
+    # STEP 1: Resource Pool for the TARGET pod
+    # Parent RP based on target pod's host
+    parent_rp_name = f"{pod_config['vendor_shortcode']}-{pod_config['host_fqdn'].split('.')[0]}"
+    logger.info(f"Ensuring resource pool '{target_resource_pool_name}' under '{parent_rp_name}' for pod {target_pod_number}.")
+    if not rp_mgr.create_resource_pool(parent_rp_name, target_resource_pool_name):
+        return False, "create_resource_pool", f"Failed creating resource pool '{target_resource_pool_name}'"
+    if not rp_mgr.assign_role_to_resource_pool(target_resource_pool_name, domain_user, role_name):
+        return False, "assign_role_to_rp", f"Failed assigning role to '{target_resource_pool_name}'"
+
+    # STEP 2: Folder for the TARGET pod
+    logger.info(f"Ensuring folder '{target_folder_name}' for pod {target_pod_number}.")
+    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name): # Parent folder is vendor code
+        return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
+    if not folder_mgr.assign_user_to_folder(target_folder_name, domain_user, role_name):
+        return False, "assign_role_to_folder", f"Failed assigning role to '{target_folder_name}'"
+
+    # STEP 3: Network resources for the TARGET pod
+    host_fqdn_target = pod_config["host_fqdn"]
+    for net_config in tqdm(pod_config.get("networks", []), desc=f"Pod {target_pod_number} → network setup", unit="net"):
+        switch_name = net_config["switch_name"]
+        vswitch_result = network_mgr.create_vswitch(host_fqdn_target, switch_name)
+
         if vswitch_result is False:
-            return False, "create_vswitch", f"Failed creating vswitch {net['switch_name']}"
+            return False, "create_vswitch_cp", f"Failed creating vSwitch '{switch_name}'"
         elif vswitch_result == "RESOURCE_LIMIT":
-            if not network_mgr.create_vswitch_portgroups(pod_config["host_fqdn"], net["switch_name"], net["port_groups"], resource_limit=vswitch_result):
-                return False, "create_vswitch_portgroups", f"Failed creating port groups"
-        if vswitch_result is True:
-            if not network_mgr.create_vswitch_portgroups(pod_config["host_fqdn"], net["switch_name"], net["port_groups"]):
-                return False, "create_vswitch_portgroups", f"Failed creating port groups on {net['switch_name']}"
-        pg_names = [pg["port_group_name"] for pg in net["port_groups"]]
-        if not network_mgr.apply_user_role_to_networks(domain_user, role, pg_names):
-            return False, "apply_user_role_to_networks", f"Failed applying role to networks {pg_names}"
-        if net.get("promiscuous_mode") and not network_mgr.enable_promiscuous_mode(pod_config["host_fqdn"], net["promiscuous_mode"]):
-            return False, "enable_promiscuous_mode", f"Failed enabling promiscuous mode on {net['switch_name']}"
+            logger.warning(f"vSwitch '{switch_name}' hit resource limit. Attempting port group creation on alternate...")
+            # Assuming create_vswitch_portgroups handles the resource_limit by finding alternate vSwitch
+            if not network_mgr.create_vswitch_portgroups(host_fqdn_target, switch_name, net_config["port_groups"], pod_number=target_pod_number, resource_limit=vswitch_result):
+                 return False, "create_pg_resource_limit_cp", f"Failed creating port groups (resource limit)"
+        elif vswitch_result is True: # vSwitch created or already existed
+            if not network_mgr.create_vm_port_groups(host_fqdn_target, switch_name, net_config["port_groups"], pod_number=target_pod_number):
+                 return False, "create_vm_port_groups_cp", f"Failed creating port groups on '{switch_name}'"
+        
+        pg_names = [pg["port_group_name"] for pg in net_config["port_groups"]]
+        # Apply permissions for the target pod's user to these networks
+        if not network_mgr.apply_user_role_to_networks(domain_user, role_name, pg_names):
+            return False, "apply_role_networks_cp", f"Failed applying role to networks: {pg_names}"
+        
+        if net_config.get("promiscuous_mode"):
+            # Pass the list of port group names that need promiscuous mode
+            promiscuous_pg_names = net_config.get("promiscuous_mode")
+            if isinstance(promiscuous_pg_names, list):
+                if not network_mgr.enable_promiscuous_mode(host_fqdn_target, promiscuous_pg_names):
+                    return False, "enable_promiscuous_cp", f"Failed enabling promiscuous mode on {switch_name} for {promiscuous_pg_names}"
+            else:
+                 logger.warning(f"Promiscuous mode configuration for switch {switch_name} is not a list. Skipping.")
 
-    # STEP 2: Resource pool
-    parent_rp = f"{pod_config['vendor_shortcode']}-{pod_config['host_fqdn'].split('.')[0]}"
-    if not rp_mgr.create_resource_pool(parent_rp, rp_name):
-        return False, "create_resource_pool", f"Failed creating resource pool {rp_name}"
-    if not rp_mgr.assign_role_to_resource_pool(rp_name, domain_user, role):
-        return False, "assign_role_to_resource_pool", f"Failed assigning role to resource pool {rp_name}"
 
-    # STEP 3: Folder
-    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], folder_name):
-        return False, "create_folder", f"Failed creating folder {folder_name}"
-    if not folder_mgr.assign_user_to_folder(folder_name, domain_user, role):
-        return False, "assign_user_to_folder", f"Failed assigning user to folder {folder_name}"
-
-    # STEP 4: Clone & configure
-    components = pod_config["components"]
+    # STEP 4: Clone & Configure VMs for the TARGET pod
+    components_to_process = pod_config.get("components", [])
     if selected_components:
-        components = [c for c in components if c["component_name"] in selected_components]
+        components_to_process = [c for c in components_to_process if c.get("component_name") in selected_components]
 
-    for comp in tqdm(components, desc=f"Pod {pod_number} → cloning/configuring", unit="vm"):
-        clone = comp["clone_name"]
-        base = comp["base_vm"]
+    for component in tqdm(components_to_process, desc=f"Pod {target_pod_number} → cloning/configuring", unit="vm"):
+        target_vm_name = component["clone_name"].replace("{X}", str(target_pod_number))
 
-        if rebuild and not vm_mgr.delete_vm(clone):
-            return False, "delete_vm", f"Failed deleting existing VM {clone}"
+        if rebuild: # Use the rebuild flag passed into the function
+            logger.info(f"Rebuild: Deleting existing VM '{target_vm_name}' for pod {target_pod_number}.")
+            if not vm_mgr.delete_vm(target_vm_name):
+                return False, "delete_vm_rebuild_cp", f"Failed deleting existing VM '{target_vm_name}'"
 
+        base_vm_for_clone = component["base_vm"]  # Default: clone from template
+        snapshot_for_clone = "base"              # Default: use "base" snapshot of template
+
+        if clonefrom is not None and source_pod_vms:
+            component_original_name = component.get("component_name")
+            if component_original_name in source_pod_vms:
+                source_vm_name_actual = source_pod_vms[component_original_name]
+                base_vm_for_clone = source_vm_name_actual # Switch base to the source pod's VM
+                logger.info(f"CloneFrom: Target '{target_vm_name}' will be cloned from source VM '{base_vm_for_clone}' (Pod {clonefrom}).")
+
+                source_vm_obj = vm_mgr.get_obj([vim.VirtualMachine], base_vm_for_clone) # type: ignore
+                if not source_vm_obj:
+                    return False, "source_vm_not_found_cf", f"CloneFrom: Source VM '{base_vm_for_clone}' not found."
+
+                latest_snap_on_source = vm_mgr.get_latest_snapshot_name(source_vm_obj) # Use your new method
+                snapshot_for_clone = increment_string(latest_snap_on_source) # New snapshot name
+
+                logger.info(f"CloneFrom: Creating new snapshot '{snapshot_for_clone}' on source VM '{base_vm_for_clone}'.")
+                if not vm_mgr.create_snapshot(base_vm_for_clone, snapshot_for_clone,
+                                              description=f"For cloning to Pod {target_pod_number} from Pod {clonefrom}"):
+                    return False, "create_source_snap_cf", f"Failed creating snapshot '{snapshot_for_clone}' on source '{base_vm_for_clone}'"
+            else:
+                logger.warning(f"CloneFrom: Component '{component_original_name}' not in source VM map. Defaulting to template '{base_vm_for_clone}'.")
+        
+        # Perform Cloning
         if not full:
-            if not vm_mgr.snapshot_exists(base, "base") and not vm_mgr.create_snapshot(base, "base", "Base snapshot"):
-                return False, "create_snapshot", f"Failed creating snapshot on {base}"
-            if not vm_mgr.create_linked_clone(base, clone, "base", group_name, directory_name=folder_name):
-                return False, "create_linked_clone", f"Failed linked cloning {clone}"
+            logger.info(f"Creating linked clone '{target_vm_name}' from '{base_vm_for_clone}' (Snapshot: '{snapshot_for_clone}').")
+            if not vm_mgr.create_linked_clone(base_vm_for_clone, target_vm_name, snapshot_for_clone,
+                                              target_resource_pool_name, directory_name=target_folder_name):
+                return False, "create_linked_clone_cp", f"Failed linked clone for '{target_vm_name}'"
         else:
-            if not vm_mgr.clone_vm(base, clone, group_name, directory_name=folder_name):
-                return False, "clone_vm", f"Failed full cloning {clone}"
+            logger.info(f"Creating full clone '{target_vm_name}' from '{base_vm_for_clone}'.")
+            if not vm_mgr.clone_vm(base_vm_for_clone, target_vm_name,
+                                   target_resource_pool_name, directory_name=target_folder_name):
+                return False, "clone_vm_cp", f"Failed full clone for '{target_vm_name}'"
 
-        updated_network = update_network_dict(vm_mgr.get_vm_network(base), int(pod_number))
-        if not vm_mgr.update_vm_network(clone, updated_network):
-            return False, "update_vm_network", f"Failed updating network on {clone}"
-        if not vm_mgr.snapshot_exists(clone, "base") and not vm_mgr.create_snapshot(clone, "base", f"Snapshot of {clone}"):
-            return False, "create_snapshot", f"Failed creating base snapshot on {clone}"
+        # Network Configuration for the NEWLY CLONED VM (target_vm_name)
+        # Always get network layout from the original base template specified in config
+        original_template_for_net = component["base_vm"]
+        base_vm_network_layout = vm_mgr.get_vm_network(original_template_for_net)
+        if base_vm_network_layout is None:
+            return False, "get_base_net_layout_cp", f"Could not get network layout from template '{original_template_for_net}'"
+        
+        # Update network dict using the target pod number
+        target_pod_network_config = update_network_dict(base_vm_network_layout, target_pod_number)
+        logger.info(f"Updating network for '{target_vm_name}' for pod {target_pod_number}.")
+        if not vm_mgr.update_vm_network(target_vm_name, target_pod_network_config):
+            return False, "update_vm_network_cp", f"Failed updating network for '{target_vm_name}'"
+        # (Optional) connect_networks_to_vm if your update_vm_network doesn't handle connect state.
+        if not vm_mgr.connect_networks_to_vm(target_vm_name, target_pod_network_config):
+            return False, "connect_networks_to_vm_cp", f"Failed connecting networks for '{target_vm_name}'"
 
-        if "maestro" in comp["component_name"]:
-            datastore = "datastore2-ho" if "hotshot" in pod_config["host_fqdn"] else "keg2"
-            if not vm_mgr.modify_cd_drive(clone, "CD/DVD drive 1", "Datastore ISO file", datastore, f"podiso/pod-{pod_number}-a.iso", connected=True):
-                return False, "modify_cd_drive", f"Failed modifying CD drive for {clone}"
 
-    # STEP 5: Power on
-    to_power = [comp["clone_name"] for comp in components if comp.get("state") != "poweroff"]
-    with ThreadPoolExecutor(max_workers=thread) as executor:
-        futures = {executor.submit(vm_mgr.poweron_vm, name): name for name in to_power}
-        for future in tqdm(futures, desc=f"Pod {pod_number} → powering on", unit="vm"):
-            if not future.result():
-                return False, "poweron_vm", f"Failed powering on {futures[future]}"
+        # Create "base" snapshot on the newly cloned and configured VM
+        target_vm_base_snapshot_name = "base"
+        if not vm_mgr.snapshot_exists(target_vm_name, target_vm_base_snapshot_name):
+            logger.info(f"Creating '{target_vm_base_snapshot_name}' snapshot on target VM '{target_vm_name}'.")
+            if not vm_mgr.create_snapshot(target_vm_name, target_vm_base_snapshot_name,
+                                          description=f"Base snapshot of '{target_vm_name}' for Pod {target_pod_number}"):
+                return False, "create_target_vm_snapshot_cp", f"Failed creating snapshot on '{target_vm_name}'"
 
+        # Maestro CD drive logic for the TARGET VM
+        if "maestro" in component["component_name"].lower() and "maestro" in pod_config["course_name"].lower():
+            logger.info(f"Configuring CD drive for Maestro component '{target_vm_name}'.")
+            cd_drive_info = vm_mgr.get_cd_drive(target_vm_name)
+            drive_name = "CD/DVD drive 1"
+            iso_type = "Datastore ISO file"
+            # Determine datastore based on target host_fqdn
+            datastore_name = "datastore2-ho" if "hotshot" in host_fqdn_target.lower() else "keg2"
+            iso_path = f"podiso/pod-{target_pod_number}-a.iso" # ISO specific to target pod
+            if not vm_mgr.modify_cd_drive(target_vm_name, drive_name, iso_type, datastore_name, iso_path, connected=True):
+                return False, "modify_cd_drive_maestro_cp", f"Failed modifying CD drive for Maestro VM '{target_vm_name}'"
+
+    # STEP 5: Power on components for the TARGET pod
+    # Ensure names used for power-on are the final target VM names
+    vm_names_to_power_on = [
+        component["clone_name"].replace("{X}", str(target_pod_number))
+        for component in components_to_process if component.get("state") != "poweroff"
+    ]
+    if vm_names_to_power_on:
+        with ThreadPoolExecutor(max_workers=thread) as executor:
+            futures = {executor.submit(vm_mgr.poweron_vm, vm_name): vm_name for vm_name in vm_names_to_power_on}
+            for future in tqdm(futures, desc=f"Pod {target_pod_number} → powering on", unit="vm"):
+                vm_name_powered = futures[future]
+                try:
+                    if not future.result():
+                        return False, "poweron_vm_cp", f"Failed powering on VM '{vm_name_powered}'"
+                except Exception as e:
+                    return False, "poweron_vm_exception_cp", f"Exception powering on VM '{vm_name_powered}': {e}"
+    
+    logger.info(f"Successfully built Checkpoint pod {target_pod_number}.")
     return True, None, None
 
 

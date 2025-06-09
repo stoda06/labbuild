@@ -1,29 +1,43 @@
 # dashboard/routes/actions.py
 
+import random
+import string
+import requests
 import logging
 import threading
 import datetime
 import pytz
+import re
+import io
 import json
+import os # For SMTP env vars
+import smtplib # For SMTP
+from email.mime.text import MIMEText # For email body
+from email.mime.multipart import MIMEMultipart # For email structure
 from flask import (
-    Blueprint, request, redirect, url_for, flash, current_app, jsonify, render_template
+    Blueprint, request, redirect, url_for, flash, current_app, jsonify, render_template, send_file
 )
 from pymongo.errors import PyMongoError, BulkWriteError
 import pymongo
 from pymongo import ASCENDING, UpdateOne
 from collections import defaultdict
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any, Union, Set
 # Import extensions, utils, tasks from dashboard package
 from ..extensions import (
     scheduler,
     db,
     interim_alloc_collection, # For saving review data
     alloc_collection,         # For toggle_power and teardown_tag
+    trainer_email_collection,
     host_collection,          # For getting host list in build_review
     course_config_collection,  # For getting memory in build_review
     build_rules_collection
 )
-
+from ..email_utils import send_allocation_email
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill, Color
+from openpyxl.utils import get_column_letter
+import math
 from ..utils import (build_args_from_form, parse_command_line, 
                      update_power_state_in_db, get_hosts_available_memory_parallel)
 from ..tasks import run_labbuild_task
@@ -31,103 +45,194 @@ from ..tasks import run_labbuild_task
 # Import top-level utils if needed (e.g., delete_from_database)
 from config_utils import get_host_by_name
 from db_utils import delete_from_database
+from bson.errors import InvalidId
+from bson import ObjectId
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:
+    # Fallback for Python < 3.9 or if zoneinfo data isn't available
+    from datetime import timezone as ZoneInfo # Use basic UTC offset if zoneinfo missing
+
+from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 
 # Define Blueprint
 bp = Blueprint('actions', __name__)
 logger = logging.getLogger('dashboard.routes.actions')
 
-def _find_matching_build_rule(rules: List[Dict], vendor: str,
-                             course_code: str, course_type: str) -> Tuple[Optional[Dict], Optional[str]]:
-    """
-    Finds the highest priority build rule matching the course criteria.
+def _get_memory_for_course_local(course_name: str, local_course_configs_map: Dict[str, Any]) -> float:
+    if not course_name: return 0.0
+    config = local_course_configs_map.get(course_name)
+    if config:
+        mem_gb_str = config.get('memory_gb_per_pod', config.get('memory', '0'))
+        try:
+            mem_gb = float(str(mem_gb_str).strip() or '0')
+            return mem_gb if mem_gb > 0 else 0.0
+        except (ValueError, TypeError):
+            logger.warning(f"Could not parse memory '{mem_gb_str}' for course '{course_name}'.")
+            return 0.0
+    return 0.0
 
-    Iterates through rules (assumed pre-sorted by priority ascending) and returns
-    the first rule whose conditions match the provided vendor, course code, and type.
-    It does not currently support complex pattern extraction within conditions but checks
-    for substring presence.
 
-    Args:
-        rules: List of build rule documents from MongoDB, sorted by priority ascending.
-        vendor: The vendor shortcode (e.g., 'cp', 'pa') associated with the course.
-        course_code: The Salesforce course code (e.g., 'EDU-210-W').
-        course_type: The Salesforce course type string.
+@bp.route('/send-trainer-email', methods=['POST'])
+def send_trainer_email():
+    data = request.json
+    logger.info(f"/send-trainer-email RAW received data: {data}") # Keep this for debugging
 
-    Returns:
-        A tuple containing:
-            - The matching rule document dictionary (dict) if found, otherwise None.
-            - Currently always None for the second element, as complex pattern
-              extraction isn't implemented here (reserved for potential future use).
-              Kept tuple structure for potential extensibility.
-    """
-    if not rules:
-        logger.debug("No build rules provided to match against.")
-        return None, None # No rules to check
+    if not data:
+        logger.error("/send-trainer-email: No JSON data received.")
+        return jsonify({"status": "error", "message": "No data received."}), 400
 
-    # Normalize inputs for case-insensitive matching
-    cc_lower = course_code.lower()
-    ct_lower = course_type.lower()
-    vendor_lower = vendor.lower()
+    trainer_name = data.get('trainer_name')
+    # This is expected to be a LIST of course items for this specific email
+    course_items_for_this_email_js = data.get('course_item_to_email')
 
-    for rule in rules:
-        conditions = rule.get("conditions", {})
-        # If conditions is empty, it's a potential fallback/default rule
-        is_fallback = not conditions
+    logger.info(f"Extracted trainer_name: '{trainer_name}' (Type: {type(trainer_name)})")
+    logger.info(f"Extracted course_item_to_email (Type: {type(course_items_for_this_email_js)}): {course_items_for_this_email_js}")
 
-        match = True # Assume match until a condition fails
+    error_messages = []
+    if not trainer_name:
+        error_messages.append("trainer_name is missing or empty.")
+    
+    # **CORRECTED VALIDATION FOR course_items_for_this_email_js**
+    if not isinstance(course_items_for_this_email_js, list):
+        error_messages.append(f"course_item_to_email is not a list (got {type(course_items_for_this_email_js)}).")
+    elif not course_items_for_this_email_js: # Check if the list is empty
+        error_messages.append("course_item_to_email list is empty (no course items provided for the email).")
+    
+    if error_messages:
+        full_error_msg = "Validation failed: " + " | ".join(error_messages)
+        logger.error(f"/send-trainer-email: {full_error_msg}")
+        # Return the detailed error message to the client for better debugging
+        return jsonify({"status": "error", "message": "Missing trainer name or valid non-empty course items list. Debug: " + full_error_msg}), 400
+        
+    if trainer_email_collection is None or host_collection is None: # type: ignore
+        logger.error("/send-trainer-email: Critical DB collection (trainer_email or host) is None.")
+        return jsonify({"status": "error", "message": "A required database service for email is unavailable."}), 500
 
-        # --- Condition Checks ---
-        # Only perform checks if conditions exist for the rule
-        if not is_fallback:
-            # 1. Vendor check (often the primary filter)
-            # Rule condition must exist and match the course vendor
-            rule_vendor = conditions.get("vendor")
-            if rule_vendor and rule_vendor.lower() != vendor_lower:
-                match = False
-                continue # Skip rule if vendor doesn't match
+    # 1. Fetch Trainer's Email Address
+    trainer_email_doc = trainer_email_collection.find_one({"trainer_name": trainer_name, "active": True}) # type: ignore
+    if not trainer_email_doc or not trainer_email_doc.get("email_address"):
+        msg = f"Active email address not found for trainer '{trainer_name}'."
+        logger.warning(msg)
+        return jsonify({"status": "error", "message": msg}), 404
+    to_email_address = trainer_email_doc.get("email_address")
 
-            # 2. Course Code Contains check
-            # If the condition exists in the rule...
-            if match and "course_code_contains" in conditions:
-                terms = conditions["course_code_contains"]
-                # Ensure terms is a list, handle single string case
-                if not isinstance(terms, list):
-                    terms = [terms]
-                # Check if *any* of the terms are present in the course code
-                if not any(str(term).lower() in cc_lower for term in terms):
-                    match = False
-                    continue # Skip if none of the required terms are found
+    # 2. Prepare `course_allocations_for_template` for the email_utils function.
+    #    This list will be used by the email_utils.send_allocation_email function,
+    #    specifically for its Jinja template (if html_body_override is not used) and for the plain text part.
+    #    The items in `course_items_for_this_email_js` should already be well-structured by the JS.
+    
+    course_allocations_for_template: List[Dict[str, Any]] = []
+    
+    # Fetch host details once for all involved hosts in this specific email
+    all_involved_host_names_in_this_email = set()
+    for item_js_for_hosts in course_items_for_this_email_js: # Iterate through the list of items
+        for assignment_js_hosts in item_js_for_hosts.get("assignments", []):
+            if assignment_js_hosts.get("host"):
+                all_involved_host_names_in_this_email.add(assignment_js_hosts.get("host"))
+    
+    hosts_info_map_for_this_email: Dict[str, Dict[str,str]] = {}
+    if all_involved_host_names_in_this_email and host_collection is not None:
+        try:
+            host_cursor_for_email = host_collection.find({"host_name": {"$in": list(all_involved_host_names_in_this_email)}})
+            for h_doc_for_email in host_cursor_for_email:
+                hosts_info_map_for_this_email[h_doc_for_email["host_name"]] = {
+                    "location": h_doc_for_email.get("location", "Virtual"),
+                    "vcenter": h_doc_for_email.get("vcenter", "N/A")
+                }
+        except PyMongoError as e_h_email_prep:
+            logger.error(f"Error fetching host details for email construction: {e_h_email_prep}")
 
-            # 3. Course Code NOT Contains check
-            if match and "course_code_not_contains" in conditions:
-                terms = conditions["course_code_not_contains"]
-                if not isinstance(terms, list):
-                    terms = [terms]
-                # Check if *any* of the excluded terms are present
-                if any(str(term).lower() in cc_lower for term in terms):
-                    match = False
-                    continue # Skip if an excluded term is found
+    for item_from_js in course_items_for_this_email_js: # This is now iterating through the list
+        primary_host_name_email = "N/A"; primary_location_email = "Virtual"; primary_vcenter_email = "N/A"
+        assignments_js_email = item_from_js.get("assignments", [])
+        start_end_pod_str_email = "N/A"; vendor_pods_count_email = 0; first_pod_num_email = None
 
-            # 4. Course Type Contains check
-            if match and "course_type_contains" in conditions:
-                terms = conditions["course_type_contains"]
-                if not isinstance(terms, list):
-                    terms = [terms]
-                # Check if *any* required terms are present in the course type
-                if not any(str(term).lower() in ct_lower for term in terms):
-                    match = False
-                    continue
+        if assignments_js_email:
+            pod_ranges_email_list = []
+            actual_pods_in_assignment_email = []
+            for a_email in assignments_js_email:
+                start_p_email = a_email.get('start_pod'); end_p_email = a_email.get('end_pod')
+                if start_p_email is not None and end_p_email is not None:
+                    pod_ranges_email_list.append(f"{start_p_email}-{end_p_email}")
+                    try: actual_pods_in_assignment_email.extend(range(int(start_p_email), int(end_p_email) + 1))
+                    except ValueError: pass # Ignore if not convertible to int range
+            start_end_pod_str_email = ", ".join(pod_ranges_email_list) if pod_ranges_email_list else "N/A"
+            vendor_pods_count_email = len(set(actual_pods_in_assignment_email))
 
-            # --- Add more condition checks here as needed (e.g., region) ---
+            if assignments_js_email[0].get('start_pod') is not None: first_pod_num_email = assignments_js_email[0].get('start_pod')
+            primary_host_name_email = assignments_js_email[0].get('host', "N/A")
+            
+            host_details_for_email = hosts_info_map_for_this_email.get(primary_host_name_email, 
+                                                                    {"location": "Virtual (Host details N/A)", "vcenter": "N/A"})
+            primary_location_email = host_details_for_email["location"]
+            primary_vcenter_email = host_details_for_email["vcenter"]
 
-        # If all checks passed (or it's a fallback rule with no conditions)
-        if match:
-            logger.info(f"Course '{vendor}/{course_code}' matched rule '{rule.get('rule_name', rule.get('_id'))}' (Priority: {rule.get('priority', 'N/A')})")
-            # Return the rule (second element of tuple is None currently)
-            return rule, None
+        vendor_short_email = (item_from_js.get("vendor", "xx") or "xx").lower()
+        username_email = f"lab{vendor_short_email}-{first_pod_num_email}" if first_pod_num_email is not None else f"lab{vendor_short_email}-X"
+        
+        password_email = "UseProvidedPassword" # Default placeholder
+        cfg_details_email = item_from_js.get("course_config_details_for_passwords", {}) # From JS payload
+        if cfg_details_email.get("student_password"): password_email = cfg_details_email["student_password"]
+        elif cfg_details_email.get("password"): password_email = cfg_details_email["password"]
+        
+        start_date_item_email = item_from_js.get("start_date", "N/A") # JS should send YYYY-MM-DD
+        end_date_item_email = item_from_js.get("end_date", "N/A")     # JS should send YYYY-MM-DD
+        start_day_abbr_email = "N/A"; end_day_abbr_email = "N/A"
+        try:
+            if start_date_item_email and start_date_item_email != "N/A": start_day_abbr_email = datetime.datetime.strptime(start_date_item_email, "%Y-%m-%d").strftime("%a")
+            if end_date_item_email and end_date_item_email != "N/A": end_day_abbr_email = datetime.datetime.strptime(end_date_item_email, "%Y-%m-%d").strftime("%a")
+        except ValueError: pass
+        date_range_display_email = start_day_abbr_email
+        if start_day_abbr_email != "N/A" and end_day_abbr_email != "N/A" and start_day_abbr_email != end_day_abbr_email:
+            date_range_display_email = f"{start_day_abbr_email}-{end_day_abbr_email}"
+        elif start_day_abbr_email == "N/A": date_range_display_email = "N/A"; end_day_abbr_email = "N/A"
+        
+        course_alloc_for_template = {
+            "original_sf_course_code": item_from_js.get("original_sf_course_code", item_from_js.get("sf_course_code", "N/A")),
+            "date_range_display": date_range_display_email,
+            "end_day_abbr": end_day_abbr_email,
+            "primary_location": primary_location_email,
+            "labbuild_course": item_from_js.get("sf_course_type", "N/A"),
+            "start_end_pod_str": start_end_pod_str_email,
+            "username": username_email,
+            "password": password_email,
+            "student_pax": item_from_js.get("sf_pax_count", 'N/A'),
+            "vendor_pods_count": vendor_pods_count_email,
+            "primary_host_name": primary_host_name_email,
+            "primary_vcenter": primary_vcenter_email,
+            "memory_gb_one_pod": float(item_from_js.get("memory_gb_one_pod", 0.0))
+        }
+        course_allocations_for_template.append(course_alloc_for_template)
+    
+    if not course_allocations_for_template: # Should be caught by earlier check, but defensive
+        logger.error("/send-trainer-email: No course items could be processed for the email template.")
+        return jsonify({"status": "error", "message": "Internal error preparing email content."}), 500
 
-    # If loop completes without finding a specific match
-    logger.warning(f"No specific build rule found for Vendor '{vendor}', Course Code '{course_code}'.")
-    return None, None # No specific rule matched
+    # 3. Construct Email Subject using the specific course code from the JS payload
+    # If course_items_for_this_email_js has multiple items (e.g. Maestro components),
+    # use the first one's original_sf_course_code for the subject.
+    email_subject_course_code = course_items_for_this_email_js[0].get('original_sf_course_code', 
+                                                                      course_items_for_this_email_js[0].get('sf_course_code', "Course"))
+    
+    # Use the edited subject from JS if provided, otherwise construct it
+    final_email_subject = data.get('edited_subject', f"Lab Allocation for {email_subject_course_code}")
+
+    # 4. Send Email
+    success, message = send_allocation_email(
+        to_address=to_email_address,
+        trainer_name=trainer_name,
+        subject=final_email_subject,
+        course_allocations_data=course_allocations_for_template, # Pass the list of dicts
+        html_body_override=data.get('edited_html_body') 
+    )
+
+    if success:
+        return jsonify({"status": "success", "message": message, "emailed_sf_course_code": email_subject_course_code})
+    else:
+        error_detail = message if "SMTP" in message or "rendering" in message or "configuration" in message else f"Email sending failed for {email_subject_course_code}. Server message: {message}"
+        return jsonify({"status": "error", "message": error_detail, "emailed_sf_course_code": email_subject_course_code}), 500
 
 # --- HELPER FUNCTION (can be moved to utils if preferred) ---
 def _get_memory_for_course(course_name: str) -> float:
@@ -209,11 +314,23 @@ def schedule_run():
 
         if schedule_type == 'date' and schedule_time_str:
             naive_dt = datetime.datetime.fromisoformat(schedule_time_str)
-            local_dt = scheduler_tz.localize(naive_dt) # Localize to scheduler's TZ
-            run_date_utc = local_dt.astimezone(pytz.utc) # Convert to UTC for storage/trigger
+            # *** MODIFIED TIMEZONE HANDLING ***
+            try:
+                # Make aware using the scheduler's timezone object
+                aware_dt = naive_dt.replace(tzinfo=scheduler_tz)
+            except TypeError:
+                 # Fallback for older pytz versions if scheduler_tz is pytz
+                 if hasattr(scheduler_tz, 'localize'):
+                      aware_dt = scheduler_tz.localize(naive_dt)
+                 else: # Could not make aware, proceed with naive (might be UTC if lucky)
+                      aware_dt = naive_dt
+                      logger.warning(f"Could not make datetime timezone-aware for scheduling: {naive_dt}. Assuming UTC or scheduler default.")
+
+            run_date_utc = aware_dt.astimezone(datetime.timezone.utc) # Always convert to UTC for DateTrigger
+            # *** END MODIFICATION ***
             trigger = DateTrigger(run_date=run_date_utc)
-            flash_msg = f"for {local_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')}"
-            log_time_str = f"UTC: {run_date_utc.isoformat()}, SchedulerTZ: {local_dt.isoformat()}"
+            flash_msg = f"for {aware_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')}" # Display in scheduler's TZ
+            log_time_str = f"UTC: {run_date_utc.isoformat()}, SchedulerTZ: {aware_dt.isoformat()}"
 
         elif schedule_type == 'cron' and cron_expression:
             parts = cron_expression.split()
@@ -273,8 +390,21 @@ def schedule_batch():
         from apscheduler.triggers.date import DateTrigger # Import here
         scheduler_tz = scheduler.timezone
         naive_dt = datetime.datetime.fromisoformat(start_time_str)
-        first_run_local = scheduler_tz.localize(naive_dt)
-        first_run_utc = first_run_local.astimezone(pytz.utc)
+        # *** MODIFIED TIMEZONE HANDLING ***
+        try:
+            # Make the naive datetime aware using the scheduler's timezone
+            first_run_local = naive_dt.replace(tzinfo=scheduler_tz)
+        except TypeError:
+            # Fallback for older pytz versions if scheduler_tz is pytz
+            if hasattr(scheduler_tz, 'localize'):
+                 first_run_local = scheduler_tz.localize(naive_dt)
+            else: # Could not make aware, proceed with naive (less ideal)
+                 first_run_local = naive_dt
+                 logger.warning(f"Could not make batch start time timezone-aware: {naive_dt}. Assuming UTC or scheduler default.")
+
+        # Calculate subsequent run times in UTC for DateTrigger
+        first_run_utc = first_run_local.astimezone(datetime.timezone.utc)
+        # *** END MODIFICATION ***
         logger.info(f"Batch Schedule: First job UTC start: {first_run_utc} (from local input {first_run_local})")
     except Exception as e: logger.error(f"Err parse batch start: {e}", exc_info=True); flash("Error processing start time.", "danger"); return redirect(url_for('main.index'))
 
@@ -529,350 +659,2906 @@ def build_row():
         return jsonify({"status": "success", "message": "Build submitted."}), 200
     except Exception as e: logger.error(f"Error in /build-row: {e}", exc_info=True); return jsonify({"status": "error", "message": "Internal server error."}), 500
 
-@bp.route('/intermediate-build-review', methods=['POST'])
-def intermediate_build_review():
+def _find_all_matching_rules(rules: list, vendor: str, code: str, type_str: str) -> list[dict]:
     """
-    Processes selected upcoming courses for build review and assignment.
-
-    Handles the POST request from the upcoming courses page. It fetches build rules,
-    current allocations, and host capacities to determine the optimal host and pod
-    assignments for each selected course based on memory requirements, priority rules,
-    and pod reusability. The results are saved (upserted) into the
-    'interimallocation' collection and displayed on a review page.
-
-    Workflow:
-    1. Receives selected course data (POST request with JSON payload).
-    2. Fetches build configuration rules from the 'build_rules' collection.
-    3. Fetches non-extendable ('extend': 'false') current allocations to identify
-       reusable pods and calculate the memory they would release.
-    4. Fetches hosts marked for build inclusion from the 'host' collection.
-    5. Fetches current available memory for these hosts using a parallel helper.
-    6. Adjusts host available memory by adding back the calculated released memory.
-    7. Iterates through each selected course from the input:
-        a. Finds the highest-priority matching build rule based on vendor/course code/type.
-        b. Determines the final LabBuild course name (user selection possibly overridden by rule).
-        c. Calculates memory needed per pod for the final LabBuild course.
-        d. Determines the prioritized list of potential hosts based on the matched rule or a default.
-        e. Filters the host list based on available adjusted capacity.
-        f. Assigns the required number of pods:
-            i. Attempts to fill slots with reusable pods (matching vendor/host) first,
-               checking memory and global availability (within this request).
-            ii. If more pods are needed, assigns new pod numbers (starting from 1 or rule default),
-               checking memory and global availability.
-        g. Stores the detailed host-to-pod-list assignments or any assignment errors.
-    8. Saves/Updates the processed course details (including assignments) into the
-       'interimallocation' collection using a bulk upsert operation based on
-       SF course code and final LabBuild course name.
-    9. Renders the 'intermediate_build_review.html' template, passing the processed
-       course data (including assignments or errors) for user review.
-
-    Returns:
-        Flask Response: Renders the review HTML page or redirects on error.
+    Finds all build rules matching the course criteria.
+    Assumes input 'rules' list is already sorted by priority (ascending).
     """
-    current_theme = request.cookies.get('theme', 'light')
-    selected_courses_json = request.form.get('selected_courses')
-    processed_courses_for_review = []
-    save_error_flag = False
-    # Track assignments globally within this request to avoid duplicates per vendor
-    globally_assigned_pods_by_vendor = defaultdict(set)
-    reusable_pods_by_vendor_host = defaultdict(lambda: defaultdict(set))
-    released_memory_by_host = defaultdict(float)
-    assignment_capacities_gb = {} # Adjusted capacity used during assignment
-    build_rules = []
-    available_hosts_db = []
-    initial_host_capacities_gb = {}
-    hosts_to_check_docs = []
+    matching_rules_list = []
+    # Normalize inputs for case-insensitive matching
+    cc_lower = code.lower() if code else ""
+    ct_lower = type_str.lower() if type_str else ""
+    v_lower = vendor.lower() if vendor else ""
+
+    for rule in rules: 
+        conditions = rule.get("conditions", {})
+        
+        match = True # Assume match until a condition fails
+
+        # 1. Vendor check (must match if specified in rule)
+        rule_vendor_cond = conditions.get("vendor")
+        if rule_vendor_cond and rule_vendor_cond.lower() != v_lower:
+            match = False
+        
+        # 2. Course Code Contains check (only if match is still true)
+        if match and "course_code_contains" in conditions:
+            terms = conditions["course_code_contains"]
+            terms = [terms] if not isinstance(terms, list) else terms # Ensure list
+            if not any(str(t).lower() in cc_lower for t in terms):
+                match = False
+        
+        # 3. Course Code NOT Contains check (only if match is still true)
+        if match and "course_code_not_contains" in conditions:
+            terms = conditions["course_code_not_contains"]
+            terms = [terms] if not isinstance(terms, list) else terms # Ensure list
+            if any(str(t).lower() in cc_lower for t in terms):
+                match = False
+
+        # 4. Course Type Contains check (only if match is still true)
+        if match and "course_type_contains" in conditions:
+            terms = conditions["course_type_contains"]
+            terms = [terms] if not isinstance(terms, list) else terms # Ensure list
+            if not any(str(t).lower() in ct_lower for t in terms):
+                match = False
+        
+        if match: # If all specific conditions passed (or no specific conditions to fail), add the rule
+            matching_rules_list.append(rule)
+            
+    return matching_rules_list
+
+
+@bp.route('/build-rules/add', methods=['POST'])
+def add_build_rule():
+    """Adds a new build rule to the collection."""
+    if build_rules_collection is None:
+        flash("Build rules database collection is unavailable.", "danger")
+        return redirect(url_for('settings.view_build_rules')) # Redirect to settings blueprint to view rules
+
+    try:
+        # Extract data from the form
+        rule_name = request.form.get('rule_name', '').strip()
+        priority_str = request.form.get('priority', '').strip()
+        conditions_json = request.form.get('conditions', '{}').strip() # Default to empty JSON string
+        actions_json = request.form.get('actions', '{}').strip()   # Default to empty JSON string
+
+        # --- Basic Validation ---
+        if not rule_name:
+            flash("Rule Name is required.", "danger")
+            return redirect(url_for('settings.view_build_rules'))
+        
+        try:
+            priority = int(priority_str)
+            if priority < 1: # Priority should be positive
+                raise ValueError("Priority must be a positive integer.")
+        except (ValueError, TypeError):
+             flash("Priority must be a positive integer.", "danger")
+             return redirect(url_for('settings.view_build_rules'))
+        
+        try:
+            conditions = json.loads(conditions_json)
+            if not isinstance(conditions, dict):
+                raise ValueError("Conditions field must contain a valid JSON object.")
+        except (json.JSONDecodeError, ValueError) as e:
+             flash(f"Conditions field contains invalid JSON: {e}", "danger")
+             return redirect(url_for('settings.view_build_rules'))
+        
+        try:
+            actions = json.loads(actions_json)
+            if not isinstance(actions, dict):
+                raise ValueError("Actions field must contain a valid JSON object.")
+        except (json.JSONDecodeError, ValueError) as e:
+             flash(f"Actions field contains invalid JSON: {e}", "danger")
+             return redirect(url_for('settings.view_build_rules'))
+
+        # Prepare the document to be inserted
+        new_rule = {
+            "rule_name": rule_name,
+            "priority": priority,
+            "conditions": conditions,
+            "actions": actions,
+            "created_at": datetime.datetime.now(pytz.utc) # Add a creation timestamp in UTC
+            # "updated_at": datetime.datetime.now(pytz.utc) # Optionally add updated_at too
+        }
+
+        # Insert into the database
+        result = build_rules_collection.insert_one(new_rule)
+        
+        # Log success and flash message
+        logger.info(f"Added new build rule '{rule_name}' (Priority: {priority}) with ID: {result.inserted_id}")
+        flash(f"Successfully added build rule '{rule_name}'.", "success")
+
+    except PyMongoError as e:
+        logger.error(f"Database error occurred while adding build rule: {e}")
+        flash("A database error occurred while adding the rule. Please try again.", "danger")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while adding build rule: {e}", exc_info=True)
+        flash("An unexpected error occurred. Please check the logs.", "danger")
+
+    return redirect(url_for('settings.view_build_rules')) # Redirect back to the rules
+
+@bp.route('/build-rules/update', methods=['POST'])
+def update_build_rule():
+    """Updates an existing build rule."""
+    if build_rules_collection is None:
+        flash("Build rules database collection is unavailable.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    rule_id_str = request.form.get('rule_id')
+    if not rule_id_str:
+        flash("Rule ID missing for update.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        rule_oid = ObjectId(rule_id_str) # Convert string ID to ObjectId
+    except InvalidId:
+        flash("Invalid Rule ID format.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        rule_name = request.form.get('rule_name', '').strip()
+        priority_str = request.form.get('priority', '').strip()
+        conditions_json = request.form.get('conditions', '{}').strip()
+        actions_json = request.form.get('actions', '{}').strip()
+
+        # Validation (similar to add)
+        if not rule_name: raise ValueError("Rule Name is required.")
+        try: priority = int(priority_str); assert priority >= 1
+        except: raise ValueError("Priority must be a positive integer.")
+        try: conditions = json.loads(conditions_json); assert isinstance(conditions, dict)
+        except: raise ValueError("Conditions field contains invalid JSON.")
+        try: actions = json.loads(actions_json); assert isinstance(actions, dict)
+        except: raise ValueError("Actions field contains invalid JSON.")
+
+        # Prepare update document
+        update_doc = {
+            "$set": {
+                "rule_name": rule_name,
+                "priority": priority,
+                "conditions": conditions,
+                "actions": actions,
+                "updated_at": datetime.datetime.now(pytz.utc) # Add update timestamp
+            }
+        }
+
+        # Perform update
+        result = build_rules_collection.update_one({"_id": rule_oid}, update_doc)
+
+        if result.matched_count == 0:
+            flash(f"Rule with ID {rule_id_str} not found.", "warning")
+        elif result.modified_count == 0:
+             flash(f"Rule '{rule_name}' was not modified (no changes detected).", "info")
+        else:
+            logger.info(f"Updated build rule '{rule_name}' (ID: {rule_id_str})")
+            flash(f"Successfully updated build rule '{rule_name}'.", "success")
+
+    except ValueError as ve: # Catch validation errors
+        flash(f"Invalid input: {ve}", "danger")
+    except PyMongoError as e:
+        logger.error(f"Database error updating build rule {rule_id_str}: {e}")
+        flash("Database error updating rule.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error updating build rule {rule_id_str}: {e}", exc_info=True)
+        flash("An unexpected error occurred while updating.", "danger")
+
+    return redirect(url_for('settings.view_build_rules'))
+
+
+@bp.route('/build-rules/delete/<rule_id>', methods=['POST'])
+def delete_build_rule(rule_id):
+    """Deletes a build rule by its ID."""
+    if build_rules_collection is None:
+        flash("Build rules database collection is unavailable.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        rule_oid = ObjectId(rule_id) # Convert string ID from URL
+    except InvalidId:
+        flash("Invalid Rule ID format for deletion.", "danger")
+        return redirect(url_for('settings.view_build_rules'))
+
+    try:
+        result = build_rules_collection.delete_one({"_id": rule_oid})
+
+        if result.deleted_count == 1:
+            logger.info(f"Deleted build rule with ID: {rule_id}")
+            flash("Successfully deleted build rule.", "success")
+        else:
+            flash(f"Rule with ID {rule_id} not found for deletion.", "warning")
+
+    except PyMongoError as e:
+        logger.error(f"Database error deleting build rule {rule_id}: {e}")
+        flash("Database error deleting rule.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error deleting build rule {rule_id}: {e}", exc_info=True)
+        flash("An unexpected error occurred during deletion.", "danger")
+
+    return redirect(url_for('settings.view_build_rules'))
+
+@bp.route('/course-configs/add', methods=['POST'])
+def add_course_config():
+    """Adds a new course configuration."""
+    if course_config_collection is None:
+        flash("Course config collection unavailable.", "danger")
+        return redirect(url_for('settings.view_course_configs')) # Redirect to settings blueprint
+
+    config_json_str = request.form.get('config_json', '{}').strip()
+    try:
+        new_config_data = json.loads(config_json_str)
+        if not isinstance(new_config_data, dict):
+            raise ValueError("Configuration must be a valid JSON object.")
+
+        # Validate required fields
+        course_name = new_config_data.get('course_name')
+        vendor_shortcode = new_config_data.get('vendor_shortcode')
+        if not course_name or not isinstance(course_name, str) or not course_name.strip():
+            flash("Valid 'course_name' (string) is required in the JSON.", "danger")
+            return redirect(url_for('settings.view_course_configs'))
+        if not vendor_shortcode or not isinstance(vendor_shortcode, str) or not vendor_shortcode.strip():
+            flash("Valid 'vendor_shortcode' (string) is required in the JSON.", "danger")
+            return redirect(url_for('settings.view_course_configs'))
+
+        new_config_data['course_name'] = course_name.strip() # Ensure trimmed
+        new_config_data['vendor_shortcode'] = vendor_shortcode.strip().lower() # Trim & lowercase vendor
+
+        # Add created_at timestamp
+        new_config_data['created_at'] = datetime.datetime.now(pytz.utc)
+
+        # Attempt to insert
+        # Consider adding a unique index on (course_name, vendor_shortcode) in MongoDB
+        # to prevent exact duplicates if course_name itself isn't globally unique.
+        # For now, let's assume course_name should be unique.
+        if course_config_collection.count_documents({"course_name": new_config_data['course_name']}) > 0:
+            flash(f"Course configuration with name '{new_config_data['course_name']}' already exists.", "warning")
+            return redirect(url_for('settings.view_course_configs'))
+
+        result = course_config_collection.insert_one(new_config_data)
+        logger.info(f"Added new course config '{new_config_data['course_name']}' with ID: {result.inserted_id}")
+        flash(f"Successfully added course configuration '{new_config_data['course_name']}'.", "success")
+
+    except json.JSONDecodeError:
+        flash("Invalid JSON format for configuration.", "danger")
+    except ValueError as ve: # Catch our custom validation errors
+        flash(str(ve), "danger")
+    except PyMongoError as e:
+        logger.error(f"Database error adding course config: {e}")
+        if e.code == 11000: # Duplicate key error
+             flash(f"A course configuration with that name or key combination already exists.", "danger")
+        else:
+             flash("Database error adding configuration.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error adding course config: {e}", exc_info=True)
+        flash("An unexpected error occurred.", "danger")
+
+    return redirect(url_for('settings.view_course_configs'))
+
+
+@bp.route('/course-configs/update', methods=['POST'])
+def update_course_config():
+    """Updates an existing course configuration."""
+    if course_config_collection is None:
+        flash("Course config collection unavailable.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    config_id_str = request.form.get('config_id')
+    config_json_str = request.form.get('config_json', '{}').strip()
+
+    if not config_id_str:
+        flash("Configuration ID missing for update.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+    try:
+        config_oid = ObjectId(config_id_str)
+    except InvalidId:
+        flash("Invalid Configuration ID format.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    try:
+        updated_config_data = json.loads(config_json_str)
+        if not isinstance(updated_config_data, dict):
+            raise ValueError("Configuration must be a valid JSON object.")
+
+        # Validate required fields are still present and valid
+        course_name = updated_config_data.get('course_name')
+        vendor_shortcode = updated_config_data.get('vendor_shortcode')
+        if not course_name or not isinstance(course_name, str) or not course_name.strip():
+            raise ValueError("Valid 'course_name' (string) is required.")
+        if not vendor_shortcode or not isinstance(vendor_shortcode, str) or not vendor_shortcode.strip():
+            raise ValueError("Valid 'vendor_shortcode' (string) is required.")
+
+        updated_config_data['course_name'] = course_name.strip()
+        updated_config_data['vendor_shortcode'] = vendor_shortcode.strip().lower()
+
+        # Add updated_at timestamp
+        updated_config_data['updated_at'] = datetime.datetime.now(pytz.utc)
+
+        # Remove _id from update data if it was accidentally included from textarea
+        updated_config_data.pop('_id', None)
+
+        # Check for name collision if course_name is being changed to an existing one
+        # (and it's not the current document being edited)
+        existing_with_new_name = course_config_collection.find_one({
+            "course_name": updated_config_data['course_name'],
+            "_id": {"$ne": config_oid}
+        })
+        if existing_with_new_name:
+             flash(f"Another course configuration with the name '{updated_config_data['course_name']}' already exists.", "danger")
+             return redirect(url_for('settings.view_course_configs'))
+
+
+        result = course_config_collection.update_one(
+            {"_id": config_oid},
+            {"$set": updated_config_data}
+        )
+
+        if result.matched_count == 0:
+            flash(f"Course configuration with ID {config_id_str} not found.", "warning")
+        elif result.modified_count == 0:
+             flash(f"Course configuration '{updated_config_data['course_name']}' was not modified (no changes detected or attempt to change to existing name).", "info")
+        else:
+            logger.info(f"Updated course config '{updated_config_data['course_name']}' (ID: {config_id_str})")
+            flash(f"Successfully updated course configuration '{updated_config_data['course_name']}'.", "success")
+
+    except json.JSONDecodeError:
+        flash("Invalid JSON format for configuration.", "danger")
+    except ValueError as ve:
+        flash(str(ve), "danger")
+    except PyMongoError as e:
+        logger.error(f"Database error updating course config {config_id_str}: {e}")
+        if e.code == 11000: # Duplicate key error
+             flash(f"Update failed: A course configuration with the new name or key combination may already exist.", "danger")
+        else:
+            flash("Database error updating configuration.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error updating course config {config_id_str}: {e}", exc_info=True)
+        flash("An unexpected error occurred.", "danger")
+
+    return redirect(url_for('settings.view_course_configs'))
+
+
+@bp.route('/course-configs/delete/<config_id>', methods=['POST'])
+def delete_course_config(config_id):
+    """Deletes a course configuration by its ID."""
+    if course_config_collection is None:
+        flash("Course config collection unavailable.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    try:
+        config_oid = ObjectId(config_id)
+    except InvalidId:
+        flash("Invalid Configuration ID format for deletion.", "danger")
+        return redirect(url_for('settings.view_course_configs'))
+
+    try:
+        result = course_config_collection.delete_one({"_id": config_oid})
+        if result.deleted_count == 1:
+            logger.info(f"Deleted course configuration with ID: {config_id}")
+            flash("Successfully deleted course configuration.", "success")
+        else:
+            flash(f"Course configuration with ID {config_id} not found for deletion.", "warning")
+    except PyMongoError as e:
+        logger.error(f"Database error deleting course config {config_id}: {e}")
+        flash("Database error deleting configuration.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error deleting course config {config_id}: {e}", exc_info=True)
+        flash("An unexpected error occurred during deletion.", "danger")
+
+    return redirect(url_for('settings.view_course_configs'))
+
+@bp.route('/toggle-tag-extend', methods=['POST'])
+def toggle_tag_extend():
+    """
+    Toggles the 'extend' field (string "true"/"false") for a given tag
+    in the 'currentallocation' collection based on the current state provided
+    in the form submission.
+
+    Redirects back to the allocations page, preserving any active filters
+    and pagination settings.
+    """
+    tag_name = request.form.get('tag_name')
+    # Get the status *as sent from the form* (state *before* the click)
+    # Default to 'false' string if the input is missing, for safety.
+    current_status_str = request.form.get('current_extend_status', 'false')
+
+    # --- Preserve Filters & Pagination for Redirect ---
+    # Collect all relevant query parameters that might have been passed back
+    # from the allocations page form submission.
+    redirect_args = {}
+    for key in ['filter_tag', 'filter_vendor', 'filter_course', 'filter_host', 'filter_number', 'page', 'per_page']:
+        # Use request.form for POST data, fallback to request.args for GET params if needed
+        # Form submission usually puts everything in request.form for POST
+        value = request.form.get(key)
+        if value is not None: # Only include params that are present
+             # Clean up filter keys if they have the prefix from the form
+             clean_key = key.replace('filter_', '')
+             redirect_args[clean_key] = value
+
+    logger.info(f"Received toggle request for tag: '{tag_name}', current extend status from form: '{current_status_str}'")
+    logger.debug(f"Redirect args collected: {redirect_args}")
 
     # --- Input Validation ---
+    if not tag_name:
+        flash("Tag name missing for toggle operation.", "danger")
+        return redirect(url_for('main.view_allocations', **redirect_args))
+
+    # --- Database Check ---
+    if alloc_collection is None:
+        flash("Allocation database collection is unavailable.", "danger")
+        logger.error("alloc_collection is None in toggle_tag_extend.")
+        return redirect(url_for('main.view_allocations', **redirect_args))
+
+    # --- Determine the NEW status (opposite of current) ---
+    try:
+        # Convert received string status to boolean for logical flipping
+        current_status_bool = current_status_str.lower() == 'true'
+        # The new state is the opposite boolean
+        new_status_bool = not current_status_bool
+        # Convert the NEW state back to the STRING format ("true" or "false")
+        # This must match the data type expected by DB queries/other logic.
+        new_status_str = "true" if new_status_bool else "false"
+    except Exception as e:
+        logger.error(f"Error determining new status for tag '{tag_name}': {e}")
+        flash("Internal error processing status toggle.", "danger")
+        return redirect(url_for('main.view_allocations', **redirect_args))
+
+    logger.info(f"Attempting to update tag '{tag_name}' extend status to: '{new_status_str}'")
+
+    # --- Perform Database Update ---
+    try:
+        result = alloc_collection.update_one(
+            {"tag": tag_name}, # Filter: Find the document by tag name
+            {"$set": {"extend": new_status_str}} # Update: Set the 'extend' field
+        )
+
+        # --- Check Update Result and Provide Feedback ---
+        logger.debug(f"MongoDB update result for tag '{tag_name}': Matched={result.matched_count}, Modified={result.modified_count}")
+
+        if result.matched_count == 0:
+            flash(f"Tag '{tag_name}' not found in database.", "warning")
+            logger.warning(f"Tag '{tag_name}' not found during extend toggle update.")
+        elif result.modified_count == 0:
+             # Occurs if the document was found but the value was already the target value.
+             flash(f"Tag '{tag_name}' extend status was not changed (already set to '{new_status_str}'?).", "info")
+             logger.warning(f"Tag '{tag_name}' matched but extend status not modified. Value might already be '{new_status_str}'.")
+        else:
+            # Success Case
+            new_status_display = "NO REUSE (Locked)" if new_status_str == "true" else "ALLOW REUSE (Unlocked)"
+            flash(f"Tag '{tag_name}' updated. Pod reuse policy set to: {new_status_display}.", "success")
+            logger.info(f"Successfully toggled extend status for tag '{tag_name}' to '{new_status_str}'.")
+
+    except PyMongoError as e:
+        logger.error(f"Database error toggling extend status for tag '{tag_name}': {e}", exc_info=True)
+        flash("Database error updating tag status.", "danger")
+    except Exception as e:
+        logger.error(f"Unexpected error toggling extend status for tag '{tag_name}': {e}", exc_info=True)
+        flash("An unexpected error occurred.", "danger")
+
+    # --- Redirect back to the allocations page, preserving filters & pagination ---
+    # The **redirect_args unpacks the dictionary into keyword arguments for url_for
+    return redirect(url_for('main.view_allocations', **redirect_args))
+
+def _format_date_for_review(raw_date_str: Optional[str], context: str) -> str:
+    # ... (Implementation from previous responses) ...
+    if not raw_date_str or raw_date_str == "N/A": return "N/A"
+    try: datetime.datetime.strptime(raw_date_str, "%Y-%m-%d"); return raw_date_str
+    except ValueError:
+        for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"):
+            try: return datetime.datetime.strptime(raw_date_str, fmt).strftime("%Y-%m-%d")
+            except ValueError: continue
+        logger.warning(f"Could not parse date '{raw_date_str}' for {context}, keeping original.")
+        return raw_date_str
+
+def _allocate_specific_maestro_component(
+    component_labbuild_course: str,
+    num_pods_to_allocate: int,
+    target_host_or_priority_list: Union[str, List[str]],
+    allow_spillover_for_component: bool,
+    all_available_hosts: List[str],
+    pods_assigned_in_this_batch: Dict[str, set],
+    db_locked_pods: Dict[str, set],
+    current_host_capacities_gb: Dict[str, float],
+    memory_per_pod_for_component: float,
+    vendor_code: str,
+    start_pod_suggestion: int = 1
+) -> Tuple[List[Dict[str, Any]], Optional[str], float]:
+    assignments_for_component: List[Dict[str, Any]] = []
+    warning_message: Optional[str] = None
+    total_memory_consumed_for_component = 0.0
+    pods_left_for_this_component = num_pods_to_allocate
+
+    if num_pods_to_allocate <= 0: # No pods needed for this component
+        return assignments_for_component, warning_message, total_memory_consumed_for_component
+    if memory_per_pod_for_component <= 0:
+        warning_message = f"Memory for component '{component_labbuild_course}' is 0 or less. Cannot allocate."
+        logger.warning(f"  {warning_message}")
+        return assignments_for_component, warning_message, total_memory_consumed_for_component
+
+
+    hosts_to_try_for_component: List[str] = []
+    if isinstance(target_host_or_priority_list, str):
+        if target_host_or_priority_list in current_host_capacities_gb:
+            hosts_to_try_for_component = [target_host_or_priority_list]
+        else:
+            warning_message = f"Pinned host '{target_host_or_priority_list}' for '{component_labbuild_course}' not available or no capacity info."
+            return assignments_for_component, warning_message, total_memory_consumed_for_component
+    elif isinstance(target_host_or_priority_list, list):
+        hosts_to_try_for_component.extend([h for h in target_host_or_priority_list if h in current_host_capacities_gb])
+        if allow_spillover_for_component:
+            hosts_to_try_for_component.extend(sorted([
+                h_n for h_n in all_available_hosts if h_n not in hosts_to_try_for_component and h_n in current_host_capacities_gb
+            ]))
+    else:
+        warning_message = f"Invalid target_host_or_priority_list type for '{component_labbuild_course}'."
+        return assignments_for_component, warning_message, total_memory_consumed_for_component
+
+    if not hosts_to_try_for_component:
+        warning_message = f"No suitable hosts found for '{component_labbuild_course}' based on priority/pinning ({num_pods_to_allocate} pods needed)."
+        return assignments_for_component, warning_message, total_memory_consumed_for_component
+
+    logger.debug(f"  Allocating for '{component_labbuild_course}': Needs {pods_left_for_this_component} pods. Hosts to try: {hosts_to_try_for_component}. Start Suggestion: {start_pod_suggestion}")
+
+    for host_target in hosts_to_try_for_component:
+        if pods_left_for_this_component <= 0: break
+        current_host_cap = current_host_capacities_gb.get(host_target, 0.0)
+        assigned_on_this_host_segment: List[int] = []
+        candidate_pod_num = start_pod_suggestion
+        temp_pods_left_on_host_iter = pods_left_for_this_component
+
+        while temp_pods_left_on_host_iter > 0:
+            actual_candidate_pod_num = candidate_pod_num
+            while True:
+                if actual_candidate_pod_num not in db_locked_pods.get(vendor_code, set()) and \
+                   actual_candidate_pod_num not in pods_assigned_in_this_batch.get(vendor_code, set()):
+                    break
+                actual_candidate_pod_num += 1
+
+            mem_needed_for_this_pod = memory_per_pod_for_component
+            if assigned_on_this_host_segment: # If we've already put at least one pod of this type on this host *in this segment*
+                 mem_needed_for_this_pod *= SUBSEQUENT_POD_MEMORY_FACTOR
+            
+            if current_host_cap >= mem_needed_for_this_pod:
+                assigned_on_this_host_segment.append(actual_candidate_pod_num)
+                pods_assigned_in_this_batch.setdefault(vendor_code, set()).add(actual_candidate_pod_num)
+                new_host_cap = max(0, round(current_host_cap - mem_needed_for_this_pod, 2))
+                current_host_capacities_gb[host_target] = new_host_cap # Update global capacity
+                current_host_cap = new_host_cap # Update local loop variable
+                total_memory_consumed_for_component += mem_needed_for_this_pod
+                pods_left_for_this_component -= 1
+                temp_pods_left_on_host_iter -=1
+                logger.info(f"    Assigned pod {actual_candidate_pod_num} of '{component_labbuild_course}' to {host_target}. Pods left for component: {pods_left_for_this_component}. Host '{host_target}' cap left: {current_host_cap:.2f}GB")
+                candidate_pod_num = actual_candidate_pod_num + 1
+            else:
+                warn_host_full_comp = f"Host '{host_target}' capacity limit for '{component_labbuild_course}' (needs {mem_needed_for_this_pod:.2f}GB, has {current_host_cap:.2f}GB)."
+                warning_message = (warning_message + ". " if warning_message else "") + warn_host_full_comp
+                logger.warning(f"    {warn_host_full_comp}")
+                break
+        
+        if assigned_on_this_host_segment:
+            assigned_on_this_host_segment.sort()
+            start_p, end_p = assigned_on_this_host_segment[0], assigned_on_this_host_segment[0]
+            for i in range(1, len(assigned_on_this_host_segment)):
+                if assigned_on_this_host_segment[i] == end_p + 1:
+                    end_p = assigned_on_this_host_segment[i]
+                else:
+                    assignments_for_component.append({"host": host_target, "start_pod": start_p, "end_pod": end_p, "labbuild_course": component_labbuild_course})
+                    start_p = end_p = assigned_on_this_host_segment[i]
+            assignments_for_component.append({"host": host_target, "start_pod": start_p, "end_pod": end_p, "labbuild_course": component_labbuild_course})
+
+    if pods_left_for_this_component > 0:
+        warn_not_all_comp = f"Could not allocate all {num_pods_to_allocate} pods for '{component_labbuild_course}'; {pods_left_for_this_component} remain unassigned."
+        warning_message = (warning_message + ". " if warning_message else "") + warn_not_all_comp
+        logger.warning(f"  {warn_not_all_comp}")
+
+    return assignments_for_component, warning_message, round(total_memory_consumed_for_component, 2)
+# --- END Helper ---
+
+# Assume bp is defined in your routes file, e.g.
+# bp = Blueprint('actions', __name__)
+
+@bp.route('/intermediate-build-review', methods=['POST'])
+def intermediate_build_review():
+    current_theme = request.cookies.get('theme', 'light')
+    selected_courses_json = request.form.get('selected_courses')
+
+    # --- Initialize data structures ---
+    processed_courses_for_student_review: List[Dict] = []
+    build_rules: List[Dict] = []
+    all_available_host_names: List[str] = []
+    db_locked_pods: Dict[str, set] = defaultdict(set)
+    db_reusable_candidates_by_vendor_host: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+    host_memory_start_of_batch: Dict[str, float] = {}
+    course_configs_for_memory_lookup: List[Dict] = []
+    pods_assigned_in_this_batch: Dict[str, set] = defaultdict(set)
+    current_assignment_capacities_gb: Dict[str, float] = {}
+    available_lab_courses_by_vendor: Dict[str, set] = defaultdict(set)
+
+    # --- Validate input ---
     if not selected_courses_json:
         flash("No courses selected for review.", "warning")
         return redirect(url_for('main.view_upcoming_courses'))
     try:
         selected_courses_input = json.loads(selected_courses_json)
         if not isinstance(selected_courses_input, list) or not selected_courses_input:
-             raise ValueError("Invalid course data format.")
+            raise ValueError("Invalid course data: Expected non-empty list.")
     except (json.JSONDecodeError, ValueError) as e:
-        flash(f"Invalid data received: {e}", "danger")
-        logger.error(f"Failed to parse selected_courses JSON: {e}")
+        flash(f"Invalid data received for review: {e}", "danger")
+        logger.error(f"Failed to parse selected_courses JSON: {e}", exc_info=True)
         return redirect(url_for('main.view_upcoming_courses'))
 
-    # --- Main Processing Block ---
+    if interim_alloc_collection is None or build_rules_collection is None or \
+       alloc_collection is None or host_collection is None or course_config_collection is None:
+        logger.critical("One or more required database collections are None. Cannot proceed with review.")
+        flash("Critical error: A required database service is unavailable.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    # --- Fetch initial data (build rules, host capacities, existing allocations) ---
     try:
-        # --- 1. Fetch Build Rules ---
-        if build_rules_collection is not None:
-            try:
-                # Fetch rules sorted by priority (lower number = higher priority)
-                rules_cursor = build_rules_collection.find().sort("priority", ASCENDING)
-                build_rules = list(rules_cursor)
-                if not build_rules: flash("No build rules defined.", "warning")
-                logger.info(f"Loaded {len(build_rules)} build rules.")
-            except PyMongoError as e:
-                 logger.error(f"Error fetching build rules: {e}"); flash("Error loading build rules.", "danger")
-        else: flash("Build rules collection unavailable.", "danger"); logger.error("build_rules_collection is None.")
+        build_rules = list(build_rules_collection.find().sort("priority", pymongo.ASCENDING))
+        logger.info(f"Loaded {len(build_rules)} build rules for intermediate review.")
 
-        # --- 2. Fetch & Process Reusable Pods/Memory ---
-        logger.info("Processing current allocations for reusable pods...")
-        if alloc_collection is not None:
-            try:
-                # Ensure 'extend' field exists (defaulting to false)
-                alloc_collection.update_many({"extend": {"$exists": False}}, {"$set": {"extend": "false"}})
-                cursor = alloc_collection.find({"extend": "false"}, {"courses": 1, "_id": 0}) # Fetch only courses for relevant tags
+        course_configs_for_memory_lookup = list(course_config_collection.find({}, {"course_name": 1, "vendor_shortcode": 1, "memory_gb_per_pod": 1, "memory":1, "_id": 0}))
+        for cfg in course_configs_for_memory_lookup:
+            vendor_cfg = cfg.get('vendor_shortcode', '').lower(); name = cfg.get('course_name')
+            if vendor_cfg and name: available_lab_courses_by_vendor[vendor_cfg].add(name)
 
-                for tag_doc in cursor:
-                    for course_alloc in tag_doc.get("courses", []):
-                        vendor = course_alloc.get("vendor")
-                        course_name = course_alloc.get("course_name")
-                        if not vendor or not course_name: continue
-                        mem_per_pod = _get_memory_for_course(course_name)
-                        if mem_per_pod <= 0: continue
-
-                        for pod_detail in course_alloc.get("pod_details", []):
-                            pod_num = pod_detail.get("pod_number"); host = pod_detail.get("host")
-                            if pod_num is not None and host:
-                                try:
-                                    pod_num_int = int(pod_num)
-                                    # Only add if not already marked as globally assigned (edge case protection)
-                                    if pod_num_int not in globally_assigned_pods_by_vendor.get(vendor, set()):
-                                        if reusable_pods_by_vendor_host[vendor][host].add(pod_num_int): # Add returns True if new
-                                             released_memory_by_host[host] += mem_per_pod
-                                except (ValueError, TypeError): pass # Ignore invalid pod numbers
-                # Log summary
-                for host, released_gb in released_memory_by_host.items():
-                    if released_gb > 0: logger.info(f"Host '{host}': Calculated {released_gb:.2f} GB releasable memory.")
-            except PyMongoError as e: logger.error(f"DB Error processing current allocations: {e}"); flash("Error checking existing allocations.", "warning")
-            except Exception as e: logger.error(f"Unexpected error calculating released memory: {e}", exc_info=True); flash("Error calculating released memory.", "warning")
-        else: logger.warning("Current allocation collection unavailable.")
-
-        # --- 3. Fetch Host Info & Initial Capacity ---
-        if host_collection is not None:
-             try:
-                 hosts_cursor = host_collection.find({"include_for_build": "true"})
-                 hosts_to_check_docs = list(hosts_cursor)
-                 available_hosts_db = [h['host_name'] for h in hosts_to_check_docs if 'host_name' in h]
-                 if not hosts_to_check_docs: flash("No hosts marked for build inclusion.", "warning")
-             except PyMongoError as e: logger.error(f"Failed fetch host list: {e}"); flash("Could not retrieve host list.", "warning")
-        else: flash("Host collection unavailable.", "danger"); logger.error("host_collection is None.")
-
-        if hosts_to_check_docs: initial_host_capacities_gb = get_hosts_available_memory_parallel(hosts_to_check_docs)
-        else: logger.warning("Skipping host memory check - no hosts marked for inclusion.")
-
-        # --- 4. Adjust Host Capacity ---
-        assignment_capacities_gb.clear()
-        for host_name in available_hosts_db:
-            initial_capacity = initial_host_capacities_gb.get(host_name)
-            if initial_capacity is not None:
-                released = released_memory_by_host.get(host_name, 0.0)
-                adjusted_capacity = initial_capacity + released
-                assignment_capacities_gb[host_name] = adjusted_capacity
-                logger.info(f"Host '{host_name}': Initial={initial_capacity:.2f}GB + Released={released:.2f}GB = Adjusted={adjusted_capacity:.2f}GB")
-            else: logger.warning(f"Excluding host '{host_name}' from assignment: capacity fetch failed.")
-
-        # --- 5. Process Each Selected Course for Assignment ---
-        logger.info("Starting host and pod assignment loop...")
-        for course_input_data in selected_courses_input:
-            # Extract data from the input posted from the previous page
-            sf_course_code = course_input_data.get('sf_course_code', '')
-            labbuild_course_selected = course_input_data.get('labbuild_course') # User's selection from dropdown
-            vendor = course_input_data.get('vendor', '').lower()
-            sf_course_type = course_input_data.get('sf_course_type', '') # Assuming this is passed now
-            pods_req = max(1, int(course_input_data.get('sf_pods_req', 1))) # Assuming passed
-
-            # Initialize for this course
-            host_assignments_detail = defaultdict(list)
-            error_determining_hosts = None
-            pods_assigned_for_this_course = 0
-            final_labbuild_course = labbuild_course_selected # Default to user selection
-
-            # Find the best matching rule
-            matched_rule, _ = _find_matching_build_rule(build_rules, vendor, sf_course_code, sf_course_type) # Ignore second return value for now
-
-            # Determine final LabBuild course (rule overrides user selection)
-            if matched_rule:
-                rule_action_course = matched_rule.get("actions", {}).get("set_labbuild_course")
-                if rule_action_course:
-                    if rule_action_course != labbuild_course_selected:
-                        logger.warning(f"Rule '{matched_rule.get('rule_name')}' overrides user selection: '{rule_action_course}' used for SF '{sf_course_code}'.")
-                    final_labbuild_course = rule_action_course
-
-            if not final_labbuild_course: # Check if we have a course name now
-                 error_determining_hosts = "No LabBuild Course determined"
-                 logger.error(f"Cannot assign pods for SF '{sf_course_code}': {error_determining_hosts}")
-
-            # Get memory requirement for the FINAL course
-            memory_gb_per_pod = 0
-            if not error_determining_hosts:
-                memory_gb_per_pod = _get_memory_for_course(final_labbuild_course)
-                if memory_gb_per_pod <= 0:
-                    error_determining_hosts = "Memory requirement unknown/invalid"
-                    logger.warning(f"Cannot assign pods for '{final_labbuild_course}': {error_determining_hosts}")
-
-            # --- Assign Hosts/Pods if possible ---
-            if error_determining_hosts is None:
-                total_memory_needed_gb = pods_req * memory_gb_per_pod
-                logger.info(f"Course '{final_labbuild_course}' ({vendor}): Needs {pods_req} pods ({total_memory_needed_gb:.2f} GB total).")
-
-                # Determine host priority from the matched rule or default
-                priority_hosts = []
-                allow_spillover = True
-                start_pod_num_rule = 1
-                if matched_rule and matched_rule.get("actions", {}).get("host_priority"):
-                    priority_hosts = matched_rule["actions"]["host_priority"]
-                    allow_spillover = matched_rule["actions"].get("allow_spillover", True)
-                    start_pod_num_rule = matched_rule.get("actions",{}).get("start_pod_number", 1)
-                else:
-                    # Default fallback host pool logic
-                    default_priority = ['unicron', 'ultramagnus', 'cliffjumper', 'nightbird', 'hotshot', 'apollo']
-                    priority_hosts = [h for h in default_priority if h in assignment_capacities_gb] # Use adjusted capacities map
-                    logger.warning(f"No specific host rule for '{final_labbuild_course}'. Using default pool: {priority_hosts}")
-
-                # Filter hosts based on adjusted capacity available >= memory_gb_per_pod
-                hosts_to_try_primary = [ h for h in priority_hosts if assignment_capacities_gb.get(h, 0.0) >= memory_gb_per_pod ]
-                hosts_to_try = list(hosts_to_try_primary)
-
-                # Add spillover if allowed and needed
-                if allow_spillover:
-                    spillover_hosts = sorted([ h for h in assignment_capacities_gb if h not in hosts_to_try and assignment_capacities_gb.get(h, 0.0) >= memory_gb_per_pod ])
-                    if spillover_hosts: hosts_to_try.extend(spillover_hosts)
-                logger.debug(f"Final assignment order for '{final_labbuild_course}': {hosts_to_try}")
-
-                # --- Assignment Loop ---
-                pods_to_assign = pods_req
-                current_course_capacities = assignment_capacities_gb.copy() # Temp copy for this course
-
-                for host_prio in hosts_to_try:
-                    if pods_to_assign <= 0: break
-                    available_mem_host = current_course_capacities.get(host_prio, 0.0)
-                    pods_assigned_to_this_host_list = []
-
-                    # 5a. Try REUSABLE pods
-                    # Get reusable pods for this vendor/host, excluding globally assigned ones
-                    candidate_reusable = sorted(list(
-                        reusable_pods_by_vendor_host.get(vendor, {}).get(host_prio, set()) -
-                        globally_assigned_pods_by_vendor.get(vendor, set())
-                    ))
-                    for reusable_pod_num in candidate_reusable:
-                        if pods_to_assign <= 0: break
-                        if available_mem_host >= memory_gb_per_pod:
-                            available_mem_host -= memory_gb_per_pod
-                            pods_assigned_to_this_host_list.append(reusable_pod_num)
-                            pods_to_assign -= 1
-                            globally_assigned_pods_by_vendor[vendor].add(reusable_pod_num) # Mark globally
-                        else: break # No memory for reusable
-
-                    # 5b. Assign NEW pods
-                    if pods_to_assign > 0:
-                        pod_num_candidate = start_pod_num_rule # Start from rule default or 1
-                        while pods_to_assign > 0:
-                            # Find next globally available new pod number for this vendor
-                            while pod_num_candidate in globally_assigned_pods_by_vendor.get(vendor, set()):
-                                pod_num_candidate += 1
-
-                            if available_mem_host >= memory_gb_per_pod:
-                                available_mem_host -= memory_gb_per_pod
-                                pods_assigned_to_this_host_list.append(pod_num_candidate)
-                                pods_to_assign -= 1
-                                globally_assigned_pods_by_vendor[vendor].add(pod_num_candidate) # Mark globally
-                                pod_num_candidate += 1
-                            else: break # No memory for new
-
-                    # Record assignment for this host and update *master* capacity map
-                    if pods_assigned_to_this_host_list:
-                        host_assignments_detail[host_prio].extend(sorted(pods_assigned_to_this_host_list))
-                        assignment_capacities_gb[host_prio] = available_mem_host # Update overall remaining capacity
-                        logger.info(f"Assigned pods {sorted(pods_assigned_to_this_host_list)} of '{final_labbuild_course}' to host '{host_prio}'. New tracked capacity: {available_mem_host:.2f} GB")
-                # --- End Host Loop for Course ---
-
-                # Check assignment success
-                total_assigned_count = sum(len(pods) for pods in host_assignments_detail.values())
-                if total_assigned_count < pods_req:
-                    error_determining_hosts = f"Insufficient capacity/pods (assigned {total_assigned_count}/{pods_req})"
-                    logger.error(f"Assignment failed for '{final_labbuild_course}': {error_determining_hosts}")
-            # --- End Host/Pod Assignment Logic ---
-
-            # --- Add processed course data for review ---
-            processed_course = course_input_data.copy() # Use original input as base
-            processed_course['labbuild_course'] = final_labbuild_course # Store final name
-            # Format display string and store detailed pod map
-            if error_determining_hosts:
-                processed_course['host_assignments_display'] = f"Error: {error_determining_hosts}"
-                processed_course['host_assignments_pods'] = {}
-            elif not host_assignments_detail:
-                processed_course['host_assignments_display'] = "Error: No suitable hosts found"
-                processed_course['host_assignments_pods'] = {}
-            else:
-                 display_parts = []
-                 for h, nums in sorted(host_assignments_detail.items()):
-                     nums.sort()
-                     ranges = []
-                     if nums: # Generate compact ranges e.g., 1-3, 5
-                         start = end = nums[0]
-                         for i in range(1, len(nums)):
-                             if nums[i] == end + 1: end = nums[i]
-                             else: ranges.append(str(start) if start == end else f"{start}-{end}"); start = end = nums[i]
-                         ranges.append(str(start) if start == end else f"{start}-{end}")
-                     display_parts.append(f"{h}: {', '.join(ranges)}")
-                 processed_course['host_assignments_display'] = "; ".join(display_parts)
-                 processed_course['host_assignments_pods'] = dict(host_assignments_detail) # Convert defaultdict back to dict for saving
-
-            processed_courses_for_review.append(processed_course)
-            # --- End Course Loop ---
+        temp_released_memory_by_host: Dict[str, float] = defaultdict(float)
+        # ... (Your existing logic for db_locked_pods, db_reusable_candidates_by_vendor_host, temp_released_memory_by_host - this seemed correct)
+        alloc_collection.update_many({"extend": {"$exists": False}}, {"$set": {"extend": "false"}})
+        db_allocs_cursor = alloc_collection.find({}, {
+            "courses.vendor": 1, "courses.course_name":1, "courses.pod_details.host": 1,
+            "courses.pod_details.pod_number": 1, "courses.pod_details.class_number": 1,
+            "courses.pod_details.pods.pod_number": 1, "extend": 1, "_id": 0
+        })
+        _counted_for_release_mem_tracker = set()
+        for tag_doc_db in db_allocs_cursor:
+            is_tag_locked = str(tag_doc_db.get("extend", "false")).lower() == "true"
+            for course_alloc_db in tag_doc_db.get("courses", []):
+                vendor = course_alloc_db.get("vendor", "").lower(); lb_course = course_alloc_db.get("course_name")
+                if not vendor or not lb_course: continue
+                mem_pod = _get_memory_for_course(lb_course)
+                for pd_db in course_alloc_db.get("pod_details", []):
+                    host = pd_db.get("host"); ids_in_detail: List[int] = []
+                    pod_num_val = pd_db.get("pod_number"); class_num_val = pd_db.get("class_number")
+                    if pod_num_val is not None: 
+                        try: ids_in_detail.append(int(pod_num_val)); 
+                        except:pass
+                    if vendor == 'f5':
+                        if class_num_val is not None: 
+                            try: ids_in_detail.append(int(class_num_val)); 
+                            except:pass
+                        for np_item in pd_db.get("pods", []):
+                            np_n_val = np_item.get("pod_number");
+                            if np_n_val is not None: 
+                                try: ids_in_detail.append(int(np_n_val)); 
+                                except:pass
+                    for item_id_val in set(ids_in_detail):
+                        if is_tag_locked: db_locked_pods[vendor].add(item_id_val)
+                        elif host and mem_pod > 0:
+                            db_reusable_candidates_by_vendor_host[vendor][host].add(item_id_val)
+                            mem_tracker_key = f"{vendor}_{host}_{item_id_val}"
+                            if mem_tracker_key not in _counted_for_release_mem_tracker:
+                                temp_released_memory_by_host[host] += mem_pod
+                                _counted_for_release_mem_tracker.add(mem_tracker_key)
+        if '_counted_for_release_mem_tracker' in locals(): del _counted_for_release_mem_tracker
+        
+        initial_host_raw_capacities_gb: Dict[str, Optional[float]] = {}
+        hosts_docs_db = list(host_collection.find({"include_for_build": "true"}))
+        all_available_host_names = sorted([h['host_name'] for h in hosts_docs_db if 'host_name' in h])
+        if hosts_docs_db: initial_host_raw_capacities_gb = get_hosts_available_memory_parallel(hosts_docs_db)
+        
+        for h_doc_item in hosts_docs_db:
+            h_name_item = h_doc_item.get("host_name")
+            vc_cap_item = initial_host_raw_capacities_gb.get(h_name_item)
+            if h_name_item and vc_cap_item is not None:
+                rel_mem_item = temp_released_memory_by_host.get(h_name_item, 0.0)
+                host_memory_start_of_batch[h_name_item] = round(vc_cap_item + rel_mem_item, 2)
 
 
-        # --- 6. Upsert into interimallocation collection ---
-        if interim_alloc_collection is None:
-            flash("Interim DB unavailable.", "danger"); logger.error("interim_alloc_collection None."); save_error_flag = True
-        elif not processed_courses_for_review: flash("No courses processed to save.", "warning")
+    except PyMongoError as e_fetch:
+        logger.error(f"DB error during initial data fetch for intermediate review: {e_fetch}", exc_info=True)
+        flash("Error fetching configuration data. Cannot proceed.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+    except Exception as e_generic_prep:
+        logger.error(f"Unexpected error during data preparation: {e_generic_prep}", exc_info=True)
+        flash("An unexpected server error occurred during data preparation.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    current_assignment_capacities_gb = host_memory_start_of_batch.copy()
+    batch_review_id = str(ObjectId())
+    logger.info(f"Starting intermediate review batch: {batch_review_id}")
+    logger.debug(f"  Initial Host Memory (Start of Batch Review): {host_memory_start_of_batch}")
+    logger.debug(f"  Initial DB Locked Pods: {dict(db_locked_pods)}")
+    logger.debug(f"  Initial DB Reusable Candidates: {{ {', '.join([f'{k}:{dict(v)}' for k,v in db_reusable_candidates_by_vendor_host.items()])} }}")
+
+    try:
+        del_res = interim_alloc_collection.delete_many({"status": {"$regex": "^pending_"}})
+        logger.info(f"Cleared {del_res.deleted_count} old pending review items. New batch_review_id: {batch_review_id}")
+    except PyMongoError as e_clear_interim:
+        logger.error(f"Error clearing old interim items for batch {batch_review_id}: {e_clear_interim}", exc_info=True)
+
+    bulk_interim_ops: List[UpdateOne] = []
+
+    for course_idx, course_input_data in enumerate(selected_courses_input):
+        # --- Extract ALL fields sent from JS ---
+        sf_code = course_input_data.get('sf_course_code', f'SF_UNKN_{course_idx}')
+        sf_course_type = course_input_data.get('sf_course_type', 'N/A')
+        sf_start_date_str = course_input_data.get('sf_start_date', 'N/A')
+        sf_end_date_str = course_input_data.get('sf_end_date', 'N/A')
+        sf_trainer_name = course_input_data.get('sf_trainer_name', 'N/A')
+        sf_pax_count = int(course_input_data.get('sf_pax_count', 0))
+        sf_pods_req_original_str = course_input_data.get('sf_pods_req', '1') # Original string value
+
+        user_selected_lb_course_student = course_input_data.get('labbuild_course')
+        vendor_student = course_input_data.get('vendor', '').lower()
+
+        # Parse sf_pods_req_original_str to an integer for calculation
+        initial_pods_req_for_calc = 1
+        if isinstance(sf_pods_req_original_str, (int, float)):
+            initial_pods_req_for_calc = max(1, int(sf_pods_req_original_str))
+        elif isinstance(sf_pods_req_original_str, str):
+            match_pod_num = re.match(r"^\s*(\d+)", sf_pods_req_original_str)
+            if match_pod_num:
+                try: initial_pods_req_for_calc = max(1, int(match_pod_num.group(1)))
+                except ValueError: logger.warning(f"Could not parse sf_pods_req '{sf_pods_req_original_str}' for '{sf_code}'. Default 1.")
+            else: logger.warning(f"sf_pods_req '{sf_pods_req_original_str}' for '{sf_code}' has no leading num. Default 1.")
+        else: logger.warning(f"Unexpected type for sf_pods_req '{sf_pods_req_original_str}' for '{sf_code}'. Default 1.")
+
+        # --- Rule Application ---
+        eff_actions_student: Dict[str, Any] = {}
+        student_assignment_warning: Optional[str] = None
+        # (Your existing logic for _find_all_matching_rules and populating eff_actions_student)
+        matched_rules_for_course = _find_all_matching_rules(build_rules, vendor_student, sf_code, sf_course_type)
+        action_keys_to_extract = ["set_labbuild_course", "host_priority", "allow_spillover", "set_max_pods", "start_pod_number", "maestro_split_build", "override_pods_req"]
+        for rule_item in matched_rules_for_course:
+            rule_actions = rule_item.get("actions", {});
+            for key_action in action_keys_to_extract:
+                if key_action not in eff_actions_student and key_action in rule_actions:
+                    eff_actions_student[key_action] = rule_actions[key_action]
+
+        final_lb_course_student = eff_actions_student.get('set_labbuild_course')
+        if not final_lb_course_student or (final_lb_course_student not in available_lab_courses_by_vendor.get(vendor_student, set())):
+            if final_lb_course_student: student_assignment_warning = f"Rule LB course '{final_lb_course_student}' invalid. "
+            if user_selected_lb_course_student and user_selected_lb_course_student in available_lab_courses_by_vendor.get(vendor_student, set()):
+                final_lb_course_student = user_selected_lb_course_student
+                student_assignment_warning = (student_assignment_warning or "") + f"Using user-select '{final_lb_course_student}'."
+            elif user_selected_lb_course_student:
+                 student_assignment_warning = (student_assignment_warning or "") + f"User-select '{user_selected_lb_course_student}' invalid. "
+                 final_lb_course_student = None
+        
+        maestro_split_config = eff_actions_student.get("maestro_split_build")
+        is_special_maestro_handling = isinstance(maestro_split_config, dict) and vendor_student == "cp"
+        
+        if not final_lb_course_student and not is_special_maestro_handling:
+            student_assignment_warning = (student_assignment_warning or "") + "No valid LB course for standard build."
+
+        # --- Effective Pods Required for Students ---
+        eff_pods_req_student = initial_pods_req_for_calc
+        if eff_actions_student.get("override_pods_req") is not None:
+            try: eff_pods_req_student = int(eff_actions_student.get("override_pods_req"))
+            except (ValueError, TypeError): pass
+        if eff_actions_student.get("set_max_pods") is not None:
+            try: eff_pods_req_student = min(eff_pods_req_student, int(eff_actions_student.get("set_max_pods")))
+            except (ValueError, TypeError): pass
+        eff_pods_req_student = max(0, eff_pods_req_student)
+
+
+        # --- Prepare `interim_student_data_to_save` dictionary ---
+        interim_doc_id = ObjectId()
+        interim_student_data_to_save = {
+            "_id": interim_doc_id,
+            "batch_review_id": batch_review_id,
+            "created_at": datetime.datetime.now(pytz.utc),
+            "updated_at": datetime.datetime.now(pytz.utc),
+            "status": "pending_student_review",
+            "vendor": vendor_student,
+
+            # Salesforce Data (passed from JS)
+            "sf_course_code": sf_code,
+            "sf_course_type": sf_course_type,
+            "sf_start_date": _format_date_for_review(sf_start_date_str, f"{sf_code} start"),
+            "sf_end_date": _format_date_for_review(sf_end_date_str, f"{sf_code} end"),
+            "sf_trainer_name": sf_trainer_name, # THIS IS THE KEY FIELD
+            "sf_pax_count": sf_pax_count,       # THIS IS THE KEY FIELD
+            "sf_pods_req_original_str": sf_pods_req_original_str, # Original from SF page
+            "sf_pods_req_calculated_int": initial_pods_req_for_calc, # Parsed int
+
+            # Rule & Selection Based Data
+            "user_selected_labbuild_course_upcoming": user_selected_lb_course_student,
+            "rule_actions_applied": eff_actions_student,
+            "final_labbuild_course_student": final_lb_course_student,
+            "effective_pods_req_student": eff_pods_req_student,
+            "memory_gb_one_student_pod": 0.0, # Will be calculated below
+            "student_assignment_warning": student_assignment_warning, # Initial warning
+
+            # Preselects passed from JS (originating from salesforce_utils)
+            "preselect_host_rule": course_input_data.get("preselect_host"),
+            "preselect_host_priority_list_rule": course_input_data.get("preselect_host_priority_list"),
+            "preselect_allow_spillover_rule": course_input_data.get("preselect_allow_spillover"),
+            "preselect_start_pod_rule": course_input_data.get("preselect_start_pod"),
+            "preselect_max_pods_applied_constraint_rule": course_input_data.get("preselect_max_pods_applied_constraint"),
+            "maestro_split_config_details_rule": course_input_data.get("maestro_split_config_details"),
+            "preselect_note_rule": course_input_data.get("preselect_note"),
+            
+            "initial_interactive_sub_rows_student": [] # Will be populated by auto-assignment
+        }
+        # --- End `interim_student_data_to_save` preparation ---
+
+
+        # --- Auto-assignment logic (using _allocate_specific_maestro_component helper) ---
+        initial_interactive_sub_rows_for_template: List[Dict[str,Any]] = []
+        host_priority_student_alloc = eff_actions_student.get('host_priority', course_input_data.get('preselect_host_priority_list', all_available_host_names))
+        if not isinstance(host_priority_student_alloc, list) or not host_priority_student_alloc:
+            host_priority_student_alloc = all_available_host_names
+        allow_spillover_student_alloc = eff_actions_student.get('allow_spillover', course_input_data.get('preselect_allow_spillover', True))
+        start_pod_suggestion_student_alloc = max(1, int(eff_actions_student.get('start_pod_number', course_input_data.get("preselect_start_pod", 1))))
+
+        current_warning_from_auto_alloc = None # Specific to this auto-allocation step
+
+        if is_special_maestro_handling and maestro_split_config:
+            # ... (Your Maestro auto-assignment logic using _allocate_specific_maestro_component)
+            # This populates `initial_interactive_sub_rows_for_template` and `current_warning_from_auto_alloc`
+            # and sets `interim_student_data_to_save["memory_gb_one_student_pod"]` to total Maestro memory
+            logger.info(f"Applying MAESTRO_SPLIT_BUILD auto-assignment for SF Course: {sf_code}")
+            # interim_student_data_to_save["effective_pods_req_student"] = 4 # Already set
+            interim_student_data_to_save["final_labbuild_course_student"] = "MAESTRO_COMPOSITE"
+            total_maestro_memory_consumed = 0.0
+            maestro_components_assignments_list = []
+            
+            main_lb_c = maestro_split_config.get("main_course", "maestro-r81"); main_lb_n = int(maestro_split_config.get("main_course_count", 2))
+            rack1_lb_c = maestro_split_config.get("rack1_course", "maestro-rack1"); rack2_lb_c = maestro_split_config.get("rack2_course", "maestro-rack2")
+            rack_host_pin = maestro_split_config.get("rack_host", "hotshot")
+            current_maestro_pod_suggestion_auto = start_pod_suggestion_student_alloc
+
+            mem_main_comp = _get_memory_for_course(main_lb_c)
+            if mem_main_comp > 0:
+                main_asgns, main_warn, main_mem_used = _allocate_specific_maestro_component(main_lb_c, main_lb_n, host_priority_student_alloc, allow_spillover_student_alloc, all_available_host_names, pods_assigned_in_this_batch, db_locked_pods, current_assignment_capacities_gb, mem_main_comp, vendor_student, start_pod_suggestion=current_maestro_pod_suggestion_auto)
+                if main_warn: current_warning_from_auto_alloc = (current_warning_from_auto_alloc + ". " if current_warning_from_auto_alloc else "") + f"{main_lb_c}: {main_warn}"
+                maestro_components_assignments_list.extend(main_asgns); total_maestro_memory_consumed += main_mem_used
+                if main_asgns: current_maestro_pod_suggestion_auto = main_asgns[-1]['end_pod'] + 10 
+            else: current_warning_from_auto_alloc = (current_warning_from_auto_alloc + ". " if current_warning_from_auto_alloc else "") + f"Memory for Maestro main '{main_lb_c}' is 0. Skipping."
+
+            mem_rack1_comp = _get_memory_for_course(rack1_lb_c)
+            if mem_rack1_comp > 0 :
+                rack1_asgns, rack1_warn, rack1_mem_used = _allocate_specific_maestro_component(rack1_lb_c, 1, rack_host_pin, False, all_available_host_names, pods_assigned_in_this_batch, db_locked_pods, current_assignment_capacities_gb, mem_rack1_comp, vendor_student, start_pod_suggestion=current_maestro_pod_suggestion_auto)
+                if rack1_warn: current_warning_from_auto_alloc = (current_warning_from_auto_alloc + ". " if current_warning_from_auto_alloc else "") + f"{rack1_lb_c}: {rack1_warn}"
+                maestro_components_assignments_list.extend(rack1_asgns); total_maestro_memory_consumed += rack1_mem_used
+                if rack1_asgns: current_maestro_pod_suggestion_auto = rack1_asgns[-1]['end_pod'] + 1 
+            else: current_warning_from_auto_alloc = (current_warning_from_auto_alloc + ". " if current_warning_from_auto_alloc else "") + f"Memory for Maestro rack1 '{rack1_lb_c}' is 0. Skipping."
+
+            mem_rack2_comp = _get_memory_for_course(rack2_lb_c)
+            if mem_rack2_comp > 0:
+                rack2_asgns, rack2_warn, rack2_mem_used = _allocate_specific_maestro_component(rack2_lb_c, 1, rack_host_pin, False, all_available_host_names, pods_assigned_in_this_batch, db_locked_pods, current_assignment_capacities_gb, mem_rack2_comp, vendor_student, start_pod_suggestion=current_maestro_pod_suggestion_auto)
+                if rack2_warn: current_warning_from_auto_alloc = (current_warning_from_auto_alloc + ". " if current_warning_from_auto_alloc else "") + f"{rack2_lb_c}: {rack2_warn}"
+                maestro_components_assignments_list.extend(rack2_asgns); total_maestro_memory_consumed += rack2_mem_used
+            else: current_warning_from_auto_alloc = (current_warning_from_auto_alloc + ". " if current_warning_from_auto_alloc else "") + f"Memory for Maestro rack2 '{rack2_lb_c}' is 0. Skipping."
+            
+            initial_interactive_sub_rows_for_template = maestro_components_assignments_list
+            interim_student_data_to_save["memory_gb_one_student_pod"] = total_maestro_memory_consumed
         else:
+            # Standard (non-Maestro) course auto-assignment
+            mem_per_student_pod_std = 0.0
+            if not interim_student_data_to_save["student_assignment_warning"] and interim_student_data_to_save["final_labbuild_course_student"]:
+                mem_per_student_pod_std = _get_memory_for_course(interim_student_data_to_save["final_labbuild_course_student"])
+                if mem_per_student_pod_std <= 0:
+                    current_warning_from_auto_alloc = ((current_warning_from_auto_alloc + ". ") if current_warning_from_auto_alloc else "") + \
+                                                 f"Memory for LB course '{interim_student_data_to_save['final_labbuild_course_student']}' is 0. Cannot auto-assign."
+            interim_student_data_to_save["memory_gb_one_student_pod"] = mem_per_student_pod_std
+
+            if not current_warning_from_auto_alloc and mem_per_student_pod_std > 0 and interim_student_data_to_save["effective_pods_req_student"] > 0:
+                std_assignments, std_warn, _ = _allocate_specific_maestro_component(
+                    interim_student_data_to_save["final_labbuild_course_student"],
+                    interim_student_data_to_save["effective_pods_req_student"],
+                    host_priority_student_alloc, allow_spillover_student_alloc,
+                    all_available_host_names, pods_assigned_in_this_batch, db_locked_pods,
+                    current_assignment_capacities_gb, mem_per_student_pod_std, vendor_student,
+                    start_pod_suggestion=start_pod_suggestion_student_alloc
+                )
+                if std_warn: current_warning_from_auto_alloc = (current_warning_from_auto_alloc + ". " if current_warning_from_auto_alloc else "") + std_warn
+                initial_interactive_sub_rows_for_template = std_assignments
+        
+        # Combine initial rule-based warning with auto-allocation warning
+        if current_warning_from_auto_alloc:
+            interim_student_data_to_save["student_assignment_warning"] = \
+                (interim_student_data_to_save.get("student_assignment_warning", "") or "") + \
+                (". " if interim_student_data_to_save.get("student_assignment_warning") else "") + \
+                current_warning_from_auto_alloc
+        interim_student_data_to_save["student_assignment_warning"] = interim_student_data_to_save["student_assignment_warning"].strip() if interim_student_data_to_save["student_assignment_warning"] else None
+
+        # Fallback default row if auto-assignment failed
+        if not initial_interactive_sub_rows_for_template and interim_student_data_to_save["effective_pods_req_student"] > 0 and \
+           (not interim_student_data_to_save["student_assignment_warning"] or "No LabBuild course" not in interim_student_data_to_save["student_assignment_warning"]):
+            # ... (Your existing fallback logic - seems correct)
+            default_host_for_fallback = host_priority_student_alloc[0] if host_priority_student_alloc else (all_available_host_names[0] if all_available_host_names else None)
+            default_start_pod_fallback = start_pod_suggestion_student_alloc
+            default_end_pod_fallback = default_start_pod_fallback + interim_student_data_to_save["effective_pods_req_student"] - 1
+            
+            lb_course_for_fallback_row = interim_student_data_to_save["final_labbuild_course_student"]
+            if is_special_maestro_handling and maestro_split_config:
+                lb_course_for_fallback_row = maestro_split_config.get("main_course", "maestro-r81")
+            
+            if lb_course_for_fallback_row: 
+                initial_interactive_sub_rows_for_template.append({
+                    "host": default_host_for_fallback, "start_pod": default_start_pod_fallback, "end_pod": default_end_pod_fallback,
+                    "labbuild_course": lb_course_for_fallback_row
+                })
+                current_warning_fb = interim_student_data_to_save.get("student_assignment_warning", "")
+                fallback_msg = "Auto-alloc failed; default row created. REVIEW."
+                if not default_host_for_fallback: fallback_msg = "No host for default assignment."
+                interim_student_data_to_save["student_assignment_warning"] = (current_warning_fb + ". " if current_warning_fb else "") + fallback_msg
+            else:
+                current_warning_fb = interim_student_data_to_save.get("student_assignment_warning", "")
+                interim_student_data_to_save["student_assignment_warning"] = (current_warning_fb + ". " if current_warning_fb else "") + "Cannot create default: No LB course."
+
+
+        interim_student_data_to_save["initial_interactive_sub_rows_student"] = initial_interactive_sub_rows_for_template
+        
+        # --- Prepare display_course_data for the template ---
+        display_course_data_for_template = interim_student_data_to_save.copy()
+        display_course_data_for_template['interim_doc_id'] = str(interim_doc_id)
+        # Use the effective pods required for display, not original SF if overridden
+        display_course_data_for_template['sf_pods_req'] = interim_student_data_to_save.get("effective_pods_req_student", 0)
+        # Ensure sf_pax_count is available directly for the template, not just in interim_student_data_to_save
+        display_course_data_for_template['sf_pax'] = interim_student_data_to_save.get("sf_pax_count")
+        # For Maestro, display a generic name in the "Final LabBuild Course" column
+        if is_special_maestro_handling:
+            display_course_data_for_template['final_labbuild_course_student'] = "MAESTRO (Multi-Component)"
+        # Ensure sf_trainer_name is in display_course_data_for_template
+        display_course_data_for_template['Trainer'] = interim_student_data_to_save.get("sf_trainer_name")
+
+
+        processed_courses_for_student_review.append(display_course_data_for_template)
+        bulk_interim_ops.append(
+            UpdateOne({"_id": interim_doc_id}, {"$set": interim_student_data_to_save}, upsert=True)
+        )
+    
+    logger.debug(f"--- Intermediate Review Auto-Allocation End for Batch {batch_review_id} ---")
+    logger.debug(f"  Host Memory AFTER Student Auto-Allocation Simulation: {current_assignment_capacities_gb}")
+    logger.debug(f"  Pods Tentatively Assigned in this Batch (Students): {dict(pods_assigned_in_this_batch)}")
+
+    if bulk_interim_ops:
+        try:
+            result_db_interim_save = interim_alloc_collection.bulk_write(bulk_interim_ops)
+            logger.info(f"Interim student proposals saved to batch '{batch_review_id}': Upserted: {result_db_interim_save.upserted_count}, Modified: {result_db_interim_save.modified_count}")
+        except (PyMongoError, BulkWriteError) as e_save_interim_bulk:
+            logger.error(f"Error saving student proposals to interim DB for batch '{batch_review_id}': {e_save_interim_bulk}", exc_info=True)
+            flash("Error saving initial review session data. Please try again.", "danger")
+            return redirect(url_for('main.view_upcoming_courses'))
+    
+    return render_template(
+        'intermediate_build_review.html',
+        selected_courses=processed_courses_for_student_review,
+        batch_review_id=batch_review_id,
+        current_theme=current_theme,
+        all_hosts=all_available_host_names,
+        course_configs_for_memory=course_configs_for_memory_lookup,
+        subsequent_pod_memory_factor=SUBSEQUENT_POD_MEMORY_FACTOR
+    )
+
+
+@bp.route('/prepare-trainer-pods', methods=['POST'])
+def prepare_trainer_pods():
+    """
+    1. Receives finalized student assignments and `batch_review_id`.
+    2. Updates student assignments in `interimallocation` to 'student_confirmed'.
+    3. For each student course, checks build rules. If a rule disables the
+       trainer pod, it's skipped. Otherwise, auto-assigns trainer pods.
+    4. Updates `interimallocation` with trainer pod proposals/skips
+       and sets status to 'pending_trainer_review'.
+    5. Renders `trainer_pod_review.html`.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+    final_student_plan_json = request.form.get('final_build_plan')
+    batch_review_id = request.form.get('batch_review_id')
+
+    if not batch_review_id:
+        flash("Review session ID missing. Cannot prepare trainer pods.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+    if not final_student_plan_json:
+        flash("No finalized student build plan data received.", "danger")
+        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+
+    try:
+        finalized_student_data_from_form = json.loads(final_student_plan_json)
+        if not isinstance(finalized_student_data_from_form, list):
+            raise ValueError("Invalid student plan format from form.")
+    except (json.JSONDecodeError, ValueError) as e:
+        flash(f"Error processing submitted student assignments: {e}", "danger")
+        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+
+    if interim_alloc_collection is None:
+        flash("Interim allocation database is unavailable.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    # --- 1. Update interimallocation with finalized student assignments ---
+    student_update_ops_db: List[UpdateOne] = []
+    confirmed_student_courses_for_tp_logic: List[Dict] = []
+
+    try:
+        for student_final_item in finalized_student_data_from_form:
+            interim_doc_id_str = student_final_item.get('interim_doc_id')
+            if not interim_doc_id_str:
+                logger.warning(f"Missing 'interim_doc_id' in student data for TP prep: {student_final_item.get('sf_course_code')}")
+                continue
+            
+            update_payload = {
+                "student_assignments_final": student_final_item.get("interactive_assignments", []),
+                "student_estimated_memory_final_gb": student_final_item.get("estimated_memory_gb", 0.0),
+                "student_assignment_final_warning": student_final_item.get("assignment_warning"),
+                "status": "student_confirmed",
+                "updated_at": datetime.datetime.now(pytz.utc)
+            }
+            student_update_ops_db.append(
+                UpdateOne({"_id": ObjectId(interim_doc_id_str), "batch_review_id": batch_review_id}, 
+                          {"$set": update_payload})
+            )
+            
+            full_interim_doc_for_student = interim_alloc_collection.find_one(
+                {"_id": ObjectId(interim_doc_id_str), "batch_review_id": batch_review_id}
+            )
+            if full_interim_doc_for_student:
+                full_interim_doc_for_student.update(update_payload) 
+                confirmed_student_courses_for_tp_logic.append(full_interim_doc_for_student)
+            else:
+                logger.error(f"Critical: Could not refetch interim doc ID {interim_doc_id_str} after planning update.")
+                flash(f"Error retrieving confirmed student data for {student_final_item.get('sf_course_code')}. Trainer pod assignment may be incomplete.", "warning")
+
+        if student_update_ops_db:
+            result_stud_upd = interim_alloc_collection.bulk_write(student_update_ops_db)
+            logger.info(f"Updated {result_stud_upd.modified_count} student assignments in interim "
+                        f"(batch '{batch_review_id}') to 'student_confirmed'.")
+    except (PyMongoError, BulkWriteError) as e_stud_update: # Removed NotImplementedError
+        logger.error(f"Error updating student assignments in interim DB for batch '{batch_review_id}': {e_stud_update}", exc_info=True)
+        flash("Error saving confirmed student assignments. Please try again.", "danger")
+        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+    except Exception as e_stud_generic: # Catch other potential errors
+        logger.error(f"Unexpected error during student update phase: {e_stud_generic}", exc_info=True)
+        flash("An unexpected error occurred while saving student assignments.", "danger")
+        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+
+
+    # --- 2. Prepare data and then Auto-Assign Trainer Pods ---
+    courses_for_trainer_page_display: List[Dict] = []
+    trainer_interim_update_ops: List[UpdateOne] = []
+    
+    build_rules_tp: List[Dict] = []
+    all_hosts_dd: List[str] = []
+    initial_host_caps_gb_tp: Dict[str, Optional[float]] = {}
+    working_host_caps_gb_tp: Dict[str, float] = {}
+    taken_pods_vendor_tp: Dict[str, set] = defaultdict(set) # Pods taken from DB + this batch's students + this batch's TPs
+    lb_courses_on_host_registry: Dict[str, set] = defaultdict(set) # Tracks LB courses on hosts
+    course_configs_mem_tp_page: List[Dict] = []
+
+    try: # Preparatory data fetching for trainer pod assignment
+        if build_rules_collection is not None:
+            build_rules_tp = list(build_rules_collection.find().sort("priority", ASCENDING))
+
+        if host_collection is not None:
+            hosts_docs = list(host_collection.find({"include_for_build": "true"}))
+            all_hosts_dd = sorted([hd['host_name'] for hd in hosts_docs if 'host_name' in hd])
+            if hosts_docs:
+                initial_host_caps_gb_tp = get_hosts_available_memory_parallel(hosts_docs)
+            # Initialize working capacities (no released memory consideration here as it's post-student)
+            working_host_caps_gb_tp = {
+                h_name: cap for h_name, cap in initial_host_caps_gb_tp.items() if cap is not None
+            }
+        
+        # Pre-load taken pods from DB AND from confirmed student assignments in this batch
+        if alloc_collection is not None:
+            db_cursor = alloc_collection.find({}, {"courses.vendor": 1, "courses.course_name":1, "courses.pod_details": 1})
+            for tag_doc in db_cursor:
+                for course_alloc in tag_doc.get("courses", []):
+                    vendor, db_lb_course = course_alloc.get("vendor", "").lower(), course_alloc.get("course_name")
+                    if not vendor: continue
+                    for pd in course_alloc.get("pod_details", []):
+                        db_host = pd.get("host")
+                        if db_host and db_lb_course: lb_courses_on_host_registry[db_host].add(db_lb_course)
+                        pod_num_val = pd.get("pod_number")
+                        if pod_num_val is not None: 
+                            try:taken_pods_vendor_tp[vendor].add(int(pod_num_val)); 
+                            except:pass
+                        if vendor == 'f5':
+                            class_val = pd.get("class_number");
+                            if class_val is not None: 
+                                try:taken_pods_vendor_tp[vendor].add(int(class_val)); 
+                                except:pass
+                            for np in pd.get("pods",[]): np_val = np.get("pod_number");
+                            if np_val is not None: 
+                                try:taken_pods_vendor_tp[vendor].add(int(np_val)); 
+                                except:pass
+        
+        for stud_course_confirmed in confirmed_student_courses_for_tp_logic:
+            stud_vendor = stud_course_confirmed.get("vendor","").lower()
+            stud_lb_name = stud_course_confirmed.get("final_labbuild_course_student")
+            mem_one_stud_pod = float(stud_course_confirmed.get("memory_gb_one_student_pod",0.0))
+
+            for stud_asgn in stud_course_confirmed.get("student_assignments_final",[]):
+                stud_host = stud_asgn.get("host")
+                if not stud_host or not stud_vendor or not stud_lb_name or mem_one_stud_pod <=0: continue
+                
+                lb_courses_on_host_registry[stud_host].add(stud_lb_name)
+                try:
+                    s_pod, e_pod = int(stud_asgn.get('start_pod',0)), int(stud_asgn.get('end_pod',0))
+                    if s_pod > 0 and e_pod >= s_pod:
+                        for i_pod in range(s_pod, e_pod + 1): taken_pods_vendor_tp[stud_vendor].add(i_pod)
+                        # Deduct student memory from working_host_caps_gb_tp
+                        num_stud_pods_on_host = e_pod - s_pod + 1
+                        mem_to_deduct = mem_one_stud_pod + ((num_stud_pods_on_host -1) * mem_one_stud_pod * SUBSEQUENT_POD_MEMORY_FACTOR if num_stud_pods_on_host > 1 else 0)
+                        working_host_caps_gb_tp[stud_host] = max(0, round(working_host_caps_gb_tp.get(stud_host, 0.0) - mem_to_deduct, 2))
+                except (ValueError, TypeError): pass
+
+        logger.debug(f"TP Prep: Initial Host Caps: {initial_host_caps_gb_tp}")
+        logger.debug(f"TP Prep: Working Host Caps (after student deductions): {working_host_caps_gb_tp}")
+        logger.debug(f"TP Prep: Taken Pods (DB + Batch Students): {dict(taken_pods_vendor_tp)}")
+        logger.debug(f"TP Prep: LB Courses on Hosts (DB + Batch Students): {dict(lb_courses_on_host_registry)}")
+
+
+        if course_config_collection is not None:
+            course_configs_mem_tp_page = list(course_config_collection.find(
+                {}, {"course_name": 1, "memory_gb_per_pod": 1, "memory": 1, "_id": 0}
+            ))
+
+    except PyMongoError as e_prep_tp:
+        logger.error(f"DB error during TP data prep: {e_prep_tp}", exc_info=True)
+        flash("Error preparing data for trainer pod assignment.", "danger")
+        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+    except Exception as e_generic_tp_prep:
+        logger.error(f"Unexpected error during TP data prep: {e_generic_tp_prep}", exc_info=True)
+        flash("An server error occurred preparing for trainer pod assignment.", "danger")
+        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+
+
+    # --- Iterate through confirmed student courses to propose/skip trainer pods ---
+    for student_course_doc in confirmed_student_courses_for_tp_logic:
+        courses_for_trainer_page_display.append({"type": "student", "data": {
+            "interim_doc_id": str(student_course_doc["_id"]),
+            "sf_course_code": student_course_doc.get("sf_course_code"),
+            "labbuild_course": student_course_doc.get("final_labbuild_course_student"),
+            "vendor": student_course_doc.get("vendor"),
+            "sf_course_type": student_course_doc.get("sf_course_type"),
+            "memory_gb_one_pod": student_course_doc.get("memory_gb_one_student_pod"),
+            "interactive_assignments": student_course_doc.get("student_assignments_final"),
+            "estimated_memory_gb": student_course_doc.get("student_estimated_memory_final_gb"),
+            "assignment_warning": student_course_doc.get("student_assignment_final_warning") or student_course_doc.get("student_assignment_warning")
+        }})
+
+        student_sf_code = student_course_doc.get('sf_course_code', 'UNKNOWN_SF_FOR_TP')
+        tp_sf_code_target = student_sf_code + "-TP"
+        tp_vendor = student_course_doc.get('vendor', '').lower()
+        student_sf_type = student_course_doc.get('sf_course_type', '') 
+
+        relevant_rules = _find_all_matching_rules(
+            build_rules_tp, tp_vendor, student_sf_code, student_sf_type
+        )
+        disable_this_trainer_pod = any(
+            r.get("actions", {}).get("disable_trainer_pod") is True for r in relevant_rules
+        )
+        if disable_this_trainer_pod:
+            logger.info(f"Rule disabled trainer pod for student course '{student_sf_code}'.")
+
+        tp_lb_course: Optional[str] = None
+        tp_full_mem: float = 0.0
+        tp_host: Optional[str] = None
+        tp_pod: Optional[int] = None
+        tp_assignment_warning: Optional[str] = None
+        
+        trainer_data_for_db_update: Dict[str, Any] = {
+            "status": "pending_trainer_review",
+            "updated_at": datetime.datetime.now(pytz.utc)
+        }
+
+        if disable_this_trainer_pod:
+            tp_assignment_warning = "Trainer pod build explicitly disabled by build rule."
+            trainer_data_for_db_update.update({
+                "trainer_labbuild_course": None, "trainer_memory_gb_one_pod": 0.0,
+                "trainer_assignment_auto_proposed": None,
+                "trainer_assignment_warning": tp_assignment_warning,
+                "status": "trainer_disabled_by_rule"
+            })
+            trainer_display_data = {"labbuild_course": "N/A - Disabled", "memory_gb_one_pod": 0.0}
+        else:
+            tp_lb_course = student_course_doc.get('final_labbuild_course_student')
+            tp_full_mem = float(student_course_doc.get('memory_gb_one_student_pod', 0.0))
+            
+            tp_eff_actions: Dict[str, Any] = {}
+            tp_rules_for_specific_tp = _find_all_matching_rules(build_rules_tp, tp_vendor, tp_sf_code_target, student_sf_type)
+            tp_action_keys = ["set_labbuild_course", "host_priority", "allow_spillover", "start_pod_number"]
+            for r_tp in tp_rules_for_specific_tp:
+                acts_tp = r_tp.get("actions", {});
+                for k_tp in tp_action_keys:
+                    if k_tp not in tp_eff_actions and k_tp in acts_tp: tp_eff_actions[k_tp] = acts_tp[k_tp]
+
+            if "set_labbuild_course" in tp_eff_actions:
+                new_tp_lb = tp_eff_actions["set_labbuild_course"]
+                if new_tp_lb != tp_lb_course: logger.info(f"TP for '{tp_sf_code_target}': LB course changed by rule to '{new_tp_lb}'.")
+                tp_lb_course = new_tp_lb
+            
+            if tp_lb_course: tp_full_mem = _get_memory_for_course(tp_lb_course)
+            else: tp_assignment_warning = (tp_assignment_warning + ". " if tp_assignment_warning else "") + "No LB course for TP."
+
+            if not tp_assignment_warning and tp_full_mem <= 0:
+                tp_assignment_warning = (tp_assignment_warning + ". " if tp_assignment_warning else "") + \
+                                         f"Memory for TP LB course '{tp_lb_course}' is 0."
+            
+            if not tp_assignment_warning: # Proceed with assignment logic
+                logger.info(f"Auto-assigning TP for '{tp_sf_code_target}', LB '{tp_lb_course}', FullMem {tp_full_mem:.2f}GB")
+                tp_hosts_to_try: List[str] = []
+                priority_hosts_tp = tp_eff_actions.get("host_priority", [])
+                min_mem_cand_tp = tp_full_mem * SUBSEQUENT_POD_MEMORY_FACTOR if SUBSEQUENT_POD_MEMORY_FACTOR > 0 else tp_full_mem
+                if min_mem_cand_tp <=0 and tp_full_mem > 0 : min_mem_cand_tp = 0.1
+
+                if isinstance(priority_hosts_tp, list):
+                    tp_hosts_to_try.extend([h for h in priority_hosts_tp if h in working_host_caps_gb_tp and working_host_caps_gb_tp.get(h,0.0) >= min_mem_cand_tp])
+                if tp_eff_actions.get("allow_spillover", True):
+                    tp_hosts_to_try.extend(sorted([h_n for h_n in working_host_caps_gb_tp if h_n not in tp_hosts_to_try and working_host_caps_gb_tp.get(h_n,0.0) >= min_mem_cand_tp]))
+
+                if not tp_hosts_to_try and all_hosts_dd:
+                    tp_hosts_to_try.append(all_hosts_dd[0])
+                    tp_assignment_warning = (tp_assignment_warning + ". " if tp_assignment_warning else "") + "No hosts by rule/cap for TP; using default. VERIFY."
+                elif not tp_hosts_to_try:
+                     tp_assignment_warning = (tp_assignment_warning + ". " if tp_assignment_warning else "") + "No hosts available for TP."
+
+                start_pod_tp_cfg = 1; 
+                try: sp_tp_cfg = tp_eff_actions.get("start_pod_number"); start_pod_tp_cfg = max(1,int(sp_tp_cfg)) if sp_tp_cfg is not None else 1; 
+                except:pass
+                
+                assigned_this_tp_flag = False
+                if tp_hosts_to_try:
+                    for host_cand in tp_hosts_to_try:
+                        cand_pod = start_pod_tp_cfg
+                        while cand_pod in taken_pods_vendor_tp.get(tp_vendor, set()):
+                            cand_pod +=1
+                        
+                        is_first_type = tp_lb_course not in lb_courses_on_host_registry.get(host_cand, set())
+                        mem_needed = tp_full_mem if is_first_type else (tp_full_mem * SUBSEQUENT_POD_MEMORY_FACTOR)
+                        mem_needed = round(mem_needed, 2)
+                        host_cap = working_host_caps_gb_tp.get(host_cand, 0.0)
+
+                        if host_cap >= mem_needed:
+                            tp_host, tp_pod = host_cand, cand_pod
+                            taken_pods_vendor_tp[tp_vendor].add(tp_pod)
+                            if tp_lb_course: lb_courses_on_host_registry[tp_host].add(tp_lb_course)
+                            working_host_caps_gb_tp[tp_host] = max(0, round(host_cap - mem_needed, 2))
+                            logger.info(f"ASSIGNED TP '{tp_sf_code_target}' (LB:{tp_lb_course}) to Host:{tp_host}/Pod:{tp_pod}. Mem:{mem_needed:.2f}GB. HostCapLeft:{working_host_caps_gb_tp[tp_host]:.2f}GB")
+                            assigned_this_tp_flag = True; tp_assignment_warning = None # Clear fallback warning
+                            break 
+                        elif tp_host is None: # First host tried, insufficient capacity - make it fallback
+                            tp_host, tp_pod = host_cand, cand_pod
+                            warn = f"Host '{host_cand}' low cap ({host_cap:.1f}GB) for TP ({mem_needed:.1f}GB)."
+                            tp_assignment_warning = (tp_assignment_warning + ". " if tp_assignment_warning else "") + warn
+                    
+                    if not assigned_this_tp_flag: # No host had enough capacity
+                        if tp_host is None and all_hosts_dd: # Absolute fallback if no candidate was even tried
+                            tp_host = all_hosts_dd[0]
+                            cand_pod_fb = start_pod_tp_cfg; 
+                            while cand_pod_fb in taken_pods_vendor_tp.get(tp_vendor,set()): cand_pod_fb+=1
+                            tp_pod = cand_pod_fb
+                        if tp_host and tp_pod is not None: # If we have a fallback (even over-capacity one)
+                            taken_pods_vendor_tp[tp_vendor].add(tp_pod) # Mark as taken for this batch
+                            if tp_lb_course: lb_courses_on_host_registry[tp_host].add(tp_lb_course)
+                            warn = (tp_assignment_warning + ". " if tp_assignment_warning else "") + "Assigned to fallback host despite capacity issues. MANUAL REVIEW CRITICAL."
+                            tp_assignment_warning = warn
+                            logger.error(f"TP for '{tp_sf_code_target}' assigned to '{tp_host}/{tp_pod}' with warning: {tp_assignment_warning}")
+                        else: # No host could be assigned at all
+                             tp_assignment_warning = (tp_assignment_warning + ". " if tp_assignment_warning else "") + "No host could be assigned for TP."
+
+
+            trainer_data_for_db_update.update({
+                "trainer_labbuild_course": tp_lb_course,
+                "trainer_memory_gb_one_pod": tp_full_mem,
+                "trainer_assignment_auto_proposed": {"host": tp_host, "start_pod": tp_pod, "end_pod": tp_pod} if tp_host and tp_pod is not None else None,
+                "trainer_assignment_warning": tp_assignment_warning
+            })
+            trainer_display_data = {
+                "interim_doc_id": str(student_course_doc["_id"]),
+                "sf_course_code": tp_sf_code_target, "labbuild_course": tp_lb_course,
+                "vendor": tp_vendor.upper() if tp_vendor else "N/A",
+                "memory_gb_one_pod": tp_full_mem,
+                "assigned_host": tp_host, "start_pod": tp_pod, "end_pod": tp_pod,
+                "error_message": tp_assignment_warning
+            }
+        
+        trainer_interim_update_ops.append(
+            UpdateOne(
+                {"_id": student_course_doc["_id"], "batch_review_id": batch_review_id},
+                {"$set": trainer_data_for_db_update}
+            )
+        )
+        courses_for_trainer_page_display.append({"type": "trainer", "data": trainer_display_data})
+
+    if trainer_interim_update_ops:
+        try:
+            if interim_alloc_collection is not None:
+                result_tp_upd = interim_alloc_collection.bulk_write(trainer_interim_update_ops)
+                logger.info(f"Updated {result_tp_upd.modified_count} interim docs with TP info for batch '{batch_review_id}'.")
+        except (PyMongoError, BulkWriteError) as e_tp_save:
+            logger.error(f"Error saving TP proposals to interim DB: {e_tp_save}", exc_info=True)
+            flash("Error saving trainer pod proposals.", "danger")
+            return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+
+    return render_template(
+        'trainer_pod_review.html',
+        courses_and_trainer_pods=courses_for_trainer_page_display,
+        batch_review_id=batch_review_id,
+        current_theme=current_theme,
+        all_hosts=all_hosts_dd,
+        course_configs_for_memory=course_configs_mem_tp_page,
+        subsequent_pod_memory_factor=SUBSEQUENT_POD_MEMORY_FACTOR
+    )
+
+def _generate_apm_data_for_plan(
+        local_final_build_plan_items: List[Dict], # Pass the already fetched interim items
+        local_current_apm_entries: Dict[str, Dict[str, Any]],
+        local_extended_apm_course_codes: Set[str]
+    ) -> Tuple[Dict[str, Dict[str, str]], List[str], List[str]]:
+        """
+        Generates APM usernames and passwords for the items in the build plan.
+        Returns:
+            - apm_credentials_map (Dict[apm_auth_code, {"username": str, "password": str}])
+            - all_generated_apm_commands (List[str])
+            - apm_generation_errors (List[str])
+        """
+        logger.info(f"--- (Helper) APM Data Generation Started for {len(local_final_build_plan_items)} plan items ---")
+        apm_commands_delete_local: List[str] = []
+        apm_commands_add_update_local: List[str] = []
+        errors_local: List[str] = []
+        
+        # This will store the final state including allocated usernames and passwords
+        # Key: apm_auth_course_code, Value: { vpn_auth_courses, vpn_auth_range, ..., username, password }
+        desired_apm_state_with_users: Dict[str, Dict[str, Any]] = {}
+
+        # Step 3a: Build intermediate desired state (details without username yet)
+        desired_apm_config_intermediate: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+            "all_pod_numbers": set(), "trainer_name_for_desc": "N/A", "course_type_for_desc": "N/A",
+            "labbuild_course_for_version": "N/A", "vendor_short": "xx",
+            "is_maestro_overall_for_version": False, "maestro_main_lb_for_version": None
+        })
+
+        for item_doc in local_final_build_plan_items:
+            original_sf_code = item_doc.get("original_sf_course_code", item_doc.get("sf_course_code"))
+            if not original_sf_code: continue
+
+            # Determine if this is for Student APM entry or Trainer APM entry
+            # A single interim 'doc' can lead to two APM entries (one for student, one for trainer)
+            
+            # Process Student Part from 'item_doc'
+            if item_doc.get("status") in ["student_confirmed", "trainer_confirmed"]: # trainer_confirmed implies student part is also relevant
+                student_assignments = item_doc.get("student_assignments_final", [])
+                if student_assignments:
+                    apm_auth_code_key_student = original_sf_code
+                    student_entry_details = desired_apm_config_intermediate[apm_auth_code_key_student]
+                    if student_entry_details["trainer_name_for_desc"] == "N/A": # Initialize if first time for this key
+                        student_entry_details["trainer_name_for_desc"] = item_doc.get("sf_trainer_name", "N/A")
+                        student_entry_details["course_type_for_desc"] = item_doc.get("sf_course_type", "Course")
+                        student_entry_details["vendor_short"] = (item_doc.get("vendor", "xx") or "xx").lower()
+                        maestro_config = item_doc.get("maestro_split_config_details_rule")
+                        if isinstance(maestro_config, dict) and item_doc.get("vendor") == "cp":
+                            student_entry_details["is_maestro_overall_for_version"] = True
+                            student_entry_details["maestro_main_lb_for_version"] = maestro_config.get("main_course", item_doc.get("final_labbuild_course_student", "maestro"))
+                        else:
+                            student_entry_details["labbuild_course_for_version"] = item_doc.get("final_labbuild_course_student", item_doc.get("labbuild_course", "N/A"))
+                    for asgn in student_assignments:
+                        s, e = asgn.get("start_pod"), asgn.get("end_pod")
+                        if s is not None and e is not None: 
+                            try: [student_entry_details["all_pod_numbers"].add(p) for p in range(int(s),int(e)+1)]; 
+                            except:pass
+            
+            # Process Trainer Part from 'item_doc'
+            if item_doc.get("status") == "trainer_confirmed": # Only if trainer pod is to be built
+                trainer_assignments = item_doc.get("trainer_assignment_final", [])
+                if trainer_assignments:
+                    apm_auth_code_key_trainer = f"{original_sf_code}-TP"
+                    trainer_entry_details = desired_apm_config_intermediate[apm_auth_code_key_trainer]
+                    if trainer_entry_details["trainer_name_for_desc"] == "N/A":
+                        trainer_entry_details["trainer_name_for_desc"] = "Trainer Pods"
+                        trainer_entry_details["course_type_for_desc"] = item_doc.get("sf_course_type", "Trainer Setup")
+                        trainer_entry_details["labbuild_course_for_version"] = item_doc.get("trainer_labbuild_course", "N/A")
+                        trainer_entry_details["vendor_short"] = (item_doc.get("vendor", "xx") or "xx").lower()
+                    for asgn in trainer_assignments:
+                        s, e = asgn.get("start_pod"), asgn.get("end_pod")
+                        if s is not None and e is not None: 
+                            try: [trainer_entry_details["all_pod_numbers"].add(p) for p in range(int(s),int(e)+1)]; 
+                            except:pass
+        
+        # Step 3b: Finalize intermediate state (convert pod sets to ranges, etc.)
+        for apm_auth_code, details in desired_apm_config_intermediate.items():
+            if not details["all_pod_numbers"]: continue
+            vpn_range = _create_contiguous_ranges(list(details["all_pod_numbers"]))
+            if not vpn_range: continue
+            desc = f"{details['trainer_name_for_desc']} - {details['course_type_for_desc']}"
+            ver = details["labbuild_course_for_version"]
+            if details["is_maestro_overall_for_version"] and details["maestro_main_lb_for_version"]: ver = details["maestro_main_lb_for_version"]
+            
+            desired_apm_state_with_users[apm_auth_code] = {
+                "vpn_auth_courses": desc[:250], "vpn_auth_range": vpn_range,
+                "vpn_auth_version": ver, "vpn_auth_expiry_date": "8",
+                "password": _generate_random_password(), "vendor_short": details["vendor_short"]
+                # Username to be added next
+            }
+        logger.info(f"(Helper) Prepared {len(desired_apm_state_with_users)} desired APM entries structure.")
+
+        # Step 4 & 5: Username Allocation, Generate Commands
+        # ... (This is the same complex logic as in your last working `generate_apm_commands_route`
+        #      that iterates `current_apm_entries` and `desired_apm_state_with_users` (which was named desired_apm_state_from_plan before)
+        #      to generate `apm_commands_delete_local`, `apm_commands_add_update_local`,
+        #      and populates `details["username"]` in `desired_apm_state_with_users`)
+        apm_course_code_to_username_to_keep: Dict[str, str] = {} 
+        for username, existing_details in local_current_apm_entries.items(): # Use local_
+            apm_cc = existing_details.get("vpn_auth_course_code")
+            if not apm_cc: apm_commands_delete_local.append(f"course bigip del {username}"); continue
+            if apm_cc in local_extended_apm_course_codes: # Use local_
+                if apm_cc not in apm_course_code_to_username_to_keep: apm_course_code_to_username_to_keep[apm_cc] = username
+                if apm_cc in desired_apm_state_with_users: desired_apm_state_with_users[apm_cc]["username"] = username; desired_apm_state_with_users[apm_cc]["is_update"] = True
+            elif apm_cc in desired_apm_state_with_users:
+                if apm_cc not in apm_course_code_to_username_to_keep: apm_course_code_to_username_to_keep[apm_cc] = username
+                new_d = desired_apm_state_with_users[apm_cc]
+                if existing_details.get("vpn_auth_range") != new_d["vpn_auth_range"]: apm_commands_add_update_local.append(f'course bigip range {username} "{new_d["vpn_auth_range"]}"')
+                if existing_details.get("vpn_auth_version") != new_d["vpn_auth_version"]: apm_commands_add_update_local.append(f'course bigip version {username} "{new_d["vpn_auth_version"]}"')
+                if existing_details.get("vpn_auth_courses") != new_d["vpn_auth_courses"]: apm_commands_add_update_local.append(f'course bigip description {username} "{new_d["vpn_auth_courses"]}"')
+                if str(existing_details.get("vpn_auth_expiry_date")) != str(new_d["vpn_auth_expiry_date"]): apm_commands_add_update_local.append(f'course bigip expiry_date {username} "{new_d["vpn_auth_expiry_date"]}"')
+                apm_commands_add_update_local.append(f'course bigip password {username} "{new_d["password"]}"')
+                desired_apm_state_with_users[apm_cc]["username"] = username; desired_apm_state_with_users[apm_cc]["is_update"] = True
+            else: apm_commands_delete_local.append(f"course bigip del {username}")
+        
+        used_x_nums: Dict[str,Set[int]] = defaultdict(set)
+        for _, uname_kept in apm_course_code_to_username_to_keep.items():
+            m = re.match(r"lab([a-z0-9]+)-(\d+)",uname_kept.lower());
+            if m: used_x_nums[m.group(1)].add(int(m.group(2)))
+
+        for apm_auth_c, details_final in desired_apm_state_with_users.items():
+            if details_final.get("is_update"): continue
+            v_short = details_final["vendor_short"]; uname=None; x=1
+            while True:
+                if x not in used_x_nums.get(v_short,set()): uname=f"lab{v_short}-{x}"; used_x_nums[v_short].add(x); break
+                x+=1
+            details_final["username"] = uname # Store assigned username
+            apm_commands_add_update_local.append(f'course bigip add {uname} "{details_final["password"]}" "{details_final["vpn_auth_range"]}" "{details_final["vpn_auth_version"]}" "{details_final["vpn_auth_courses"]}" "{details_final["vpn_auth_expiry_date"]}" "{apm_auth_c}"')
+
+        all_generated_commands = apm_commands_delete_local + apm_commands_add_update_local
+        logger.info(f"(Helper) APM Logic Finished. Generated {len(all_generated_commands)} commands. Errors: {errors_local}")
+        
+        # Return the map of apm_auth_code to {"username": ..., "password": ...}
+        apm_credentials_map_result: Dict[str, Dict[str, str]] = {}
+        for apm_auth_code, details_with_user in desired_apm_state_with_users.items():
+            if details_with_user.get("username") and details_with_user.get("password"):
+                apm_credentials_map_result[apm_auth_code] = {
+                    "username": details_with_user["username"],
+                    "password": details_with_user["password"]
+                }
+        
+        return all_generated_commands, apm_credentials_map_result, errors_local
+
+@bp.route('/finalize-and-display-build-plan', methods=['POST'])
+def finalize_and_display_build_plan():
+    current_theme = request.cookies.get('theme', 'light')
+    batch_review_id_outer = request.form.get('batch_review_id')
+    final_trainer_plan_json_outer = request.form.get('final_trainer_assignments_for_review')
+
+    # --- Sub-function: Update Trainer Assignments in Interim DB ---
+    def _update_finalized_trainer_assignments(batch_id_inner: str, trainer_assignments_data: List[Dict]) -> bool:
+        update_ops: List[UpdateOne] = []
+        try:
+            if interim_alloc_collection is None:
+                logger.error("_update_finalized_trainer_assignments: interim_alloc_collection is None.")
+                return False
+            for trainer_data in trainer_assignments_data:
+                doc_id_str = trainer_data.get('interim_doc_id')
+                build_trainer = trainer_data.get('build_trainer', False)
+                if not doc_id_str: logger.warning("Missing 'interim_doc_id' in trainer data."); continue
+                
+                payload: Dict[str, Any] = {"updated_at": datetime.datetime.now(pytz.utc)}
+                if build_trainer:
+                    payload["trainer_labbuild_course"] = trainer_data.get("labbuild_course")
+                    payload["trainer_memory_gb_one_pod"] = trainer_data.get("memory_gb_one_pod")
+                    assignments = trainer_data.get("interactive_assignments", [])
+                    payload["trainer_assignment_final"] = assignments if isinstance(assignments, list) else []
+                    payload["trainer_assignment_final_warning"] = trainer_data.get("error_message")
+                    payload["status"] = "trainer_confirmed"
+                else:
+                    payload["trainer_assignment_final"] = None
+                    error_msg = trainer_data.get("error_message", "Skipped by user/rule.")
+                    payload["trainer_assignment_final_warning"] = error_msg
+                    if "Disabled by rule" in str(error_msg) or "Skipping trainer pod for" in str(error_msg):
+                        payload["status"] = "trainer_disabled_by_rule"
+                    else:
+                        payload["status"] = "trainer_skipped_by_user"
+                update_ops.append(UpdateOne({"_id": ObjectId(doc_id_str), "batch_review_id": batch_id_inner}, {"$set": payload}))
+            
+            if update_ops:
+                result = interim_alloc_collection.bulk_write(update_ops)
+                logger.info(f"Updated {result.modified_count} trainer assignments in interim (batch '{batch_id_inner}').")
+            return True
+        except (PyMongoError, BulkWriteError) as e:
+            logger.error(f"Error saving finalized trainer assignments to interim DB: {e}", exc_info=True)
+            flash("Error saving finalized trainer assignments.", "danger"); return False
+        except Exception as e_gen:
+            logger.error(f"Unexpected error during trainer final update: {e_gen}", exc_info=True)
+            flash("Unexpected error saving trainer assignments.", "danger"); return False
+
+    # --- Sub-function: Fetch supporting data (hosts, course_configs) ---
+    def _fetch_supporting_data() -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, Any]]]:
+        hosts_map: Dict[str, Dict[str, str]] = {}
+        configs_map: Dict[str, Dict[str, Any]] = {}
+        try:
+            if host_collection is not None:
+                for h_doc in host_collection.find({}):
+                    h_name = h_doc.get("host_name")
+                    if h_name: hosts_map[h_name] = {"location": h_doc.get("location", "Virtual"), "vcenter": h_doc.get("vcenter", "N/A")}
+            if course_config_collection is not None:
+                for cc_doc in course_config_collection.find({}):
+                    cc_name = cc_doc.get("course_name")
+                    # Sanitize ObjectIds from course_config right away
+                    if cc_name: configs_map[cc_name] = {k: (str(v) if isinstance(v, ObjectId) else v) for k,v in cc_doc.items()}
+        except PyMongoError as e: logger.error(f"Error fetching supporting data (hosts/course_configs): {e}")
+        return hosts_map, configs_map
+
+    # --- Sub-function: Process Interim Documents for Display ---
+    def _process_interim_documents(
+        batch_id_inner: str,
+        local_hosts_info_map: Dict[str, Dict[str, str]],
+        local_course_configs_map: Dict[str, Dict[str, Any]]
+    ) -> List[Dict]:
+        processed_items: List[Dict] = []
+        finalized_statuses = ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]
+        if interim_alloc_collection is None:
+            logger.error("_process_interim_documents: interim_alloc_collection is None.")
+            return processed_items
+        
+        try:
+            cursor = interim_alloc_collection.find({
+                "batch_review_id": batch_id_inner, "status": {"$in": finalized_statuses}
+            }).sort([("sf_start_date", ASCENDING), ("sf_course_code", ASCENDING)])
+
+            for doc in cursor:
+                sf_code = doc.get("sf_course_code"); vendor = doc.get("vendor"); sf_trainer = doc.get("sf_trainer_name")
+                sf_pax = doc.get("sf_pax_count"); start_date = doc.get("sf_start_date"); end_date = doc.get("sf_end_date")
+                f5_class_num = doc.get("f5_class_number")
+
+                common_data = {
+                    "type": "Student Build", "sf_course_code": sf_code, "original_sf_course_code": sf_code,
+                    "vendor": vendor, "start_date": start_date, "end_date": end_date,
+                    "status_note": doc.get("student_assignment_final_warning") or doc.get("student_assignment_warning"),
+                    "sf_trainer_name": sf_trainer, "sf_pax_count": sf_pax, "f5_class_number": f5_class_num
+                }
+                maestro_cfg = doc.get("maestro_split_config_details_rule")
+                is_maestro = isinstance(maestro_cfg, dict) and vendor == "cp"
+
+                if is_maestro:
+                    maestro_comp_assignments_source = doc.get("initial_interactive_sub_rows_student", [])
+                    if not maestro_comp_assignments_source and doc.get("student_assignments_final"):
+                        maestro_comp_assignments_source = [] # Reconstruct
+                        final_asgns=doc.get("student_assignments_final",[]);main_lb=maestro_cfg.get("main_course","m-r81");main_c=int(maestro_cfg.get("main_course_count",2));r1_lb=maestro_cfg.get("rack1_course","m-r1");r2_lb=maestro_cfg.get("rack2_course","m-r2")
+                        for i,a in enumerate(final_asgns): cur_a=a.copy();
+                        if "labbuild_course" not in cur_a: cur_a["labbuild_course"] = main_lb if i<main_c else (r1_lb if i==main_c else (r2_lb if i==main_c+1 else main_lb))
+                        maestro_comp_assignments_source.append(cur_a)
+                    
+                    comp_details_list=[]; total_mem=0.0; all_asgns_display=[]
+                    for comp_asgn in maestro_comp_assignments_source:
+                        lb=comp_asgn.get("labbuild_course") or maestro_cfg.get("main_course","maestro-r81"); asgns=[comp_asgn]; all_asgns_display.extend(asgns)
+                        hosts=list(set(a.get("host") for a in asgns if a.get("host"))); h_details=[{"name":h, **local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in hosts]
+                        mem=_get_memory_for_course_local(lb,local_course_configs_map); pods_in_seg=0
+                        if comp_asgn.get("start_pod") is not None and comp_asgn.get("end_pod") is not None: 
+                            try: pods_in_seg=int(comp_asgn.get("end_pod",0))-int(comp_asgn.get("start_pod",0))+1; 
+                            except:pass
+                        total_mem+=mem*max(1,pods_in_seg); cfg=local_course_configs_map.get(lb,{})
+                        comp_details_list.append({"component_labbuild_course":lb,"component_assignments":asgns,"component_memory_gb_one_pod":mem,"component_host_details":h_details,"component_course_config":cfg})
+                    processed_items.append({**common_data,"labbuild_course":"Maestro Course (Multi-Component)","assignments":all_asgns_display,"memory_gb_one_pod":total_mem,"host_details_for_assignments":list({d['name']:d for c in comp_details_list for d in c.get("component_host_details",[])}.values()),"course_config_details_for_passwords":local_course_configs_map.get(maestro_cfg.get("main_course","maestro-r81"),{}),"is_maestro_course":True,"maestro_component_details":comp_details_list})
+                else: # Standard Student
+                    s_asgns=doc.get("student_assignments_final",[]);s_hosts=list(set(a.get("host") for a in s_asgns if a.get("host")));s_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in s_hosts];s_lbc=doc.get("final_labbuild_course_student");s_cfg=local_course_configs_map.get(s_lbc,{}) if s_lbc else {};
+                    processed_items.append({**common_data,"labbuild_course":s_lbc,"assignments":s_asgns,"memory_gb_one_pod":doc.get("memory_gb_one_student_pod"),"host_details_for_assignments":s_hdetails,"course_config_details_for_passwords":s_cfg})
+                
+                # Trainer Part
+                if doc.get("status")=="trainer_disabled_by_rule" or doc.get("trainer_labbuild_course") or doc.get("status")=="trainer_skipped_by_user":
+                    t_asgns=doc.get("trainer_assignment_final",[]);t_hosts=list(set(a.get("host") for a in t_asgns if a.get("host"))) if t_asgns else [];t_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in t_hosts]
+                    t_note=doc.get("trainer_assignment_final_warning") or doc.get("trainer_assignment_warning");
+                    if doc.get("status")=="trainer_disabled_by_rule":t_note=doc.get("trainer_assignment_final_warning")
+                    elif doc.get("status")=="trainer_skipped_by_user":t_note="Build skipped by user."
+                    t_lbc=doc.get("trainer_labbuild_course");t_cfg=local_course_configs_map.get(t_lbc,{}) if t_lbc else {}
+                    t_sfc_display = sf_code;
+                    if t_lbc or doc.get("status") in ["trainer_disabled_by_rule", "trainer_skipped_by_user"]: t_sfc_display = sf_code + ("-TP (Skipped)" if not t_lbc and doc.get("status") != "trainer_confirmed" else "-TP")
+                    processed_items.append({"type":"Trainer Build","sf_course_code":t_sfc_display,"original_sf_course_code":sf_code,"labbuild_course":t_lbc if t_lbc else "N/A (Skipped/Disabled)","vendor":vendor,"start_date":start_date,"end_date":end_date,"assignments":t_asgns if t_asgns else [],"memory_gb_one_pod":doc.get("trainer_memory_gb_one_pod") if t_lbc else 0.0,"status_note":t_note,"sf_trainer_name":sf_trainer,"host_details_for_assignments":t_hdetails,"course_config_details_for_passwords":t_cfg,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num})
+        except PyMongoError as e: logger.error(f"Error fetching interim batch items: {e}", exc_info=True); flash("Error fetching review data.", "danger")
+        except Exception as e_proc: logger.error(f"Error processing interim items: {e_proc}", exc_info=True); flash("Error processing review data.", "danger")
+        return processed_items
+
+
+    # --- Sub-function: Process Interim Documents for Display ---
+    def _process_interim_documents(
+        batch_id_inner: str,
+        local_hosts_info_map: Dict[str, Dict[str, str]],
+        local_course_configs_map: Dict[str, Dict[str, Any]],
+        apm_credentials_map: Dict[str, Dict[str,str]] # apm_auth_code -> {"username": "...", "password": "..."}
+    ) -> List[Dict]:
+        processed_items: List[Dict] = []
+        finalized_statuses = ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]
+        if interim_alloc_collection is None: logger.error("Sub _process_interim: interim_alloc_collection is None."); return processed_items
+        
+        try:
+            cursor = interim_alloc_collection.find({"batch_review_id":batch_id_inner, "status":{"$in":finalized_statuses}}).sort([("sf_start_date",ASCENDING),("sf_course_code",ASCENDING)])
+            for doc in cursor:
+                sf_code=doc.get("sf_course_code");vendor=doc.get("vendor");sf_trainer=doc.get("sf_trainer_name");sf_pax=doc.get("sf_pax_count");start_date=doc.get("sf_start_date");end_date=doc.get("sf_end_date");f5_class_num=doc.get("f5_class_number")
+                
+                # Get APM username/password for the student part of this course
+                student_apm_auth_code = sf_code # Key for student APM entry
+                student_apm_creds = apm_credentials_map.get(student_apm_auth_code, {})
+                student_apm_user = student_apm_creds.get("username", f"lab{vendor}-?") # Fallback with '?' if not found
+                student_apm_pass = student_apm_creds.get("password", "N/A")
+
+                common_data = {"type":"Student Build","sf_course_code":sf_code,"original_sf_course_code":sf_code,"vendor":vendor,"start_date":start_date,"end_date":end_date,"status_note":doc.get("student_assignment_final_warning") or doc.get("student_assignment_warning"),"sf_trainer_name":sf_trainer,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num, 
+                               "apm_username": student_apm_user, "apm_password": student_apm_pass}
+                
+                maestro_cfg=doc.get("maestro_split_config_details_rule");is_maestro=isinstance(maestro_cfg,dict) and vendor=="cp"
+                if is_maestro:
+                    maestro_comp_assignments=doc.get("initial_interactive_sub_rows_student",[])
+                    # ... (rest of Maestro splitting logic from your previous correct version, ensuring common_data is spread) ...
+                    # Each Maestro component item will inherit the `apm_username` and `apm_password` from `common_data`
+                    # as APM entries are per original_sf_course_code for students.
+                    if not maestro_comp_assignments and doc.get("student_assignments_final"): # Fallback
+                        maestro_comp_assignments = [] # Reconstruct
+                        final_asgns=doc.get("student_assignments_final",[]);main_lb=maestro_cfg.get("main_course","m-r81");main_c=int(maestro_cfg.get("main_course_count",2));r1_lb=maestro_cfg.get("rack1_course","m-r1");r2_lb=maestro_cfg.get("rack2_course","m-r2")
+                        for i,a in enumerate(final_asgns): cur_a=a.copy();
+                        if "labbuild_course" not in cur_a: cur_a["labbuild_course"] = main_lb if i<main_c else (r1_lb if i==main_c else (r2_lb if i==main_c+1 else main_lb))
+                        maestro_comp_assignments.append(cur_a)
+                    comp_details_list=[]; total_mem=0.0; all_asgns_display=[]
+                    for comp_asgn in maestro_comp_assignments:
+                        lb=comp_asgn.get("labbuild_course") or maestro_cfg.get("main_course","maestro-r81"); asgns=[comp_asgn]; all_asgns_display.extend(asgns)
+                        hosts=list(set(a.get("host") for a in asgns if a.get("host"))); h_details=[{"name":h, **local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in hosts]
+                        mem=_get_memory_for_course_local(lb,local_course_configs_map); pods_in_seg=0
+                        if comp_asgn.get("start_pod") is not None and comp_asgn.get("end_pod") is not None: 
+                            try: pods_in_seg=int(comp_asgn.get("end_pod",0))-int(comp_asgn.get("start_pod",0))+1; 
+                            except:pass
+                        total_mem+=mem*max(1,pods_in_seg); cfg=local_course_configs_map.get(lb,{})
+                        comp_details_list.append({"component_labbuild_course":lb,"component_assignments":asgns,"component_memory_gb_one_pod":mem,"component_host_details":h_details,"component_course_config":cfg})
+                    processed_items.append({**common_data,"labbuild_course":"Maestro Course (Multi-Component)","assignments":all_asgns_display,"memory_gb_one_pod":total_mem,"host_details_for_assignments":list({d['name']:d for c in comp_details_list for d in c.get("component_host_details",[])}.values()),"course_config_details_for_passwords":local_course_configs_map.get(maestro_cfg.get("main_course","maestro-r81"),{}),"is_maestro_course":True,"maestro_component_details":comp_details_list})
+                else: # Standard Student
+                    s_asgns=doc.get("student_assignments_final",[]);s_hosts=list(set(a.get("host") for a in s_asgns if a.get("host")));s_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in s_hosts];s_lbc=doc.get("final_labbuild_course_student");s_cfg=local_course_configs_map.get(s_lbc,{}) if s_lbc else {};
+                    processed_items.append({**common_data,"labbuild_course":s_lbc,"assignments":s_asgns,"memory_gb_one_pod":doc.get("memory_gb_one_student_pod"),"host_details_for_assignments":s_hdetails,"course_config_details_for_passwords":s_cfg})
+                
+                # Trainer Part
+                if doc.get("status")=="trainer_disabled_by_rule" or doc.get("trainer_labbuild_course") or doc.get("status")=="trainer_skipped_by_user":
+                    t_lbc=doc.get("trainer_labbuild_course")
+                    trainer_apm_auth_code=f"{sf_code}-TP"
+                    trainer_apm_creds = apm_credentials_map.get(trainer_apm_auth_code, {})
+                    trainer_apm_user = trainer_apm_creds.get("username", f"lab{vendor}-X-TP" if vendor else "labxx-X-TP")
+                    trainer_apm_pass = trainer_apm_creds.get("password", "N/A")
+                    
+                    t_sfc_display = sf_code;
+                    if t_lbc or doc.get("status") in ["trainer_disabled_by_rule","trainer_skipped_by_user"]: t_sfc_display = sf_code + ("-TP (Skipped)" if not t_lbc and doc.get("status")!="trainer_confirmed" else "-TP")
+                    
+                    t_asgns=doc.get("trainer_assignment_final",[]);t_hosts=list(set(a.get("host") for a in t_asgns if a.get("host"))) if t_asgns else [];t_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in t_hosts];t_note=doc.get("trainer_assignment_final_warning") or doc.get("trainer_assignment_warning");
+                    if doc.get("status")=="trainer_disabled_by_rule":t_note=doc.get("trainer_assignment_final_warning")
+                    elif doc.get("status")=="trainer_skipped_by_user":t_note="Build skipped by user."
+                    t_cfg=local_course_configs_map.get(t_lbc,{}) if t_lbc else {}
+                    processed_items.append({"type":"Trainer Build","sf_course_code":t_sfc_display,"original_sf_course_code":sf_code,"labbuild_course":t_lbc if t_lbc else "N/A (Skipped/Disabled)","vendor":vendor,"start_date":start_date,"end_date":end_date,"assignments":t_asgns if t_asgns else [],"memory_gb_one_pod":doc.get("trainer_memory_gb_one_pod") if t_lbc else 0.0,"status_note":t_note,"sf_trainer_name":sf_trainer,"host_details_for_assignments":t_hdetails,"course_config_details_for_passwords":t_cfg,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num, 
+                                          "apm_username": trainer_apm_user, "apm_password": trainer_apm_pass})
+        except PyMongoError as e: logger.error(f"Error fetching interim items: {e}", exc_info=True); flash("Error fetching review data.", "danger")
+        except Exception as e_proc: logger.error(f"Error processing interim items: {e_proc}", exc_info=True); flash("Error processing review data.", "danger")
+        return processed_items
+
+    # --- Sub-function: Fetch "Extend: True" Allocations ---
+    def _fetch_extended_allocations(
+        local_hosts_info_map: Dict[str, Dict[str, str]],
+        apm_credentials_map: Dict[str, Dict[str, str]] # Added to include APM user/pass
+    ) -> List[Dict]:
+        extended_items: List[Dict] = []
+        if alloc_collection is None:
+            logger.warning("_fetch_extended_allocations: alloc_collection is None.")
+            return extended_items
+        try:
+            cursor = alloc_collection.find({"extend": {"$regex": "^true$", "$options": "i"}})
+            for tag_doc in cursor:
+                tag = tag_doc.get("tag", "N/A_EXT")
+                for course_alloc in tag_doc.get("courses", []):
+                    v_ext = course_alloc.get("vendor")
+                    lb_ext = course_alloc.get("course_name")
+                    sdate_ext = _format_date_for_review(str(course_alloc.get("start_date", "")), f"ext {tag} s")
+                    edate_ext = _format_date_for_review(str(course_alloc.get("end_date", "")), f"ext {tag} e")
+                    
+                    sfc_ext = tag # Default APM auth code key for extended is the tag
+                    if v_ext and lb_ext: # Heuristic to derive SF code from tag
+                        p = tag.split('_')
+                        if len(p) > 1 and v_ext.upper() in p[0].upper():
+                            pot_sfc = p[1]
+                            if re.match(r'^[A-Z0-9\-]+$', pot_sfc):
+                                sfc_ext = pot_sfc
+                    
+                    # Get APM username/password for this extended item
+                    extended_apm_details = apm_credentials_map.get(sfc_ext, {})
+                    apm_user_ext = extended_apm_details.get("username", "N/A (Extended)")
+                    apm_pass_ext = extended_apm_details.get("password", "N/A (Extended)")
+                    
+                    asgn_details_ext = []
+                    for pd_ext in course_alloc.get("pod_details", []):
+                        h_ext = pd_ext.get("host", "N/A")
+                        itemid_ext = str(pd_ext.get("pod_number") or pd_ext.get("class_number") or "N/A")
+                        nested_str = ""
+                        
+                        # --- CORRECTED BLOCK for F5 nested pods ---
+                        if v_ext and v_ext.lower() == 'f5' and pd_ext.get("pods"):
+                            pods_data = pd_ext.get("pods", [])
+                            if isinstance(pods_data, list):
+                                f5_pns = [
+                                    str(np.get("pod_number"))
+                                    for np in pods_data
+                                    if isinstance(np, dict) and np.get("pod_number") is not None
+                                ]
+                                if f5_pns:
+                                    nested_str = f" (Pods: {', '.join(f5_pns)})"
+                            else:
+                                logger.warning(f"Tag '{tag}', Course '{lb_ext}': 'pods' field is not a list: {type(pods_data)}. Skipping nested pods string.")
+                        # --- END CORRECTED BLOCK ---
+                                
+                        asgn_details_ext.append({"host": h_ext, "pods": f"{itemid_ext}{nested_str}"})
+                    
+                    extended_items.append({
+                        "type": "Extended (Keep Running)", "sf_course_code": sfc_ext,
+                        "original_sf_course_code": sfc_ext, "labbuild_course": lb_ext or "N/A",
+                        "vendor": v_ext or "N/A", "start_date": sdate_ext, "end_date": edate_ext,
+                        "status_note": f"Keep Running (Tag: {tag})", "assignments": asgn_details_ext,
+                        "sf_trainer_name": course_alloc.get("trainer", "N/A"),
+                        "sf_pax_count": course_alloc.get("pax", "N/A"),
+                        "apm_username": apm_user_ext, # Add APM username
+                        "apm_password": apm_pass_ext   # Add APM password
+                    })
+        except PyMongoError as e:
+            logger.error(f"Error fetching extended items: {e}", exc_info=True)
+        return extended_items
+
+    # --- Sub-function: Sort final list ---
+    def _sort_final_list(items: List[Dict]) -> None:
+        type_order_map = {
+            "Student Build": 1,
+            "Trainer Build": 2,
+            "Extended (Keep Running)": 3,
+            # Add other types here if they exist and need specific ordering
+            "Scheduled for Teardown": 0 # Example, if you had this type
+        }
+        def get_sort_key(item: Dict) -> Tuple[int, datetime.date, str]: # Primary sort key is now type_priority
+            # 1. Primary Sort: Type (Student, Trainer, Extended)
+            item_type_str = item.get("type", "")
+            type_priority = type_order_map.get(item_type_str, 99) # Default to a high number for unknown types
+
+            # 2. Secondary Sort: Start Date
+            date_str = item.get("start_date", "")
+            sort_date = datetime.date.max # Default for N/A or unparseable dates
+            if date_str and date_str != "N/A" and date_str != "Ongoing (Extended)":
+                try:
+                    sort_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    logger.warning(f"Sorting: Could not parse date '{date_str}' for item '{item.get('sf_course_code', '')}'. Using default max date.")
+            elif date_str == "Ongoing (Extended)": # Make "Ongoing" sort like very old dates to appear first within "Extended"
+                sort_date = datetime.date.min
+
+            # 3. Tertiary Sort: SF Course Code
+            # Use original_sf_course_code if present (especially for trainer pods to group with students),
+            # otherwise fall back to sf_course_code.
+            sort_code = (item.get("original_sf_course_code") or item.get("sf_course_code") or "").lower()
+            
+            return (type_priority, sort_date, sort_code)
+
+        try:
+            items.sort(key=get_sort_key)
+            logger.debug("Final review list sorted by Type, then Start Date, then SF Course Code.")
+        except Exception as e:
+            logger.error(f"Error sorting final list: {e}", exc_info=True)
+
+
+    # --- Sub-function: Sanitize for JSON ---
+    def _sanitize_for_json(data_item: Any) -> Any:
+        if isinstance(data_item, list):
+            return [_sanitize_for_json(i) for i in data_item]
+        elif isinstance(data_item, dict):
+            return {str(k): _sanitize_for_json(v) for k, v in data_item.items()}
+        elif isinstance(data_item, ObjectId):
+            return str(data_item)
+        elif isinstance(data_item, datetime.datetime): # Check if it's a datetime object
+            dt = data_item # Assign to dt
+            # Now, the timezone logic applies to dt
+            if dt.tzinfo is None:
+                dt = pytz.utc.localize(dt) # Make naive datetime timezone-aware (UTC)
+            else:
+                dt = dt.astimezone(pytz.utc) # Convert aware datetime to UTC
+            return dt.isoformat().replace("+00:00", "Z") # Return the ISO string
+        elif isinstance(data_item, datetime.date):
+            return data_item.isoformat() # Convert date to ISO string
+        return data_item # Return as is if not a special type
+    # --- End Sub-functions ---
+
+    # --- Main Route Logic ---
+    if not batch_review_id_outer:
+        flash("Review session ID missing.", "danger"); return redirect(url_for('main.view_upcoming_courses'))
+
+    final_trainer_assignments_data_outer: List[Dict] = []
+    if final_trainer_plan_json_outer:
+        try:
+            parsed_outer_data = json.loads(final_trainer_plan_json_outer)
+            if isinstance(parsed_outer_data, list): final_trainer_assignments_data_outer = parsed_outer_data
+        except json.JSONDecodeError:
+            logger.error("Error decoding final_trainer_plan_json_outer."); flash("Error processing trainer assignments.", "danger")
+            return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id_outer))
+
+    if not _update_finalized_trainer_assignments(batch_review_id_outer, final_trainer_assignments_data_outer):
+        return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id_outer))
+
+    hosts_map_main, configs_map_main = _fetch_supporting_data()
+    
+    # --- Generate APM data (usernames, passwords, commands) on page load ---
+    # Fetch current APM entries and extended APM course codes for the helper
+    current_apm_entries_for_helper: Dict[str, Dict[str, Any]] = {}
+    try:
+        apm_list_url = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
+        response = requests.get(apm_list_url, timeout=15); response.raise_for_status()
+        current_apm_entries_for_helper = response.json()
+    except Exception as e: logger.error(f"FinalizePage: Error fetching current APM entries for helper: {e}")
+
+    extended_apm_codes_for_helper: Set[str] = set()
+    try:
+        if alloc_collection is not None:
+            cursor = alloc_collection.find({"extend": "true"}, {"tag": 1, "courses.apm_vpn_auth_course_code": 1, "_id": 0})
+            for doc_ext in cursor: # ... (populate extended_apm_codes_for_helper)
+                found_ext = False;
+                for ca_ext in doc_ext.get("courses",[]):
+                    if ca_ext.get("apm_vpn_auth_course_code"): extended_apm_codes_for_helper.add(ca_ext["apm_vpn_auth_course_code"]); found_ext=True
+                if not found_ext and doc_ext.get("tag"): extended_apm_codes_for_helper.add(doc_ext.get("tag"))
+    except PyMongoError as e_ext: logger.error(f"FinalizePage: Error fetching extended APM codes for helper: {e_ext}")
+
+    # Fetch plan items for APM logic (all confirmed for the current session)
+    plan_items_for_apm_helper: List[Dict] = []
+    if interim_alloc_collection is not None:
+        try:
+            # If batch_review_id_outer is None or empty, this fetches all confirmed items,
+            # which is what we want for a fresh APM generation on page load.
+            query_filter_apm_helper = {"status": {"$in": ["student_confirmed", "trainer_confirmed"]}}
+            if batch_review_id_outer: # Scope to batch if ID is present
+                 query_filter_apm_helper["batch_review_id"] = batch_review_id_outer
+            
+            apm_plan_cursor = interim_alloc_collection.find(query_filter_apm_helper)
+            plan_items_for_apm_helper = list(apm_plan_cursor)
+        except PyMongoError as e_apm_fetch_helper:
+            logger.error(f"FinalizePage: Error fetching plan items for APM logic helper: {e_apm_fetch_helper}")
+            # Continue with empty list, errors will be reported by helper
+
+    # Call the APM logic helper
+    _, apm_credentials_map, apm_generation_errors = _generate_apm_data_for_plan(
+        plan_items_for_apm_helper,
+        current_apm_entries_for_helper,
+        extended_apm_codes_for_helper
+    )
+    
+    if apm_generation_errors:
+        flash("Note: Errors occurred during APM data pre-generation: " + " | ".join(apm_generation_errors), "info")
+            
+    # Now process interim documents for display, passing the apm_credentials_map
+    processed_interim_items_main = _process_interim_documents(batch_review_id_outer, hosts_map_main, configs_map_main, apm_credentials_map)
+    extended_items_list_main = _fetch_extended_allocations(hosts_map_main, apm_credentials_map)
+    
+    final_list_for_display_and_json_main = processed_interim_items_main + extended_items_list_main
+    _sort_final_list(final_list_for_display_and_json_main)
+
+    sanitized_all_items_for_review_main = [_sanitize_for_json(item) for item in final_list_for_display_and_json_main]
+    sanitized_buildable_items_main = [
+        item for item in sanitized_all_items_for_review_main
+        if item.get("type") in ["Student Build", "Trainer Build"] and item.get("assignments")
+    ]
+
+    buildable_json_str_main = "[]"; all_review_json_str_main = "[]"
+    try:
+        buildable_json_str_main = json.dumps(sanitized_buildable_items_main)
+        all_review_json_str_main = json.dumps(sanitized_all_items_for_review_main)
+    except TypeError as te:
+        logger.error(f"TypeError during json.dumps: {te}", exc_info=True); flash("Error preparing data for JS.", "danger")
+    except Exception as e_json:
+        logger.error(f"General error during json.dumps: {e_json}", exc_info=True); flash("Server error preparing data for JS.", "danger")
+
+    return render_template(
+        'final_review_schedule.html',
+        all_items_for_review=sanitized_all_items_for_review_main,
+        buildable_items_json=buildable_json_str_main,
+        all_review_items_json=all_review_json_str_main,
+        batch_review_id=batch_review_id_outer,
+        current_theme=current_theme,
+    )
+
+
+@bp.route('/execute-scheduled-builds', methods=['POST'])
+def execute_scheduled_builds():
+    """
+    Receives the confirmed build plan, teardown preference, and scheduling options,
+    then schedules the labbuild setup (and optionally teardown) commands.
+    """
+    confirmed_plan_json = request.form.get('confirmed_build_plan_data')
+    schedule_option = request.form.get('schedule_option', 'now')
+    batch_review_id = request.form.get('batch_review_id') # For updating interim docs
+
+    perform_teardown_first = request.form.get('perform_teardown_first') == 'yes'
+    logger.info(f"Execute Scheduled Builds for Batch ID '{batch_review_id}': "
+                f"Teardown before setup = {perform_teardown_first}, "
+                f"Schedule Option = {schedule_option}")
+
+    schedule_start_time_str: Optional[str] = None
+    stagger_minutes: int = 30 # Default stagger
+
+    if schedule_option == 'specific_time_all':
+        schedule_start_time_str = request.form.get('schedule_start_time')
+    elif schedule_option == 'staggered':
+        schedule_start_time_str = request.form.get('schedule_start_time_staggered')
+        stagger_minutes_str = request.form.get('schedule_stagger_minutes', '30')
+        try:
+            stagger_minutes = int(stagger_minutes_str)
+            if stagger_minutes < 1:
+                logger.warning("Stagger minutes less than 1, defaulting to 1.")
+                stagger_minutes = 1
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid stagger_minutes value '{stagger_minutes_str}', "
+                           "defaulting to 30.")
+            stagger_minutes = 30
+
+    if not confirmed_plan_json:
+        flash("No confirmed build plan received to schedule.", "danger")
+        return redirect(url_for('actions.finalize_and_display_build_plan',
+                                batch_review_id=batch_review_id))
+    try:
+        buildable_items_from_form = json.loads(confirmed_plan_json)
+        if not isinstance(buildable_items_from_form, list):
+            raise ValueError("Invalid confirmed build plan format: not a list.")
+    except (json.JSONDecodeError, ValueError) as e:
+        flash(f"Error processing confirmed build plan: {e}", "danger")
+        logger.error("Error parsing confirmed_build_plan_data: %s", e, exc_info=True)
+        return redirect(url_for('actions.finalize_and_display_build_plan',
+                                batch_review_id=batch_review_id))
+
+    if scheduler is None or not scheduler.running:
+        flash("Scheduler not running. Cannot schedule builds.", "danger")
+        logger.error("Attempted to schedule builds, but scheduler is not running.")
+        return redirect(url_for('main.index'))
+
+    logger.info(f"Received {len(buildable_items_from_form)} buildable items to schedule for "
+                f"batch '{batch_review_id}' with option: '{schedule_option}'.")
+    
+    from apscheduler.triggers.date import DateTrigger # Import here to keep it local
+    scheduler_tz_obj = scheduler.timezone
+    
+    # Determine the base_run_time_utc for the very first operation
+    base_run_time_utc: datetime.datetime = datetime.datetime.now(pytz.utc)
+    if schedule_option != 'now' and schedule_start_time_str:
+        try:
+            naive_dt_form = datetime.datetime.fromisoformat(schedule_start_time_str)
+            if hasattr(scheduler_tz_obj, 'localize'): # For pytz
+                localized_dt = scheduler_tz_obj.localize(naive_dt_form, is_dst=None) # type: ignore
+            else: # For zoneinfo or other standard tzinfo
+                localized_dt = naive_dt_form.replace(tzinfo=scheduler_tz_obj)
+            base_run_time_utc = localized_dt.astimezone(pytz.utc)
+            logger.info(f"Base run time for scheduling (UTC): {base_run_time_utc}, "
+                        f"from form input '{schedule_start_time_str}' in tz '{scheduler_tz_obj}'.")
+        except ValueError as e_date_sched:
+            logger.error(f"Invalid datetime format '{schedule_start_time_str}': {e_date_sched}. "
+                         "Defaulting to 'now'.")
+            flash("Invalid start time format provided. Scheduling jobs for 'now' instead.", "warning")
+            base_run_time_utc = datetime.datetime.now(pytz.utc) # Fallback
+
+    # This will be the actual run time for the current operation block (teardown then setup)
+    current_operation_block_start_time_utc = base_run_time_utc
+    stagger_delta = datetime.timedelta(minutes=stagger_minutes)
+    setup_delay_after_teardown = datetime.timedelta(minutes=2) # Time between teardown and setup
+    
+    scheduled_ops_count = 0
+    failed_ops_count = 0
+    # Store details of scheduled operations for logging/DB update
+    scheduled_op_details_for_interim: List[Dict[str, Any]] = []
+
+
+    for item_idx, item_to_build in enumerate(buildable_items_from_form):
+        item_sf_code = item_to_build.get('sf_course_code', f'UNKNOWN_SF_{item_idx}')
+        item_vendor = item_to_build.get('vendor')
+        item_lb_course = item_to_build.get('labbuild_course')
+
+        if not item_vendor or not item_lb_course:
+            logger.error(f"Skipping item '{item_sf_code}' due to missing vendor or LabBuild course.")
+            failed_ops_count += 1 # Count this as a failed scheduling attempt
+            continue
+            
+        assignments = item_to_build.get("assignments", [])
+        if not assignments:
+            logger.warning(f"No host/pod assignments for '{item_sf_code}'. Skipping scheduling for this item.")
+            failed_ops_count += 1
+            continue
+
+        for assignment_idx, assignment_block in enumerate(assignments):
+            host = assignment_block.get('host')
+            start_pod = assignment_block.get('start_pod')
+            end_pod = assignment_block.get('end_pod')
+
+            if not host or start_pod is None or end_pod is None:
+                logger.error(f"Skipping assignment for '{item_sf_code}' due to missing "
+                             f"host/pod range: {assignment_block}")
+                failed_ops_count +=1
+                continue
+
+            # Calculate the start time for this specific block of operations
+            # (teardown + setup for one assignment segment)
+            if schedule_option == 'staggered':
+                # Only add stagger_delta if it's not the very first assignment block overall
+                if item_idx > 0 or assignment_idx > 0:
+                    current_operation_block_start_time_utc += stagger_delta
+            elif schedule_option == 'now':
+                current_operation_block_start_time_utc = datetime.datetime.now(pytz.utc)
+            # For 'specific_time_all', current_operation_block_start_time_utc remains base_run_time_utc
+            
+            # --- Construct base arguments for this item assignment ---
+            base_args_for_item_assignment = [
+                '-v', item_vendor,
+                '-g', item_lb_course,
+                '--host', host, 
+                '-s', str(start_pod),
+                '-e', str(end_pod)
+            ]
+            # Create a descriptive tag
+            tag_type_suffix = item_to_build.get('type','item').split(' ')[0].lower()
+            tag = f"{item_sf_code.replace('/', '_').replace(' ', '_')}_{tag_type_suffix}"
+            if len(assignments) > 1:
+                tag += f"_part{assignment_idx+1}"
+            base_args_for_item_assignment.extend(['-t', tag[:45]]) # Keep tag reasonably short
+
+            # Add F5 class number if applicable (ensure key exists in item_to_build)
+            f5_class_num = item_to_build.get('f5_class_number') # Assuming this key exists if it's F5
+            if item_vendor.lower() == 'f5' and f5_class_num is not None:
+                 base_args_for_item_assignment.extend(['-cn', str(f5_class_num)])
+
+            # --- Schedule Teardown Job (if requested) ---
+            teardown_job_id = None
+            actual_teardown_run_time_utc = current_operation_block_start_time_utc
+            if perform_teardown_first:
+                args_list_teardown = ['teardown'] + base_args_for_item_assignment
+                job_name_td = f"Teardown_{tag}"
+                try:
+                    trigger_td = DateTrigger(run_date=actual_teardown_run_time_utc, timezone=pytz.utc)
+                    job_td = scheduler.add_job(
+                        run_labbuild_task, trigger=trigger_td, args=[args_list_teardown],
+                        name=job_name_td, misfire_grace_time=1800, # Shorter grace for teardown
+                        replace_existing=False 
+                    )
+                    teardown_job_id = job_td.id
+                    scheduled_op_details_for_interim.append({
+                        "operation": "teardown", "job_id": job_td.id, "name": job_name_td, 
+                        "run_time_utc": actual_teardown_run_time_utc.isoformat(), "args": args_list_teardown
+                    })
+                    logger.info(f"Scheduled Teardown Job '{job_td.id}': {job_name_td} at "
+                                f"{actual_teardown_run_time_utc.astimezone(scheduler_tz_obj).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                    scheduled_ops_count += 1
+                except Exception as e_sched_td:
+                    logger.error(f"Failed to schedule TEARDOWN job {job_name_td}: {e_sched_td}", exc_info=True)
+                    failed_ops_count += 1
+            
+            # --- Schedule Setup Job ---
+            args_list_setup = ['setup'] + base_args_for_item_assignment
+            # Potentially add --re-build if teardown was just scheduled (optional, teardown should handle clean state)
+            # if perform_teardown_first:
+            #     args_list_setup.append('--re-build') 
+            job_name_setup = f"Setup_{tag}"
+            
+            actual_setup_run_time_utc = current_operation_block_start_time_utc
+            if perform_teardown_first: # If teardown was scheduled, setup runs after it
+                actual_setup_run_time_utc = actual_teardown_run_time_utc + setup_delay_after_teardown
+
             try:
-                batch_timestamp = datetime.datetime.now(pytz.utc); bulk_ops = []
-                for p_course in processed_courses_for_review:
-                    # Define filter using SF code and FINAL labbuild course
-                    filter_criteria = {
-                        "sf_course_code": p_course.get("sf_course_code"),
-                        "labbuild_course": p_course.get("labbuild_course"), # Use final name
-                        "status": "pending_review"
+                trigger_setup = DateTrigger(run_date=actual_setup_run_time_utc, timezone=pytz.utc)
+                job_setup = scheduler.add_job(
+                    run_labbuild_task, trigger=trigger_setup, args=[args_list_setup],
+                    name=job_name_setup, misfire_grace_time=7200, # Longer grace for setup
+                    replace_existing=False
+                )
+                scheduled_op_details_for_interim.append({
+                    "operation": "setup", "job_id": job_setup.id, "name": job_name_setup,
+                    "run_time_utc": actual_setup_run_time_utc.isoformat(), "args": args_list_setup,
+                    "depends_on_job_id": teardown_job_id if perform_teardown_first else None
+                })
+                logger.info(f"Scheduled Setup Job '{job_setup.id}': {job_name_setup} at "
+                            f"{actual_setup_run_time_utc.astimezone(scheduler_tz_obj).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                scheduled_ops_count += 1
+            except Exception as e_sched_setup:
+                logger.error(f"Failed to schedule SETUP job {job_name_setup}: {e_sched_setup}", exc_info=True)
+                failed_ops_count += 1
+        # End loop for assignment_blocks
+    # End loop for item_to_build
+
+    # --- Update interimallocation status for the entire batch ---
+    if interim_alloc_collection is not None and batch_review_id:
+        final_batch_status = "builds_scheduled_with_errors" # Default if any failures
+        if scheduled_ops_count > 0 and failed_ops_count == 0:
+            final_batch_status = "builds_fully_scheduled"
+        elif scheduled_ops_count == 0 and failed_ops_count > 0:
+            final_batch_status = "build_scheduling_all_failed"
+        elif scheduled_ops_count == 0 and failed_ops_count == 0: # No buildable items
+             final_batch_status = "no_builds_to_schedule"
+        
+        try:
+            # Update all documents in this batch that were confirmed for student/trainer
+            update_filter = {
+                "batch_review_id": batch_review_id,
+                "status": {"$in": ["student_confirmed", "trainer_confirmed", 
+                                    "trainer_disabled_by_rule", "trainer_skipped_by_user"]}
+            }
+            update_doc = {
+                "$set": {
+                    "status": final_batch_status,
+                    "scheduled_operations": scheduled_op_details_for_interim, 
+                    "scheduled_at_utc": datetime.datetime.now(pytz.utc)
+                }
+            }
+            update_result = interim_alloc_collection.update_many(update_filter, update_doc)
+            logger.info(f"Updated status to '{final_batch_status}' for {update_result.modified_count} items in batch '{batch_review_id}'.")
+        except (PyMongoError, NotImplementedError) as e_upd_interim: # Catch general PyMongoError
+            logger.error(f"Error updating final interim status for batch '{batch_review_id}': {e_upd_interim}", exc_info=True)
+
+    flash(f"Attempted to schedule operations. Scheduled: {scheduled_ops_count}. "
+          f"Failures: {failed_ops_count}.",
+          'success' if failed_ops_count == 0 and scheduled_ops_count > 0 else 'warning' if scheduled_ops_count > 0 else 'danger')
+    return redirect(url_for('main.index'))
+
+def _dispatch_bulk_labbuild_tasks(
+        tasks_to_run: List[Dict[str, Any]], # Each dict: {'args': list, 'description': str, 'db_update_info': tuple (optional)}
+        action_name: str,
+        operation_if_power_toggle: Optional[str] = None):
+    """
+    Helper to run a list of labbuild tasks sequentially in a background thread.
+    Optionally updates power state in DB after each power toggle task.
+    """
+    if not tasks_to_run:
+        logger.info(f"No tasks to dispatch for bulk {action_name}.")
+        return
+
+    def worker():
+        total_tasks = len(tasks_to_run)
+        logger.info(f"Starting bulk {action_name} worker for {total_tasks} tasks.")
+        success_count = 0
+        fail_count = 0
+
+        for i, task_info in enumerate(tasks_to_run):
+            args = task_info['args']
+            description = task_info['description']
+            db_update_info = task_info.get('db_update_info') # For power toggle
+
+            logger.info(f"Executing task {i+1}/{total_tasks} for bulk {action_name}: {description} - CMD: {' '.join(args)}")
+            try:
+                # run_labbuild_task itself handles subprocess.run and logging
+                # We assume it's synchronous for this sequential helper,
+                # or we'd need a more complex Future-based approach here too.
+                # For now, assuming run_labbuild_task blocks until completion.
+                run_labbuild_task(args) # This runs the labbuild.py script
+                
+                # If it's a power toggle and task appeared successful (no exception from run_labbuild_task),
+                # update the DB. A more robust way would be for run_labbuild_task to return success/failure.
+                if action_name == "power_toggle" and db_update_info and operation_if_power_toggle:
+                    tag, course, host, item_num, item_type, class_num_ctx = db_update_info
+                    new_power_state_bool = (operation_if_power_toggle == 'start')
+                    update_power_state_in_db(tag, course, host, item_num, item_type, new_power_state_bool, class_num_ctx)
+                
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Error in bulk {action_name} task {description}: {e}", exc_info=True)
+                fail_count += 1
+            # Add a small delay between tasks if desired, e.g., time.sleep(1)
+        
+        logger.info(f"Bulk {action_name} worker finished. Success: {success_count}, Failed: {fail_count}.")
+        # Flash messages from a background thread is tricky.
+        # Usually, you'd use SSE or another mechanism to update UI.
+        # For now, main route will flash a general submission message.
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    flash(f"Submitted {len(tasks_to_run)} tasks for bulk {action_name}. Check logs for progress.", "info")
+
+
+@bp.route('/bulk-toggle-power', methods=['POST'])
+def bulk_toggle_power():
+    selected_items_json = request.form.get('selected_items_json')
+    operation = request.args.get('operation') # 'start' or 'stop'
+
+    if not selected_items_json or not operation or operation not in ['start', 'stop']:
+        flash("Invalid bulk power toggle request.", "danger")
+        return redirect(url_for('main.view_allocations', **request.form)) # Pass back filters
+
+    try:
+        selected_items = json.loads(selected_items_json)
+        if not isinstance(selected_items, list):
+            raise ValueError("Selected items data is not a list.")
+    except (json.JSONDecodeError, ValueError) as e:
+        flash(f"Error processing selected items: {e}", "danger")
+        return redirect(url_for('main.view_allocations', **request.form))
+
+    tasks_to_run = []
+    for item in selected_items:
+        # Validate item structure (basic)
+        if not all(k in item for k in ['vendor', 'course', 'host', 'item_type', 'item_number', 'tag']):
+            logger.warning(f"Skipping invalid item in bulk power toggle: {item}")
+            continue
+
+        args = [
+            'manage',
+            '-v', item['vendor'],
+            '-g', item['course'],
+            '--host', item['host'],
+            '-t', item['tag'],
+            '-o', operation
+        ]
+        item_num_str = str(item['item_number'])
+        if item['item_type'] == 'f5_class':
+            args.extend(['-cn', item_num_str])
+        elif item['item_type'] == 'pod':
+            args.extend(['-s', item_num_str, '-e', item_num_str])
+            if item.get('vendor', '').lower() == 'f5' and item.get('class_number'):
+                args.extend(['-cn', str(item['class_number'])])
+        else:
+            logger.warning(f"Unknown item_type '{item['item_type']}' for bulk power toggle. Skipping item: {item.get('tag')}/{item.get('course')}/{item_num_str}")
+            continue
+        
+        description = f"Power {operation} for {item['item_type']} {item_num_str} (Tag: {item['tag']}, Course: {item['course']})"
+        db_update_info = (
+            item['tag'], item['course'], item['host'], item['item_number'],
+            item['item_type'], item.get('class_number') 
+        )
+        tasks_to_run.append({'args': args, 'description': description, 'db_update_info': db_update_info})
+
+    if tasks_to_run:
+        _dispatch_bulk_labbuild_tasks(tasks_to_run, "power_toggle", operation_if_power_toggle=operation)
+    else:
+        flash("No valid items found to process for bulk power toggle.", "info")
+    
+    # Preserve filters from the form submission for redirection
+    preserved_filters = {k: v for k, v in request.form.items() if k.startswith('filter_') or k in ['page', 'per_page']}
+    return redirect(url_for('main.view_allocations', **preserved_filters))
+
+
+@bp.route('/bulk-teardown-items', methods=['POST'])
+def bulk_teardown_items():
+    selected_items_json = request.form.get('selected_items_json')
+    if not selected_items_json:
+        flash("No items selected for bulk teardown.", "warning")
+        return redirect(url_for('main.view_allocations', **request.form))
+
+    try:
+        selected_items = json.loads(selected_items_json)
+        if not isinstance(selected_items, list): raise ValueError
+    except:
+        flash("Error processing selected items for teardown.", "danger")
+        return redirect(url_for('main.view_allocations', **request.form))
+
+    tasks_to_run = []
+    for item in selected_items:
+        if not all(k in item for k in ['vendor', 'course', 'host', 'item_type', 'item_number', 'tag']):
+            logger.warning(f"Skipping invalid item in bulk teardown (infra): {item}")
+            continue
+        
+        args = [
+            'teardown', # Not --db-only, so full teardown
+            '-v', item['vendor'],
+            '-g', item['course'],
+            '--host', item['host'],
+            '-t', item['tag']
+        ]
+        item_num_str = str(item['item_number'])
+        if item['item_type'] == 'f5_class':
+            args.extend(['-cn', item_num_str])
+        elif item['item_type'] == 'pod':
+            args.extend(['-s', item_num_str, '-e', item_num_str])
+            if item.get('vendor', '').lower() == 'f5' and item.get('class_number'):
+                args.extend(['-cn', str(item['class_number'])])
+        else:
+            logger.warning(f"Unknown item_type '{item['item_type']}' for bulk teardown. Skipping.")
+            continue
+        
+        description = f"Teardown Infra for {item['item_type']} {item_num_str} (Tag: {item['tag']}, Course: {item['course']})"
+        tasks_to_run.append({'args': args, 'description': description})
+        # DB deletion should happen AFTER successful labbuild teardown.
+        # This is complex to coordinate from a simple fire-and-forget thread.
+        # For now, user will need to run bulk DB delete separately or individual DB delete.
+
+    if tasks_to_run:
+        _dispatch_bulk_labbuild_tasks(tasks_to_run, "infrastructure_teardown")
+    else:
+        flash("No valid items found to process for bulk infrastructure teardown.", "info")
+
+    preserved_filters = {k: v for k, v in request.form.items() if k.startswith('filter_') or k in ['page', 'per_page']}
+    return redirect(url_for('main.view_allocations', **preserved_filters))
+
+
+@bp.route('/bulk-db-delete-items', methods=['POST'])
+def bulk_db_delete_items():
+    selected_items_json = request.form.get('selected_items_json')
+    if not selected_items_json:
+        flash("No items selected for bulk DB deletion.", "warning")
+        return redirect(url_for('main.view_allocations', **request.form))
+
+    try:
+        selected_items = json.loads(selected_items_json)
+        if not isinstance(selected_items, list): raise ValueError
+    except:
+        flash("Error processing selected items for DB deletion.", "danger")
+        return redirect(url_for('main.view_allocations', **request.form))
+
+    deleted_count = 0
+    failed_count = 0
+    processed_tags_courses = set() # To avoid redundant messages for same course in a tag
+
+    for item in selected_items:
+        try:
+            tag = item.get('tag')
+            course_name = item.get('course')
+            item_type = item.get('item_type')
+            # item_number holds pod_number for type 'pod' or class_number for type 'f5_class'
+            item_number = int(item['item_number']) if item.get('item_number') else None
+            
+            # For F5 pods, class_number context is in item['class_number']
+            # For F5 class itself, item_number is class_number and item['class_number'] is also class_number
+            class_number_context = int(item['class_number']) if item.get('class_number') else None
+
+            pod_to_delete = None
+            class_to_delete = None
+
+            if item_type == 'f5_class':
+                class_to_delete = item_number
+            elif item_type == 'pod':
+                pod_to_delete = item_number
+                if item.get('vendor', '').lower() == 'f5': # F5 pod needs class context
+                    class_to_delete = class_number_context 
+                    if class_to_delete is None: # Should not happen if data is consistent
+                        logger.warning(f"F5 pod {pod_to_delete} missing class context for DB delete. Item: {item}")
+                        # This might delete all pods with this number if class_to_delete is None in delete_from_database
+                        # For safety, skip if F5 pod and class context is missing from the selected item data
+                        failed_count +=1
+                        continue
+            
+            if not tag or not course_name:
+                logger.warning(f"Skipping item for DB delete due to missing tag/course: {item}")
+                failed_count += 1
+                continue
+
+            # Call delete_from_database for each distinct item
+            # delete_from_database handles if pod_number or class_number is None
+            if delete_from_database(tag, course_name=course_name, pod_number=pod_to_delete, class_number=class_to_delete):
+                deleted_count += 1
+                log_msg_key = (tag, course_name, pod_to_delete, class_to_delete)
+                if log_msg_key not in processed_tags_courses:
+                    logger.info(f"DB entry deleted for: Tag {tag}, Course {course_name}, Pod {pod_to_delete}, Class {class_to_delete}")
+                    processed_tags_courses.add(log_msg_key)
+            else:
+                failed_count += 1
+                logger.error(f"Failed DB delete for: Tag {tag}, Course {course_name}, Pod {pod_to_delete}, Class {class_to_delete}")
+
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Error during bulk DB delete for item {item}: {e}", exc_info=True)
+
+    if deleted_count > 0:
+        flash(f"Successfully deleted {deleted_count} DB entries.", "success")
+    if failed_count > 0:
+        flash(f"Failed to delete {failed_count} DB entries. Check logs.", "danger")
+    if deleted_count == 0 and failed_count == 0:
+        flash("No valid items found to process for DB deletion.", "info")
+        
+    preserved_filters = {k: v for k, v in request.form.items() if k.startswith('filter_') or k in ['page', 'per_page']}
+    return redirect(url_for('main.view_allocations', **preserved_filters))
+
+def set_cell_style(cell, bold: bool = False, italic: bool = False, underline: str = None,
+                   strike: bool = False, font_name: str = 'Calibri', font_size: int = 11,
+                   font_color: str = None,  # Hex ARGB color string e.g., "FF00FF00" for green
+                   alignment_horizontal: str = None, # e.g., 'general', 'left', 'right', 'center', 'justify'
+                   alignment_vertical: str = None,   # e.g., 'top', 'center', 'bottom', 'justify', 'distributed'
+                   wrap_text: bool = None,
+                   shrink_to_fit: bool = None,
+                   indent: int = 0,
+                   text_rotation: int = 0,
+                   border_style: str = None,    # e.g., 'thin', 'medium', 'thick', 'double', 'dotted', 'dashed'
+                   border_color: str = "000000", # Default black
+                   fill_color: str = None,      # Hex ARGB color string e.g., "FFFFFF00" for yellow
+                   number_format: str = None    # e.g., 'General', '0.00', 'mm-dd-yy'
+                   ):
+    """
+    Applies comprehensive styling to an openpyxl cell.
+    Creates new style objects as openpyxl styles are immutable.
+    """
+    # --- Font ---
+    # Start with defaults or existing font properties
+    current_font = cell.font
+    new_font_kwargs = {
+        'name': current_font.name if current_font.name is not None else font_name,
+        'sz': current_font.sz if current_font.sz is not None else font_size,
+        'bold': current_font.bold if bold is None else bold,
+        'italic': current_font.italic if italic is None else italic,
+        'underline': current_font.underline if underline is None else underline,
+        'strike': current_font.strike if strike is None else strike,
+        'color': current_font.color if font_color is None else (Color(font_color) if isinstance(font_color, str) else font_color)
+        # Copy other font properties if needed like scheme, family, charset, etc.
+        # For simplicity, we'll stick to common ones here.
+    }
+    # Only create a new Font object if there's a reason to (a change or explicit setting)
+    # This check can be more granular if performance is critical for millions of cells.
+    cell.font = Font(**new_font_kwargs)
+
+    # --- Alignment ---
+    if (alignment_horizontal is not None or
+            alignment_vertical is not None or
+            wrap_text is not None or
+            shrink_to_fit is not None or
+            indent != 0 or # Default indent is 0, so any non-zero is a change
+            text_rotation != 0): # Default rotation is 0
+
+        existing_alignment = cell.alignment
+        new_align_kwargs = {}
+
+        # Preserve existing alignment properties if not overridden
+        if existing_alignment:
+            new_align_kwargs.update({
+                'horizontal': existing_alignment.horizontal,
+                'vertical': existing_alignment.vertical,
+                'textRotation': existing_alignment.textRotation, # openpyxl uses textRotation (int)
+                'wrapText': existing_alignment.wrapText,
+                'shrinkToFit': existing_alignment.shrinkToFit,
+                'indent': existing_alignment.indent,
+                'relativeIndent': existing_alignment.relativeIndent,
+                'justifyLastLine': existing_alignment.justifyLastLine,
+                'readingOrder': existing_alignment.readingOrder,
+            })
+
+        # Apply new/overridden values
+        if alignment_horizontal is not None:
+            new_align_kwargs['horizontal'] = alignment_horizontal
+        if alignment_vertical is not None:
+            new_align_kwargs['vertical'] = alignment_vertical
+        if wrap_text is not None:
+            new_align_kwargs['wrapText'] = wrap_text
+        if shrink_to_fit is not None:
+            new_align_kwargs['shrinkToFit'] = shrink_to_fit
+        if indent != 0: # Only set if different from default
+            new_align_kwargs['indent'] = indent
+        if text_rotation != 0: # Only set if different from default
+            new_align_kwargs['textRotation'] = text_rotation
+        
+        cell.alignment = Alignment(**new_align_kwargs)
+
+    # --- Border ---
+    if border_style:
+        side = Side(border_style=border_style, color=border_color)
+        cell.border = Border(left=side, right=side, top=side, bottom=side)
+
+    # --- Fill ---
+    if fill_color:
+        cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+
+    # --- Number Format ---
+    if number_format:
+        cell.number_format = number_format
+
+def get_host_shortname(hostname_fqdn_or_short: str) -> str:
+    """Returns a standardized short host name (ni, cl, ul, un, ho, k2) or original if not matched."""
+    if not hostname_fqdn_or_short:
+        return "N/A"
+    
+    hn_lower = hostname_fqdn_or_short.lower()
+    
+    if "nightbird" in hn_lower or hn_lower == "ni": return "Ni"
+    if "cliffjumper" in hn_lower or hn_lower == "cl": return "Cl"
+    if "ultramagnus" in hn_lower or hn_lower == "ul": return "Ul"
+    if "unicron" in hn_lower or hn_lower == "un": return "Un"
+    if "hotshot" in hn_lower or hn_lower == "ho": return "Ho"
+    if "k2" in hn_lower : return "K2" # Assuming K2 is another short name
+
+    # Fallback to first two letters if it's an FQDN and not recognized
+    if '.' in hn_lower:
+        short = hn_lower.split('.')[0][:2]
+        if short == "ni": return "Ni"
+        # Add other FQDN prefix mappings if needed
+    
+    return hostname_fqdn_or_short # Return original if no specific mapping
+
+@bp.route('/export-allocations-excel')
+def export_allocations_excel():
+    logger.info("Exporting allocations to Excel (New Format)...")
+    if alloc_collection is None or course_config_collection is None or host_collection is None:
+        flash("Database collections unavailable for export.", "danger")
+        return redirect(url_for('main.view_allocations'))
+
+    try:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Allocations"
+
+        # --- 1. RAM Summary Header (as per image) ---
+        ram_summary_data_from_image = [
+            ["RAM Summary", None, None, None], # Merged later
+            [None, "Allocated RAM", "CPU", "HDD"],
+            ["Nightbird", 2000, 2000, 2000],
+            ["Hotshot", 2000, 2000, 2000],
+            ["Cliffjumper", 1200, 1200, 1200],
+            ["Unicron", 1000, 1000, 1000],
+            ["Ultramagnus", 1000, 1000, 1000],
+            ["K2", 1000, 1000, 1000] # Added K2 based on common hosts
+        ]
+        yellow_fill = "FFFF00"
+        for r_idx, r_data in enumerate(ram_summary_data_from_image, start=1):
+            for c_idx, value in enumerate(r_data, start=1):
+                if value is not None:
+                    cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                    is_header_row = r_idx <= 2
+                    set_cell_style(cell, bold=is_header_row, fill_color=yellow_fill, alignment_horizontal="center" if is_header_row or c_idx > 1 else "left")
+        ws.merge_cells('A1:D1')
+        current_row = len(ram_summary_data_from_image) + 2 # Start main table after some space
+
+        # --- Main Table Headers (from image) ---
+        main_headers = [
+            "Course Job Code", "Start Date", "Last Day", "Location", "Trainer Name", "Course Name",
+            "Start/End Pod", None, "Username", "Password", "Class", "Students", "Vendor Pods", "Group",
+            "Version", "Course Version", "RAM", "Virtual Hosts", "Ni", "Cl", "Ul", "Un", "Ho", "K2" # Added K2 here too
+        ] # Col H is for the "->" arrow
+
+        header_fill_color = "ADD8E6" # Light Blue
+        thin_black_border = Border(left=Side(style='thin', color="000000"), 
+                                 right=Side(style='thin', color="000000"), 
+                                 top=Side(style='thin', color="000000"), 
+                                 bottom=Side(style='thin', color="000000"))
+
+        # --- Data Fetching and Processing ---
+        all_alloc_docs = list(alloc_collection.find({}))
+        all_course_configs_list = list(course_config_collection.find({}))
+        course_configs_dict = {cc['course_name']: cc for cc in all_course_configs_list}
+        
+        # Get host locations mapping if available
+        host_locations = {h.get('host_name'): h.get('location', 'Virtual') for h in host_collection.find({}, {"host_name":1, "location":1})}
+
+
+        processed_data_by_vendor = defaultdict(list)
+
+        for tag_doc in all_alloc_docs:
+            tag_name = tag_doc.get("tag", "UNKNOWN_TAG")
+            for course_alloc in tag_doc.get("courses", []):
+                vendor_code = course_alloc.get("vendor", "UN").upper()
+                labbuild_course_name = course_alloc.get("course_name")
+                course_config = course_configs_dict.get(labbuild_course_name, {})
+
+                for pod_detail in course_alloc.get("pod_details", []):
+                    is_trainer_pod = "-TP" in tag_name.upper()
+                    excel_row_data = {
+                        "Course Job Code": tag_name if not is_trainer_pod else tag_name.replace("-TP",""), # Base code for TP
+                        "Start Date": course_alloc.get("start_date", "N/A") if not is_trainer_pod else "",
+                        "Last Day": course_alloc.get("end_date", "N/A") if not is_trainer_pod else "", # Assuming end_date is last day
+                        "Location": host_locations.get(pod_detail.get("host"), "Virtual"),
+                        "Trainer Name": course_alloc.get("trainer_name", "N/A") if not is_trainer_pod else "",
+                        "Course Name": labbuild_course_name if not is_trainer_pod else "Trainer pods",
+                        "Username": course_config.get("student_user", "labcp-X/labpa-X") if not is_trainer_pod else \
+                                    (course_config.get("trainer_user", "labcp-X") if "-TP" in tag_name.upper() else ""),
+                        "Password": course_config.get("student_password", "password") if not is_trainer_pod else \
+                                    (course_config.get("trainer_password", "password") if "-TP" in tag_name.upper() else ""),
+                        "Class": "", "Students": "", "Vendor Pods": "", # To be filled
+                        "Group": course_config.get("group", ""), # From courseconfig
+                        "Version": labbuild_course_name, # Main LabBuild course name
+                        "Course Version": course_config.get("course_version", course_config.get("build#", "")), # Specific build/version
+                        "RAM": 0, # To be calculated
+                        "Virtual Hosts": "", # Representative VM
+                        "Ni": 0, "Cl": 0, "Ul": 0, "Un": 0, "Ho": 0, "K2": 0, # Host RAM allocations
+                        "_host_shortname": get_host_shortname(pod_detail.get("host")), # Internal helper
+                        "_original_host_fqdn": pod_detail.get("host")
                     }
-                    filter_criteria = {k: v for k, v in filter_criteria.items() if v is not None and k is not None} # Ensure valid keys/values
 
-                    # Define update data ($set overwrites)
-                    update_data = {"$set": {
-                        # Include all relevant SF fields passed in p_course
-                        "sf_course_type": p_course.get('sf_course_type'), "sf_start_date": p_course.get('sf_start_date'),
-                        "sf_end_date": p_course.get('sf_end_date'), "sf_trainer": p_course.get('sf_trainer'),
-                        "sf_pax": p_course.get('sf_pax'), "sf_pods_req": p_course.get('sf_pods_req'),
-                        # Include build specific fields
-                        "vendor": p_course.get('vendor'),
-                        "labbuild_course": p_course.get('labbuild_course'), # Ensure final name is set
-                        "host_assignments_pods": p_course.get('host_assignments_pods', {}),
-                        "host_assignments_display": p_course.get('host_assignments_display', ''),
-                        "review_timestamp": batch_timestamp,
-                        "status": "pending_review"
-                     }}
-                    bulk_ops.append(UpdateOne(filter_criteria, update_data, upsert=True))
+                    # Determine representative Virtual Host (e.g., first component)
+                    components_list = course_config.get("components", [])
+                    if not components_list and course_config.get("groups"): # F5 structure
+                        for grp in course_config.get("groups",[]): components_list.extend(grp.get("component",[]))
+                    
+                    if components_list:
+                        first_comp = components_list[0]
+                        base_vm_name = first_comp.get("base_vm", first_comp.get("component_name", "N/A"))
+                        excel_row_data["Virtual Hosts"] = base_vm_name
 
-                if bulk_ops:
-                    logger.info(f"Performing {len(bulk_ops)} upsert ops into interimallocation.")
-                    result = interim_alloc_collection.bulk_write(bulk_ops)
-                    inserted = result.upserted_count # More accurate count for inserts via upsert
-                    updated = result.matched_count - inserted # Estimate updated count
-                    logger.info(f"Upsert result: Inserted={inserted}, Matched/Updated={updated}")
-                    flash(f"{inserted} added, {updated} updated for review.", "success")
-                else: flash("No course documents to save/update.", "warning")
-            except BulkWriteError as bwe: logger.error(f"Bulk write error: {bwe.details}", exc_info=True); flash("DB bulk error.", "danger"); save_error_flag = True
-            except PyMongoError as e: logger.error(f"Mongo error upserting: {e}", exc_info=True); flash("DB save error.", "danger"); save_error_flag = True
-            except Exception as e: logger.error(f"Unexpected upsert error: {e}", exc_info=True); flash("Error saving review.", "danger"); save_error_flag = True
 
-        # --- 7. Render the review template ---
-        return render_template(
-            'intermediate_build_review.html',
-            selected_courses=processed_courses_for_review, # Pass final list
-            save_error=save_error_flag,
-            current_theme=current_theme
+                    # Pods, Class, Students calculation
+                    pod_num = pod_detail.get("pod_number")
+                    class_num = pod_detail.get("class_number")
+                    num_student_pods_in_range = 0
+
+                    if vendor_code == "F5" and class_num is not None:
+                        excel_row_data["Class"] = class_num
+                        f5_student_pods = pod_detail.get("pods", [])
+                        if isinstance(f5_student_pods, list):
+                            excel_row_data["Students"] = len(f5_student_pods)
+                            excel_row_data["Vendor Pods"] = ", ".join(sorted([str(p.get("pod_number")) for p in f5_student_pods if p.get("pod_number") is not None]))
+                            num_student_pods_in_range = len(f5_student_pods)
+                        # For F5, "Start/End Pod" in Excel might refer to the class number itself if no student pods, or range of student pods
+                        excel_row_data["Start/End Pod"] = str(class_num) if not f5_student_pods else f"{min(p['pod_number'] for p in f5_student_pods)}-{max(p['pod_number'] for p in f5_student_pods)}"
+
+                    elif pod_num is not None: # Non-F5 or F5 student pod without class context (unlikely from your data)
+                        # The image for PA/CP shows Start/End Pod as a range.
+                        # This pod_detail from currentallocation is often a single pod_number from build.
+                        # We need to infer the original range if this is a student pod.
+                        # For simplicity here, if it's a single pod, Start/End will be the same.
+                        # Your "-TP" logic might override this.
+                        excel_row_data["Start/End Pod"] = f"{pod_num} -> {pod_num}" # Default if range not obvious from this single entry
+                        excel_row_data["Students"] = 1 # Assume 1 student per basic pod_detail entry unless grouped
+                        excel_row_data["Vendor Pods"] = str(pod_num)
+                        num_student_pods_in_range = 1
+                    
+                    # Override Start/End Pod for Trainer Pods (often a different range)
+                    if is_trainer_pod:
+                        # Trainer pods often have a specific range in their tag or pre-defined
+                        # This part needs logic to correctly parse trainer pod ranges from tag or config
+                        # Example: If tag "COURSE-TP-101-102"
+                        tp_range_match = re.search(r'-(\d+)-(\d+)$', tag_name)
+                        if tp_range_match:
+                            excel_row_data["Start/End Pod"] = f"{tp_range_match.group(1)} -> {tp_range_match.group(2)}"
+                            excel_row_data["Students"] = int(tp_range_match.group(2)) - int(tp_range_match.group(1)) + 1
+                        else: # Fallback if TP range not in tag
+                            excel_row_data["Start/End Pod"] = f"{pod_num} -> {pod_num}" if pod_num else "N/A"
+                            excel_row_data["Students"] = 1 if pod_num else 0
+                        excel_row_data["Username"] = course_config.get("trainer_user", excel_row_data["Username"])
+                        excel_row_data["Password"] = course_config.get("trainer_password", excel_row_data["Password"])
+
+
+                    # Calculate RAM for this row based on number of "student" pods and host
+                    # This is a complex part based on your image.
+                    # The RAM per host (Ni, Cl, etc.) is shown per *course line item*.
+                    # It's the total RAM for the pods in THAT line item on THAT host.
+                    # If a course like CP Maestro is split (e.g. 2 pods on Unicron, 1 on Hotshot),
+                    # it appears as multiple lines in your Excel for the same "Course Job Code".
+                    
+                    ram_per_pod_from_config = float(course_config.get("memory_gb_per_pod", course_config.get("memory", 0)))
+                    if isinstance(ram_per_pod_from_config, str) : # handle if memory is string
+                        try: ram_per_pod_from_config = float(ram_per_pod_from_config)
+                        except ValueError: ram_per_pod_from_config = 0.0
+                    
+                    calculated_ram_for_row = ram_per_pod_from_config * num_student_pods_in_range if num_student_pods_in_range > 0 else ram_per_pod_from_config # if 0 students, maybe it's a single entity ram
+                    if is_trainer_pod: # Trainer pods might have different RAM or count as 1 entity
+                        calculated_ram_for_row = ram_per_pod_from_config # Assuming trainer pod RAM is per entity
+                        
+                    excel_row_data["RAM"] = calculated_ram_for_row
+                    
+                    host_short_key = excel_row_data["_host_shortname"]
+                    if host_short_key in ["Ni", "Cl", "Ul", "Un", "Ho", "K2"]:
+                        excel_row_data[host_short_key] = calculated_ram_for_row
+                    
+                    processed_data_by_vendor[vendor_code].append(excel_row_data)
+
+        # --- Write to Excel ---
+        # Define vendor order for sheet
+        vendor_display_order = ["PA", "CP", "NU", "F5", "AV", "PR", "OT"] # Add others as needed
+
+        for vendor_code_ordered in vendor_display_order:
+            if vendor_code_ordered not in processed_data_by_vendor:
+                continue
+            
+            vendor_specific_data = processed_data_by_vendor[vendor_code_ordered]
+            if not vendor_specific_data:
+                continue
+
+            # Vendor Section Title (e.g., "PA Courses")
+            title_cell = ws.cell(row=current_row, column=1, value=f"{vendor_code_ordered} Courses")
+            ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=len(main_headers))
+            set_cell_style(title_cell, bold=True, fill_color=header_fill_color, alignment_horizontal="left", font_size=12)
+            current_row += 1
+
+            # Write Main Headers for this vendor section
+            for col_idx, header_text in enumerate(main_headers, start=1):
+                cell = ws.cell(row=current_row, column=col_idx, value=header_text if header_text is not None else "")
+                set_cell_style(cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center", wrap_text=True, font_size=10)
+            current_row += 1
+            
+            vendor_total_pods_count = 0
+
+            for item_data in vendor_specific_data:
+                col_offset = 0
+                for header_key in main_headers: # Iterate based on header order
+                    if header_key is None: # For the "->" arrow column
+                        ws.cell(row=current_row, column=col_offset + 1, value="->")
+                        set_cell_style(ws.cell(row=current_row, column=col_offset + 1), border_style="thin", alignment_horizontal="center")
+                    elif header_key == "Start/End Pod": # Special handling for combined field
+                         cell_val = item_data.get(header_key, "")
+                         ws.cell(row=current_row, column=col_offset + 1, value=str(cell_val).split(" -> ")[0] if " -> " in str(cell_val) else str(cell_val) ) # Start
+                         set_cell_style(ws.cell(row=current_row, column=col_offset + 1), border_style="thin", alignment_horizontal="center")
+                         # Arrow in next column (which was None in headers)
+                         ws.cell(row=current_row, column=col_offset + 2, value="->")
+                         set_cell_style(ws.cell(row=current_row, column=col_offset + 2), border_style="thin", alignment_horizontal="center")
+                         # End pod value in column after arrow
+                         ws.cell(row=current_row, column=col_offset + 3, value=str(cell_val).split(" -> ")[1] if " -> " in str(cell_val) else "")
+                         set_cell_style(ws.cell(row=current_row, column=col_offset + 3), border_style="thin", alignment_horizontal="center")
+                         col_offset += 1 # Account for the extra column used by "->" and end pod
+                    else:
+                        cell_val = item_data.get(header_key, "")
+                        ws.cell(row=current_row, column=col_offset + 1, value=cell_val)
+                        align_h = "center" if header_key in ["Class", "Students", "Vendor Pods", "RAM", "Ni","Cl","Ul","Un","Ho","K2"] else "left"
+                        set_cell_style(ws.cell(row=current_row, column=col_offset + 1), border_style="thin", alignment_horizontal=align_h, alignment_vertical="top", wrap_text=True)
+                    col_offset += 1
+                current_row += 1
+                
+                # Accumulate pods for vendor total (using "Students" count for now, needs refinement)
+                try: vendor_total_pods_count += int(item_data.get("Students", 0))
+                except ValueError: pass
+
+
+            # Total Pods for Vendor
+            if vendor_specific_data: # Only add total if there was data
+                total_pods_label_cell = ws.cell(row=current_row, column=main_headers.index("Students") + 1 -1, value="Total Pods") # Col before "Students"
+                total_pods_value_cell = ws.cell(row=current_row, column=main_headers.index("Students") + 1, value=vendor_total_pods_count)
+                
+                set_cell_style(total_pods_label_cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="right")
+                set_cell_style(total_pods_value_cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center")
+                
+                # Merge cells for "Total Pods" label across preceding columns
+                label_col_start_merge = 1
+                label_col_end_merge = main_headers.index("Students") + 1 - 2 # Up to column before label
+                if label_col_end_merge >= label_col_start_merge:
+                     ws.merge_cells(start_row=current_row, start_column=label_col_start_merge, end_row=current_row, end_column=label_col_end_merge)
+                     for c_merge in range(label_col_start_merge, label_col_end_merge + 1):
+                        set_cell_style(ws.cell(row=current_row, column=c_merge), fill_color=header_fill_color, border_style="thin")
+                
+                # Style remaining cells in total row
+                ram_col_idx = main_headers.index("RAM") +1
+                host_ram_cols_start_idx = main_headers.index("Ni") + 1
+                
+                # Sum RAM for hosts in this vendor section
+                host_ram_sums = defaultdict(float)
+                for item_d in vendor_specific_data:
+                    for host_s_key in ["Ni", "Cl", "Ul", "Un", "Ho", "K2"]:
+                        try: host_ram_sums[host_s_key] += float(item_d.get(host_s_key, 0))
+                        except ValueError: pass
+                
+                # Write summed host RAM
+                ws.cell(row=current_row, column=ram_col_idx, value=sum(host_ram_sums.values())) # Total RAM column
+                set_cell_style(ws.cell(row=current_row, column=ram_col_idx), bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center")
+
+
+                for i_host_key, host_s_key_val in enumerate(["Ni", "Cl", "Ul", "Un", "Ho", "K2"]):
+                    cell = ws.cell(row=current_row, column=host_ram_cols_start_idx + i_host_key, value=host_ram_sums[host_s_key_val])
+                    set_cell_style(cell, bold=True, fill_color=header_fill_color, border_style="thin", alignment_horizontal="center")
+
+                # Style any remaining cells in the total row (e.g. Virtual Hosts)
+                for c_empty_total in range(main_headers.index("Vendor Pods") + 2, ram_col_idx): # Cols between Vendor Pods and RAM
+                    set_cell_style(ws.cell(row=current_row, column=c_empty_total), fill_color=header_fill_color, border_style="thin")
+                for c_empty_total_after in range(host_ram_cols_start_idx + len(["Ni", "Cl", "Ul", "Un", "Ho", "K2"]), len(main_headers) + 1): # After last host RAM col
+                    set_cell_style(ws.cell(row=current_row, column=c_empty_total_after), fill_color=header_fill_color, border_style="thin")
+
+
+                current_row += 1
+            current_row += 2 # Extra space between vendor blocks
+
+        # --- Auto-size columns (basic fit) ---
+        # This is a basic auto-size, might not be perfect for merged cells or very long content.
+        # Set specific widths for better control if needed.
+        column_widths_map = {
+            'A': 20, 'B': 12, 'C': 12, 'D': 15, 'E': 22, 'F': 50, # Course Job Code to Course Name
+            'G': 12, 'H': 3, 'I': 12, # Start/End Pod, Arrow, End Pod, Username
+            'J': 12, 'K': 7, 'L': 7, 'M': 15, # Password, Class, Students, Vendor Pods
+            'N': 25, 'O': 25, 'P': 25, # Group, Version, Course Version
+            'Q': 7, 'R': 30, # RAM, Virtual Hosts
+            'S': 4, 'T': 4, 'U': 4, 'V': 4, 'W': 4, 'X': 4 # Ni, Cl, Ul, Un, Ho, K2
+        }
+        for col_letter, width in column_widths_map.items():
+            ws.column_dimensions[col_letter].width = width
+        # Example for specific columns from your image:
+        # ws.column_dimensions['A'].width = 20 # Course Job Code
+        # ws.column_dimensions['F'].width = 60 # Course Name
+        # ... and so on for all 24 columns ...
+
+        excel_buffer = io.BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+
+        logger.info("Excel export generated successfully (new format).")
+        return send_file(
+            excel_buffer,
+            as_attachment=True,
+            download_name="labbuild_allocations_detailed.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # --- Outer Exception Handling ---
     except Exception as e:
-        logger.error(f"Critical error in intermediate_build_review route: {e}", exc_info=True)
-        flash("An unexpected error occurred preparing the build review.", "danger")
-        # Redirect back to the page where selection happened
-        return redirect(url_for('main.view_upcoming_courses'))
+        logger.error(f"Error generating detailed Excel export: {e}", exc_info=True)
+        flash("Error generating detailed Excel export. Please check server logs.", "danger")
+        return redirect(url_for('main.view_allocations'))
+
+
+def _generate_random_password(length=8) -> str:
+    """Generates a random numeric password of specified length."""
+    return "".join(random.choice(string.digits) for _ in range(length))
+
+def _create_contiguous_ranges(pod_numbers: List[Union[int,str]]) -> str:
+    """
+    Converts a list of pod numbers (can be int or string)
+    into a comma-separated string of contiguous ranges.
+    Example: [1, 2, 3, '5', 6, 8] -> "1-3,5-6,8"
+    """
+    if not pod_numbers:
+        return ""
+    
+    processed_pod_numbers: List[int] = []
+    for p in pod_numbers:
+        try:
+            processed_pod_numbers.append(int(p))
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert pod number '{p}' to int in _create_contiguous_ranges. Skipping.")
+            continue
+    
+    if not processed_pod_numbers:
+        return ""
+    
+    pod_numbers_sorted_unique = sorted(list(set(processed_pod_numbers)))
+    if not pod_numbers_sorted_unique: # Should be redundant if processed_pod_numbers is checked
+        return ""
+
+    ranges = []
+    start_range = pod_numbers_sorted_unique[0]
+    end_range = pod_numbers_sorted_unique[0]
+
+    for i in range(1, len(pod_numbers_sorted_unique)):
+        if pod_numbers_sorted_unique[i] == end_range + 1:
+            end_range = pod_numbers_sorted_unique[i]
+        else:
+            if start_range == end_range:
+                ranges.append(str(start_range))
+            else:
+                ranges.append(f"{start_range}-{end_range}")
+            start_range = pod_numbers_sorted_unique[i]
+            end_range = pod_numbers_sorted_unique[i]
+    
+    # Add the last range
+    if start_range == end_range:
+        ranges.append(str(start_range))
+    else:
+        ranges.append(f"{start_range}-{end_range}")
+        
+    return ",".join(ranges)
+
+
+@bp.route('/generate-apm-commands', methods=['POST'])
+def generate_apm_commands_route():
+    batch_review_id_req = request.json.get('batch_review_id') # For context/logging
+    logger.info(f"--- APM Command Generation Route Called (Batch ID context: {batch_review_id_req}) ---")
+
+    # Fetch necessary current data for the APM logic helper
+    current_apm_entries_route: Dict[str, Dict[str, Any]] = {}
+    try:
+        apm_list_url_route = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
+        response_route = requests.get(apm_list_url_route, timeout=15); response_route.raise_for_status()
+        current_apm_entries_route = response_route.json()
+    except Exception as e_route: 
+        logger.error(f"APM Route: Error fetching current APM entries: {e_route}")
+        return jsonify({"commands": ["# ERROR: Could not fetch current APM entries from server."], "message": f"Error fetching current APM: {e_route}", "error": True}), 500
+
+    extended_apm_codes_route: Set[str] = set()
+    try: # Fetch extended codes
+        if alloc_collection is not None:
+            cursor_route = alloc_collection.find({"extend": "true"}, {"tag": 1, "courses.apm_vpn_auth_course_code": 1, "_id": 0})
+            for doc_route in cursor_route:
+                found_route = False;
+                for ca_route in doc_route.get("courses",[]):
+                    if ca_route.get("apm_vpn_auth_course_code"): extended_apm_codes_route.add(ca_route["apm_vpn_auth_course_code"]); found_route=True
+                if not found_route and doc_route.get("tag"): extended_apm_codes_route.add(doc_route.get("tag"))
+    except PyMongoError as e_ext_route: logger.error(f"APM Route: Error fetching extended: {e_ext_route}")
+
+    plan_items_for_route_apm: List[Dict] = []
+    if interim_alloc_collection is not None:
+        try:
+            # Fetch all confirmed items, as batch_id might be lost if user reloads final review page
+            # Or, if JS always sends batch_id, use it:
+            query_filter_route = {"status": {"$in": ["student_confirmed", "trainer_confirmed"]}}
+            if batch_review_id_req: # If JS sends it, use it to scope.
+                 query_filter_route["batch_review_id"] = batch_review_id_req
+            plan_cursor_route = interim_alloc_collection.find(query_filter_route)
+            plan_items_for_route_apm = list(plan_cursor_route)
+        except PyMongoError as e_plan_route:
+            logger.error(f"APM Route: Error fetching plan items: {e_plan_route}")
+            return jsonify({"commands": ["# ERROR: Could not fetch build plan."], "message": f"DB error: {e_plan_route}", "error": True}), 500
+    
+    # Call the refactored APM logic
+    all_commands, _, apm_errors = _generate_apm_data_for_plan(
+        plan_items_for_route_apm,
+        current_apm_entries_route,
+        extended_apm_codes_route
+    )
+    
+    num_actual_adds = sum(1 for cmd in all_commands if " add " in cmd)
+    num_actual_deletes = sum(1 for cmd in all_commands if " del " in cmd)
+    num_actual_updates = len(all_commands) - num_actual_adds - num_actual_deletes
+    final_message = f"Generated {len(all_commands)} APM commands ({num_actual_deletes} deletions, {num_actual_adds} adds, {num_actual_updates} field updates)."
+
+    if apm_errors:
+        final_message = "Errors occurred during APM generation: " + " | ".join(apm_errors) + ". " + final_message
+        return jsonify({"commands": ["# Errors occurred. Review messages and generated commands.", *apm_errors, *all_commands], "message": final_message, "error": True}), 200
+    if not all_commands: return jsonify({"commands": ["# No APM changes identified."], "message": "No APM changes identified."})
+    
+    logger.info(f"APM Route: Command Generation Successful. {final_message}")
+    return jsonify({"commands": all_commands, "message": final_message})

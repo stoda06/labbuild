@@ -6,6 +6,9 @@ import subprocess
 import shlex
 import logging
 import time
+import datetime
+import pytz # For timezone-aware datetimes
+from pymongo.errors import PyMongoError
 
 # Ensure project root is in path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,6 +16,105 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 logger = logging.getLogger('dashboard.tasks')
+
+DEFAULT_LOG_RETENTION_DAYS = 90 # Keep logs for 90 days by default
+
+def purge_old_mongodb_logs(retention_days: int = DEFAULT_LOG_RETENTION_DAYS):
+    """
+    Purges documents older than 'retention_days' from specified MongoDB log collections.
+    """
+    # It's better for scheduled tasks to manage their own DB connections
+    # rather than relying on global Flask app extension objects if run in a separate thread.
+    # However, if APScheduler is tightly integrated and jobs can access Flask's app context,
+    # you *might* be able to use `current_app.extensions['pymongo'].db` or similar.
+    # For robustness, let's create a new client instance here.
+
+    from dashboard.extensions import mongo_client_app, DB_NAME, OPERATION_LOG_COLLECTION, LOG_COLLECTION
+
+    if not mongo_client_app: # Check if the app's client was initialized
+        logger.error("MongoDB client (mongo_client_app) not available for log purging.")
+        # As a fallback, try to create a new one if MONGO_URI is available
+        from db_utils import MONGO_URI as TOP_LEVEL_MONGO_URI # Get global MONGO_URI
+        if TOP_LEVEL_MONGO_URI:
+            try:
+                from pymongo import MongoClient
+                client = MongoClient(TOP_LEVEL_MONGO_URI, serverSelectionTimeoutMS=5000)
+                client.admin.command('ping') # Test connection
+                db = client[DB_NAME]
+                logger.info("Log Purge: Successfully connected to MongoDB using new client.")
+            except Exception as e:
+                logger.error(f"Log Purge: Failed to create new MongoDB client: {e}")
+                return
+        else:
+            logger.error("Log Purge: MONGO_URI not available, cannot create new client.")
+            return
+    else: # Use the app's client if available (e.g., if called within app context)
+        db = mongo_client_app[DB_NAME]
+        client = mongo_client_app # For closing later if we created it above
+
+    op_logs_coll = db[OPERATION_LOG_COLLECTION]
+    std_logs_coll = db[LOG_COLLECTION]
+    
+    collections_to_purge = {
+        "operation_logs": op_logs_coll,
+        "standard_logs (detailed)": std_logs_coll
+    }
+
+    cutoff_date = datetime.datetime.now(pytz.utc) - datetime.timedelta(days=retention_days)
+    logger.info(f"Starting log purge. Deleting documents older than {retention_days} days (before {cutoff_date.strftime('%Y-%m-%d %H:%M:%S %Z')}).")
+
+    total_deleted_op_logs = 0
+    total_deleted_std_logs = 0
+
+    # Purge Operation Logs (based on 'start_time' or 'end_time')
+    try:
+        # Try to use 'end_time' first, as completed runs will have it.
+        # For 'running' or very old entries without 'end_time', use 'start_time'.
+        query_op_logs = {
+            "$or": [
+                {"end_time": {"$lt": cutoff_date}},
+                {"end_time": None, "start_time": {"$lt": cutoff_date}} # Also purge very old 'running' logs
+            ]
+        }
+        result = op_logs_coll.delete_many(query_op_logs)
+        total_deleted_op_logs = result.deleted_count
+        logger.info(f"Purged {total_deleted_op_logs} documents from '{OPERATION_LOG_COLLECTION}'.")
+    except PyMongoError as e:
+        logger.error(f"Error purging '{OPERATION_LOG_COLLECTION}': {e}")
+    except Exception as e_gen:
+        logger.error(f"Unexpected error purging '{OPERATION_LOG_COLLECTION}': {e_gen}", exc_info=True)
+
+
+    # Purge Standard Detailed Logs (based on 'first_log_time' or 'last_log_time')
+    # The 'logs' collection stores an array of messages per run_id.
+    # We should delete entire documents where the run is old.
+    try:
+        # Delete documents where the 'last_log_time' is older than the cutoff,
+        # OR if 'last_log_time' doesn't exist but 'first_log_time' is older (for incomplete runs).
+        query_std_logs = {
+             "$or": [
+                {"last_log_time": {"$lt": cutoff_date}},
+                {"last_log_time": None, "first_log_time": {"$lt": cutoff_date}}
+            ]
+        }
+        result_std = std_logs_coll.delete_many(query_std_logs)
+        total_deleted_std_logs = result_std.deleted_count
+        logger.info(f"Purged {total_deleted_std_logs} documents from '{LOG_COLLECTION}'.")
+    except PyMongoError as e:
+        logger.error(f"Error purging '{LOG_COLLECTION}': {e}")
+    except Exception as e_gen:
+        logger.error(f"Unexpected error purging '{LOG_COLLECTION}': {e_gen}", exc_info=True)
+
+    logger.info(f"Log purge completed. Total Operation Logs deleted: {total_deleted_op_logs}. Total Standard Log Documents deleted: {total_deleted_std_logs}.")
+
+    # Close client only if we created it in this function
+    if 'client' in locals() and client != mongo_client_app:
+        try:
+            client.close()
+            logger.info("Log Purge: Closed new MongoDB client connection.")
+        except Exception as e_close:
+            logger.error(f"Log Purge: Error closing new MongoDB client: {e_close}")
+
 
 # --- Core Task Execution Function ---
 def run_labbuild_task(args_list):

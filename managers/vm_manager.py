@@ -4,6 +4,8 @@ from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import re
+from typing import Optional
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1461,3 +1463,43 @@ class VmManager(VCenter):
         if not ips:
             self.logger.warning(f"No IP addresses reported for VM '{vm_name}'.")
         return ips
+    
+    # In VmManager class
+    def get_latest_snapshot_name(self, vm_obj_or_name) -> Optional[str]:
+        vm = None
+        if isinstance(vm_obj_or_name, str):
+            vm = self.get_obj([vim.VirtualMachine], vm_obj_or_name)
+        elif isinstance(vm_obj_or_name, vim.VirtualMachine): # type: ignore
+            vm = vm_obj_or_name
+        
+        if not vm or not vm.snapshot:
+            self.logger.debug(f"VM {getattr(vm, 'name', vm_obj_or_name)} has no snapshots. Defaulting to 'base' for increment.")
+            return "base" 
+
+        # This is a very simplified way to get "latest" by name pattern, not by time.
+        # It assumes snapshots are named like 'snap-1', 'snap-2' etc.
+        latest_name = "base"
+        highest_num = 0
+        
+        # Recursive helper to find the highest numbered snapshot matching a pattern
+        def find_highest_numbered_snap(snapshot_list, current_highest_name, current_highest_num):
+            for snap_info in snapshot_list:
+                match = re.search(r'^(.*[^\d-])(\d+)$', snap_info.name)
+                if match:
+                    num = int(match.group(2))
+                    if num > current_highest_num:
+                        current_highest_num = num
+                        current_highest_name = snap_info.name
+                # If no number, but current_highest_name is still default "base", take this one
+                elif current_highest_name == "base" and current_highest_num == 0:
+                    current_highest_name = snap_info.name
+
+                if snap_info.childSnapshotList: # Recurse
+                    current_highest_name, current_highest_num = find_highest_numbered_snap(
+                        snap_info.childSnapshotList, current_highest_name, current_highest_num
+                    )
+            return current_highest_name, current_highest_num
+
+        latest_name, _ = find_highest_numbered_snap(vm.snapshot.rootSnapshotList, latest_name, highest_num)
+        self.logger.debug(f"Determined latest snapshot name for {vm.name} as '{latest_name}'.")
+        return latest_name
