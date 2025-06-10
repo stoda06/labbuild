@@ -5,52 +5,9 @@
 
 {% block head %}
     {{ super() }}
-    <style>
-        .review-table th, .review-table td { 
-            font-size: 0.85rem; 
-            vertical-align: middle; 
-        }
-        .col-sf-code { width: 130px; }
-        .col-lb-course { width: 160px; }
-        .col-vendor { width: 60px; text-align: center; }
-        .col-interactive-assignments { min-width: 450px; } 
-        .col-total-interactive-memory { width: 110px; text-align: right; font-weight: bold; }
-        
-        .assignment-sub-row { 
-            display: flex; 
-            align-items: center; 
-            gap: 0.4rem; 
-            margin-bottom: 0.25rem; 
-            padding: 0.1rem 0; 
-        }
-        .assignment-sub-row:last-of-type { margin-bottom: 0; }
-        .sub-host-select { flex: 2; min-width: 120px; max-width: 150px; } 
-        .sub-pod-input { flex: 0.8; min-width: 55px; max-width: 65px; text-align: center;} 
-        .sub-row-actions { flex-shrink: 0; display: flex; align-items: center; }
-        .sub-row-actions .btn { 
-            padding: 0.1rem 0.2rem; font-size: 1rem; line-height: 1;
-            border: none; background: none; cursor: pointer; 
-            display: inline-flex; align-items: center; justify-content: center;
-        }
-        .sub-row-actions .btn + .btn { margin-left: 0.2rem; }
-        .form-control.is-invalid, .form-select.is-invalid { border-color: var(--bs-danger); }
-        
-        .remove-assignment-btn .fa-circle-xmark { color: var(--bs-danger); }
-        body.dark-mode .remove-assignment-btn .fa-circle-xmark { color: #ff8a80; } 
-        .add-assignment-btn-inline .fa-circle-plus { color: var(--bs-success); }
-        body.dark-mode .add-assignment-btn-inline .fa-circle-plus { color: #81c784; }
-        .add-assignment-btn-main { font-size: 0.8rem; padding: 0.2rem 0.4rem; }
-
-        .assignment-warning-icon {
-            color: var(--bs-warning);
-            margin-left: 8px;
-            cursor: help;
-        }
-        body.dark-mode .assignment-warning-icon {
-             color: var(--status-warning-dark-text);
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/intermediate_build_review.css') }}">
 {% endblock %}
+
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -62,7 +19,7 @@
     </a>
 </div>
 
-{% if save_error %} {# From Python route if initial save to interim fails #}
+{% if save_error %}
     <div class="alert alert-danger" role="alert">
       <strong>Database Error:</strong> Failed to save initial review data. Please try selecting courses again.
     </div>
@@ -77,7 +34,7 @@
                 <table class="table table-sm table-striped table-bordered review-table" id="studentReviewTable">
                     <thead class="table-light">
                         <tr>
-                            <th class="col-sf-code">SF Course Code</th>
+                            <th class="col-sf-code">SF Course / Class #</th>
                             <th class="col-lb-course">LabBuild Course</th>
                             <th class="col-vendor">Vendor</th>
                             <th class="col-interactive-assignments">Proposed Host & Pod Assignments</th>
@@ -86,31 +43,34 @@
                     </thead>
                     <tbody>
                         {% for course in selected_courses %}
-                        {# Each course has its own interim_doc_id from the backend #}
                         <tr class="student-course-row" 
-                            data-interim-doc-id="{{ course.interim_doc_id or course._id }}" {# Use interim_doc_id if passed, else _id #}
-                            data-labbuild-course="{{ course.final_labbuild_course_student }}" 
+                            data-interim-doc-id="{{ course.interim_doc_id }}"
+                            data-labbuild-course="{{ course.final_labbuild_course_student or '' }}" 
                             data-memory-one-pod="{{ course.memory_gb_one_student_pod | default(0.0) }}"
                             data-sf-course-code="{{ course.sf_course_code }}"
                             data-sf-pods-req="{{ course.effective_pods_req_student | default(1) }}" 
-                            data-vendor="{{ course.vendor }}">
+                            data-vendor="{{ course.vendor }}"
+                            data-f5-class-number="{{ course.f5_class_number or '' }}">
 
                             <td class="col-sf-code">
                                 {{ course.sf_course_code }}
+                                {% if course.vendor == 'f5' and course.f5_class_number %}
+                                    <br><small class="text-info">Class #: <strong>{{ course.f5_class_number }}</strong></small>
+                                {% endif %}
                                 {% if course.student_assignment_warning %}
                                 <span class="assignment-warning-icon" title="{{ course.student_assignment_warning }}">
                                     <i class="fas fa-exclamation-triangle"></i>
                                 </span>
                                 {% endif %}
                             </td>
-                            <td class="col-lb-course">{{ course.final_labbuild_course_student }}</td>
+                            <td class="col-lb-course">{{ course.final_labbuild_course_student or 'N/A' }}</td>
                             <td class="col-vendor">{{ course.vendor | upper if course.vendor else 'N/A' }}</td>
                             
                             <td class="col-interactive-assignments interactive-assignments-cell">
                                 <div class="assignment-sub-rows-container">
                                     {% for sub_row_data in course.initial_interactive_sub_rows_student %}
                                     <div class="assignment-sub-row">
-                                        <select name="host_assignment_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_{{ loop.index0 }}" class="form-select form-select-sm sub-host-select">
+                                        <select name="host_assignment_{{ loop.index0 }}" class="form-select form-select-sm sub-host-select">
                                             <option value="">-- Host --</option>
                                             {% for host_name_opt in all_hosts %}
                                             <option value="{{ host_name_opt }}" {% if sub_row_data.host == host_name_opt %}selected{% endif %}>
@@ -118,20 +78,20 @@
                                             </option>
                                             {% endfor %}
                                         </select>
-                                        <input type="number" name="start_pod_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_{{ loop.index0 }}" 
+                                        <input type="number" name="start_pod_{{ loop.index0 }}" 
                                                class="form-control form-control-sm sub-pod-input start-pod-input" 
                                                value="{{ sub_row_data.start_pod }}" min="1" placeholder="Start">
-                                        <input type="number" name="end_pod_{{ course.sf_course_code | replace('.', '_') | replace('-', '_') }}_{{ loop.index0 }}" 
+                                        <input type="number" name="end_pod_{{ loop.index0 }}" 
                                                class="form-control form-control-sm sub-pod-input end-pod-input" 
                                                value="{{ sub_row_data.end_pod }}" min="1" placeholder="End">
                                         <div class="sub-row-actions">
                                             <button type="button" class="btn remove-assignment-btn" title="Remove this assignment segment"><i class="fa-solid fa-circle-xmark"></i></button>
-                                            <button type="button" class="btn add-assignment-btn-inline" title="Add another assignment segment for this course"><i class="fa-solid fa-circle-plus"></i></button>
+                                            <button type="button" class="btn add-assignment-btn-inline" title="Add another assignment segment"><i class="fa-solid fa-circle-plus"></i></button>
                                         </div>
                                     </div>
-                                    {% else %} {# Fallback if initial_interactive_sub_rows_student is empty #}
-                                        <div class="text-muted small">No initial assignments proposed by auto-allocator. Please add one.</div>
-                                        <button type="button" class="btn btn-sm btn-outline-success add-assignment-btn-main mt-1" title="Add first assignment for this course">
+                                    {% else %}
+                                        <div class="text-muted small">No assignments proposed. Please add one.</div>
+                                        <button type="button" class="btn btn-sm btn-outline-success add-assignment-btn-main mt-1" title="Add first assignment">
                                             <i class="fa-solid fa-circle-plus me-1"></i>Add Assignment Segment
                                         </button>
                                     {% endfor %}
@@ -151,11 +111,11 @@
                      <input type="hidden" name="final_build_plan" id="finalStudentBuildPlanInput">
                      <input type="hidden" name="batch_review_id" value="{{ batch_review_id }}">
                      <button type="submit" class="btn btn-lg btn-success" 
-                             title="Finalize these student pod assignments and proceed to trainer pod allocation.">
-                         <i class="fas fa-arrow-right"></i> Confirm Student Assignments & Proceed to Trainer Pods
+                             title="Finalize assignments and proceed to trainer pod allocation.">
+                         <i class="fas fa-arrow-right"></i> Confirm & Proceed
                      </button>
                      <a href="{{ url_for('main.view_upcoming_courses') }}" 
-                        onclick="return confirm('Are you sure you want to cancel? All proposed assignments for this batch will be discarded.');"
+                        onclick="return confirm('Are you sure you want to cancel? All proposed assignments will be discarded.');"
                         class="btn btn-lg btn-secondary ms-2">
                         Cancel Batch
                     </a>
@@ -163,13 +123,13 @@
             </div>
 
         {% else %}
-            <div class="alert alert-warning"> No courses were processed for student pod review. Please go back and select courses. </div>
+            <div class="alert alert-warning"> No courses were processed. Please go back and select courses. </div>
              <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary">Back to Upcoming Courses</a>
         {% endif %}
     </div> 
 </div> 
 
-{# Embedded data for JavaScript (used by client-side calculations and interactions) #}
+{# Embedded data for JavaScript #}
 <script id="allHostsDataStudentReview" type="application/json">
     {{ all_hosts | tojson | safe }}
 </script>
@@ -184,266 +144,5 @@
 
 {% block scripts %}
     {{ super() }}
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const studentReviewTableEl = document.getElementById('studentReviewTable');
-        if (!studentReviewTableEl) {
-            console.warn("Student review table element not found.");
-            return;
-        }
-
-        // --- Load data from script tags ---
-        let ALL_HOSTS_LIST_STUDENT = []; 
-        let COURSE_MEMORY_STORE_STUDENT = []; 
-        let MEMORY_FACTOR_STUDENT = 0.5; 
-
-        try { 
-            ALL_HOSTS_LIST_STUDENT = JSON.parse(document.getElementById('allHostsDataStudentReview')?.textContent || '[]');
-            COURSE_MEMORY_STORE_STUDENT = JSON.parse(document.getElementById('courseMemoryDataStudentReview')?.textContent || '[]');
-            MEMORY_FACTOR_STUDENT = JSON.parse(document.getElementById('memoryFactorDataStudentReview')?.textContent || '{"factor":0.5}').factor;
-        } catch (e) { console.error("Error parsing embedded data for student review page:", e); }
-
-        // --- Helper to get memory for a LabBuild course ---
-        function getLbCourseMemoryStudent(lbCourseName) {
-            if (!lbCourseName || !COURSE_MEMORY_STORE_STUDENT.length) return 0;
-            const config = COURSE_MEMORY_STORE_STUDENT.find(c => c.course_name === lbCourseName);
-            if (config) {
-                const memValStr = config.memory_gb_per_pod !== undefined ? String(config.memory_gb_per_pod) : String(config.memory);
-                const parsedMem = parseFloat(memValStr);
-                return !isNaN(parsedMem) && parsedMem >= 0 ? parsedMem : 0;
-            }
-            return 0;
-        }
-
-        // --- Calculate memory for a single assignment sub-row ---
-        function calculateSubRowMemoryStudent(subRowEl) {
-            const mainRow = subRowEl.closest('tr.student-course-row');
-            if (!mainRow) return 0; 
-            const memoryPerSinglePod = parseFloat(mainRow.dataset.memoryOnePod);
-            const startPodInput = subRowEl.querySelector('.start-pod-input');
-            const endPodInput = subRowEl.querySelector('.end-pod-input');
-            
-            if (!startPodInput || !endPodInput || isNaN(memoryPerSinglePod) || memoryPerSinglePod <= 0) return 0;
-
-            let startVal = parseInt(startPodInput.value, 10);
-            let endVal = parseInt(endPodInput.value, 10);
-            let isValid = true;
-            
-            startPodInput.classList.toggle('is-invalid', isNaN(startVal) || startVal < 1);
-            if (isNaN(startVal) || startVal < 1) isValid = false;
-            
-            endPodInput.classList.toggle('is-invalid', isNaN(endVal) || endVal < 1 || (!isNaN(startVal) && endVal < startVal));
-            if (isNaN(endVal) || endVal < 1 || (!isNaN(startVal) && endVal < startVal)) isValid = false;
-
-            if (!isValid) return 0;
-            const numPods = endVal - startVal + 1;
-            return numPods >= 1 ? (memoryPerSinglePod + (numPods - 1) * memoryPerSinglePod * MEMORY_FACTOR_STUDENT) : 0;
-        }
-
-        // --- Update total memory display for a main course row ---
-        function updateTotalCourseMemoryStudent(mainCourseRowEl) {
-            let totalCourseMem = 0;
-            mainCourseRowEl.querySelectorAll('.assignment-sub-row').forEach(subRow => {
-                totalCourseMem += calculateSubRowMemoryStudent(subRow); 
-            });
-            const totalDisplayEl = mainCourseRowEl.querySelector('.total-course-memory-display');
-            if (totalDisplayEl) totalDisplayEl.textContent = totalCourseMem.toFixed(2);
-        }
-
-        // --- Manage visibility of add/remove buttons in sub-rows ---
-        function updateActionButtonsVisibilityStudent(interactiveCellEl) {
-            const subRowsContainer = interactiveCellEl.querySelector('.assignment-sub-rows-container');
-            if (!subRowsContainer) return;
-            const subRows = subRowsContainer.querySelectorAll('.assignment-sub-row');
-            const mainAddBtn = interactiveCellEl.querySelector('.add-assignment-btn-main');
-
-            if (subRows.length === 0) {
-                if (mainAddBtn) mainAddBtn.style.display = 'block';
-                return;
-            }
-            if (mainAddBtn) mainAddBtn.style.display = 'none';
-
-            subRows.forEach((subRow, index) => {
-                const removeBtn = subRow.querySelector('.remove-assignment-btn');
-                const addBtnInline = subRow.querySelector('.add-assignment-btn-inline');
-                if (removeBtn) removeBtn.style.display = subRows.length > 1 ? 'inline-flex' : 'none'; // Hide remove if only one row
-                if (addBtnInline) addBtnInline.style.display = (index === subRows.length - 1) ? 'inline-flex' : 'none'; // Show add only on last row
-            });
-        }
-        
-        // --- Create a new sub-row (template) ---
-        function createNewSubRowStudent(mainCourseRowEl, newIndex) {
-            const sfCodeClean = mainCourseRowEl.dataset.sfCourseCode.replace(/\W/g, '');
-            let hostOptionsHtml = '<option value="">-- Host --</option>';
-            ALL_HOSTS_LIST_STUDENT.forEach(host => {
-                hostOptionsHtml += `<option value="${host}">${host}</option>`;
-            });
-
-            const newSubRowDiv = document.createElement('div');
-            newSubRowDiv.className = 'assignment-sub-row';
-            newSubRowDiv.innerHTML = `
-                <select name="host_assignment_${sfCodeClean}_${newIndex}" class="form-select form-select-sm sub-host-select">${hostOptionsHtml}</select>
-                <input type="number" name="start_pod_${sfCodeClean}_${newIndex}" class="form-control form-control-sm sub-pod-input start-pod-input" value="1" min="1" placeholder="Start">
-                <input type="number" name="end_pod_${sfCodeClean}_${newIndex}" class="form-control form-control-sm sub-pod-input end-pod-input" value="1" min="1" placeholder="End">
-                <div class="sub-row-actions">
-                    <button type="button" class="btn remove-assignment-btn" title="Remove this assignment segment"><i class="fa-solid fa-circle-xmark"></i></button>
-                    <button type="button" class="btn add-assignment-btn-inline" title="Add another assignment segment"><i class="fa-solid fa-circle-plus"></i></button>
-                </div>
-            `;
-            return newSubRowDiv;
-        }
-
-        // --- Add event listeners to a sub-row's elements ---
-        function addSubRowListenersStudent(subRowElement) {
-            subRowElement.querySelectorAll('.sub-pod-input, .sub-host-select').forEach(input => {
-                input.addEventListener('input', () => { // 'change' for select, 'input' for number
-                    const mainTr = subRowElement.closest('tr.student-course-row');
-                    if (mainTr) updateTotalCourseMemoryStudent(mainTr);
-                });
-            });
-            
-            const removeBtn = subRowElement.querySelector('.remove-assignment-btn');
-            if (removeBtn) {
-                removeBtn.addEventListener('click', function() {
-                    const mainTr = this.closest('tr.student-course-row'); 
-                    const interactiveCell = this.closest('.interactive-assignments-cell');
-                    this.closest('.assignment-sub-row').remove(); 
-                    if (mainTr && interactiveCell) {
-                        updateTotalCourseMemoryStudent(mainTr); 
-                        updateActionButtonsVisibilityStudent(interactiveCell);
-                    }
-                });
-            }
-
-            const addBtnInline = subRowElement.querySelector('.add-assignment-btn-inline');
-            if (addBtnInline) {
-                addBtnInline.addEventListener('click', function() {
-                    const mainTr = this.closest('tr.student-course-row');
-                    const interactiveCell = this.closest('.interactive-assignments-cell');
-                    const subRowsContainer = interactiveCell.querySelector('.assignment-sub-rows-container');
-                    if (!subRowsContainer || !mainTr) return;
-                    
-                    const newSubRowIndex = subRowsContainer.querySelectorAll('.assignment-sub-row').length;
-                    const newSubRow = createNewSubRowStudent(mainTr, newSubRowIndex);
-                    
-                    subRowsContainer.appendChild(newSubRow);
-                    addSubRowListenersStudent(newSubRow); 
-                    updateTotalCourseMemoryStudent(mainTr); 
-                    updateActionButtonsVisibilityStudent(interactiveCell); 
-                });
-            }
-        }
-        
-        // --- Initialize all course rows ---
-        studentReviewTableEl.querySelectorAll('tbody tr.student-course-row').forEach(mainCourseRow => {
-            const interactiveCell = mainCourseRow.querySelector('.interactive-assignments-cell');
-            if (!interactiveCell) return;
-            const subRowsContainer = interactiveCell.querySelector('.assignment-sub-rows-container');
-            const mainAddBtn = interactiveCell.querySelector('.add-assignment-btn-main');
-
-            if (subRowsContainer) {
-                subRowsContainer.querySelectorAll('.assignment-sub-row').forEach(subRow => {
-                    addSubRowListenersStudent(subRow);
-                });
-            }
-            if (mainAddBtn) { // For the button that adds the *first* segment if none exist
-                mainAddBtn.addEventListener('click', function() {
-                    const mainTr = this.closest('tr.student-course-row');
-                    if (subRowsContainer && mainTr) {
-                         const newSubRow = createNewSubRowStudent(mainTr, 0); // Index 0 for first
-                         subRowsContainer.appendChild(newSubRow);
-                         addSubRowListenersStudent(newSubRow);
-                         updateTotalCourseMemoryStudent(mainTr);
-                         updateActionButtonsVisibilityStudent(interactiveCell); // 'this' button will be hidden
-                    }
-                });
-            }
-            updateTotalCourseMemoryStudent(mainCourseRow); // Initial calculation
-            updateActionButtonsVisibilityStudent(interactiveCell); 
-        });
-
-        // --- Form Submission Logic ---
-        const confirmStudentAssignmentsFormEl = document.getElementById('confirmStudentAssignmentsForm');
-        if (confirmStudentAssignmentsFormEl) {
-            confirmStudentAssignmentsFormEl.addEventListener('submit', function(event) {
-                const finalStudentBuildPlan = [];
-                let isOverallFormValid = true;
-
-                document.querySelectorAll('#studentReviewTable tbody tr.student-course-row').forEach(mainCourseRow => {
-                    if (!isOverallFormValid) return;
-
-                    const sfCode = mainCourseRow.dataset.sfCourseCode;
-                    const courseInteractiveAssignments = [];
-                    let courseTotalMemory = 0;
-
-                    mainCourseRow.querySelectorAll('.assignment-sub-row').forEach(subRow => {
-                        if (!isOverallFormValid) return;
-                        const hostSel = subRow.querySelector('.sub-host-select');
-                        const startPodIn = subRow.querySelector('.start-pod-input');
-                        const endPodIn = subRow.querySelector('.end-pod-input');
-                        
-                        // Trigger validation and memory calculation for this sub-row
-                        const subRowMemory = calculateSubRowMemoryStudent(subRow);
-                        courseTotalMemory += subRowMemory;
-
-                        if (!hostSel.value) {
-                            alert(`Host not selected for an assignment in SF Course: ${sfCode}`);
-                            hostSel.focus(); isOverallFormValid = false; return;
-                        }
-                        if (startPodIn.classList.contains('is-invalid') || endPodIn.classList.contains('is-invalid')) {
-                            alert(`Invalid pod range for an assignment in SF Course: ${sfCode}. Please correct highlighted fields.`);
-                            if (startPodIn.classList.contains('is-invalid')) startPodIn.focus();
-                            else if (endPodIn.classList.contains('is-invalid')) endPodIn.focus();
-                            isOverallFormValid = false; return;
-                        }
-                        const startVal = parseInt(startPodIn.value, 10); 
-                        const endVal = parseInt(endPodIn.value, 10);
-                        courseInteractiveAssignments.push({ host: hostSel.value, start_pod: startVal, end_pod: endVal });
-                    });
-
-                    if (isOverallFormValid) { // Only add if all segments for this course are valid
-                         finalStudentBuildPlan.push({
-                            interim_doc_id: mainCourseRow.dataset.interimDocId, // Pass back the ID
-                            sf_course_code: sfCode,
-                            labbuild_course: mainCourseRow.dataset.labbuildCourse,
-                            vendor: mainCourseRow.dataset.vendor,
-                            memory_gb_one_pod: parseFloat(mainCourseRow.dataset.memoryOnePod),
-                            interactive_assignments: courseInteractiveAssignments,
-                            estimated_memory_gb: parseFloat(mainCourseRow.querySelector('.total-course-memory-display').textContent) || 0,
-                            assignment_warning: mainCourseRow.querySelector('.assignment-warning-icon') ? mainCourseRow.querySelector('.assignment-warning-icon').title : null,
-                            // Pass original SF data fields if needed by trainer pod logic later
-                            sf_start_date: mainCourseRow.dataset.sfStartDate, // Assuming you add these data attributes
-                            sf_end_date: mainCourseRow.dataset.sfEndDate,
-                            sf_trainer: mainCourseRow.dataset.sfTrainer,
-                            sf_pax: mainCourseRow.dataset.sfPax,
-                            sf_pods_req: mainCourseRow.dataset.sfPodsReq
-                        });
-                    }
-                });
-
-                if (!isOverallFormValid) { 
-                    event.preventDefault(); 
-                    console.warn("Student assignment validation errors prevented form submission."); 
-                    return; 
-                }
-                if (finalStudentBuildPlan.length === 0) { 
-                    event.preventDefault(); 
-                    alert("No student assignments defined or all are invalid. Nothing to proceed with."); 
-                    return; 
-                }
-                
-                const finalPlanInputEl = document.getElementById('finalStudentBuildPlanInput');
-                if (finalPlanInputEl) {
-                    finalPlanInputEl.value = JSON.stringify(finalStudentBuildPlan);
-                    console.log("Finalized Student Build Plan (to be POSTed):", finalStudentBuildPlan);
-                } else {
-                    event.preventDefault();
-                    console.error("Hidden input #finalStudentBuildPlanInput not found!");
-                    alert("Internal error: Cannot prepare data for submission.");
-                }
-                // Form will now submit with the hidden input populated
-            });
-        }
-    });
-    </script>
+    <script src="{{ url_for('static', filename='js/intermediate_build_review.js') }}" defer></script>
 {% endblock %}
