@@ -139,7 +139,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
         elif vswitch_result == "RESOURCE_LIMIT":
             logger.warning(f"vSwitch '{switch_name}' hit resource limit. Attempting port group creation on alternate...")
             # Assuming create_vswitch_portgroups handles the resource_limit by finding alternate vSwitch
-            if not network_mgr.create_vswitch_portgroups(host_fqdn_target, switch_name, net_config["port_groups"], pod_number=target_pod_number, resource_limit=vswitch_result):
+            if not network_mgr.create_vswitch_portgroups(host_fqdn_target, switch_name, net_config["port_groups"], resource_limit=vswitch_result):
                  return False, "create_pg_resource_limit_cp", f"Failed creating port groups (resource limit)"
         elif vswitch_result is True: # vSwitch created or already existed
             if not network_mgr.create_vm_port_groups(host_fqdn_target, switch_name, net_config["port_groups"], pod_number=target_pod_number):
