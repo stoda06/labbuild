@@ -46,9 +46,19 @@ def test_environment(args_dict, operation_logger=None):
             "-g", group
         ]
         checkpoint.main(checkpoint_args)
-
-        # ✅ Return dummy success to satisfy labbuild's parsing logic
         return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "pa":
+        from labs.test import palo
+        palo_args = [
+            "-s", str(start),
+            "-e", str(end),
+            "--host", host,
+            "-g", group
+        ]
+        palo.main(palo_args)
+        return [{"status": "success", "pod": start}]
+
     else:
         print(f"Vendor '{vendor}' is not yet supported.")
         return [{"status": "failed", "error": "Unsupported vendor"}]
