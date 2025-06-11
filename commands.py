@@ -59,6 +59,17 @@ def test_environment(args_dict, operation_logger=None):
         palo.main(palo_args)
         return [{"status": "success", "pod": start}]
 
+    elif vendor.lower() == "nu":
+        from labs.test import nu
+        nu_args = [
+            "-s", str(start),
+            "-e", str(end),
+            "--host", host,
+            "-g", group
+        ]
+        nu.main(nu_args)
+        return [{"status": "success", "pod": start}]
+
     else:
         print(f"Vendor '{vendor}' is not yet supported.")
         return [{"status": "failed", "error": "Unsupported vendor"}]
