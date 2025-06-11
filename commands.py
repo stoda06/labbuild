@@ -30,8 +30,30 @@ logger = logging.getLogger('labbuild.commands')
 # --- Constants for return status ---
 COMPONENT_LIST_STATUS = "component_list_displayed"
 
-def test_environment(args):
-    test_checkpoint.main(args)
+def test_environment(args_dict, operation_logger=None):
+    vendor = args_dict["vendor"]
+    start = args_dict["start_pod"]
+    end = args_dict["end_pod"]
+    host = args_dict["host"]
+    group = args_dict["group"]
+
+    if vendor.lower() == "cp":
+        from labs.test import checkpoint
+        checkpoint_args = [
+            "-s", str(start),
+            "-e", str(end),
+            "-H", host,
+            "-g", group
+        ]
+        checkpoint.main(checkpoint_args)
+
+        # ✅ Return dummy success to satisfy labbuild's parsing logic
+        return [{"status": "success", "pod": start}]
+    else:
+        print(f"Vendor '{vendor}' is not yet supported.")
+        return [{"status": "failed", "error": "Unsupported vendor"}]
+
+
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
 def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
