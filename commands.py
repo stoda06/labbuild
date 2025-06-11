@@ -39,35 +39,35 @@ def test_environment(args_dict, operation_logger=None):
 
     if vendor.lower() == "cp":
         from labs.test import checkpoint
-        checkpoint_args = [
-            "-s", str(start),
-            "-e", str(end),
-            "-H", host,
-            "-g", group
-        ]
+        checkpoint_args = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
         checkpoint.main(checkpoint_args)
         return [{"status": "success", "pod": start}]
 
     elif vendor.lower() == "pa":
         from labs.test import palo
-        palo_args = [
-            "-s", str(start),
-            "-e", str(end),
-            "--host", host,
-            "-g", group
-        ]
+        palo_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
         palo.main(palo_args)
         return [{"status": "success", "pod": start}]
 
     elif vendor.lower() == "nu":
         from labs.test import nu
-        nu_args = [
+        nu_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        nu.main(nu_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "f5":
+        classnum = args_dict.get("class_number")
+        if classnum is None:
+            raise ValueError("Missing required argument '--classnum' for vendor 'f5'")
+        from labs.test import f5
+        f5_args = [
             "-s", str(start),
             "-e", str(end),
             "--host", host,
-            "-g", group
+            "-g", group,
+            "--classnum", str(classnum)
         ]
-        nu.main(nu_args)
+        f5.main(f5_args)
         return [{"status": "success", "pod": start}]
 
     else:
