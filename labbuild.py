@@ -120,7 +120,9 @@ def main():
     test_parser.add_argument("-s", "--start_pod", type=int, required=True, help="Start pod number")
     test_parser.add_argument("-e", "--end_pod", type=int, required=True, help="End pod number")
     test_parser.add_argument("-H", "--host", required=True, help="ESXi host name")
-    test_parser.add_argument("-g", "--group", required=True, help="Course group/section") 
+    test_parser.add_argument("-g", "--group", required=True, help="Course group/section")  
+    test_parser.set_defaults(func=test_environment)
+
 
     argcomplete.autocomplete(parser)
 
@@ -151,9 +153,6 @@ def main():
             # No command and not listing
             parser.error("A command (setup, manage, teardown) is required if not using -l.")
     
-    if args.command == 'test':
-        test_environment(args)
-        exit()
 
     # Ensure --test is not used with commands
     if args.test and args.command:
@@ -209,12 +208,11 @@ def main():
 
 
     # --- Handle Course Listing "?" ---
-    if args.course == "?":
+    if hasattr(args, "course") and args.course == "?":
         logger.info(f"Request to list courses for vendor '{args.vendor}'.")
-        # Call list_vendor_courses which handles printing and exiting
         list_vendor_courses(args.vendor)
-        # The above function exits, so code below won't run in this case
-        sys.exit(0) # Explicit exit just in case
+        sys.exit(0)
+
 
 
     # --- Validate Core Arguments for Commands (Conditional) ---
