@@ -115,7 +115,7 @@ def main():
     # -------------------------------
     # Test Subcommand
     # -------------------------------
-    test_parser = subparsers.add_parser("test", help="Run test suite for labs")
+    test_parser = subparsers.add_parser("test", help="Run test suite for labs", parents=[f5_parser])
     test_parser.add_argument("-v", "--vendor", required=True, help="Vendor name")
     test_parser.add_argument("-s", "--start_pod", type=int, required=True, help="Start pod number")
     test_parser.add_argument("-e", "--end_pod", type=int, required=True, help="End pod number")
