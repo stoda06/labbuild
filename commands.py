@@ -6,10 +6,11 @@
 import logging
 import sys
 # argparse is no longer directly needed here, keep for type hints if desired
-# import argparse
+import argparse
 from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 from utils import wait_for_tasks
+from labs.test import checkpoint as test_checkpoint 
 
 # Import local utilities and helpers
 from config_utils import fetch_and_prepare_course_config, extract_components, get_host_by_name
@@ -20,13 +21,59 @@ from operation_logger import OperationLogger
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client
 from monitor.prtg import PRTGManager
 
-import labs.setup.checkpoint as checkpoint
+import labs.setup.checkpoint as checkpoint 
+from labs.test import checkpoint as test_checkpoint 
 import labs.manage.vm_operations as vm_operations
 
 logger = logging.getLogger('labbuild.commands')
 
 # --- Constants for return status ---
 COMPONENT_LIST_STATUS = "component_list_displayed"
+
+def test_environment(args_dict, operation_logger=None):
+    vendor = args_dict["vendor"]
+    start = args_dict["start_pod"]
+    end = args_dict["end_pod"]
+    host = args_dict["host"]
+    group = args_dict["group"]
+
+    if vendor.lower() == "cp":
+        from labs.test import checkpoint
+        checkpoint_args = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
+        checkpoint.main(checkpoint_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "pa":
+        from labs.test import palo
+        palo_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        palo.main(palo_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "nu":
+        from labs.test import nu
+        nu_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        nu.main(nu_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "f5":
+        classnum = args_dict.get("class_number")
+        if classnum is None:
+            raise ValueError("Missing required argument '--classnum' for vendor 'f5'")
+        from labs.test import f5
+        f5_args = [
+            "-s", str(start),
+            "-e", str(end),
+            "--host", host,
+            "-g", group,
+            "--classnum", str(classnum)
+        ]
+        f5.main(f5_args)
+        return [{"status": "success", "pod": start}]
+
+    else:
+        print(f"Vendor '{vendor}' is not yet supported.")
+        return [{"status": "failed", "error": "Unsupported vendor"}]
+
 
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
