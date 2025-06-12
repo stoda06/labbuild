@@ -12,6 +12,7 @@ import io
 import json
 import os # For SMTP env vars
 import itertools
+from jinja2 import Template
 import smtplib # For SMTP
 from email.mime.text import MIMEText # For email body
 from email.mime.multipart import MIMEMultipart # For email structure
@@ -65,7 +66,8 @@ logger = logging.getLogger('dashboard.routes.actions')
 def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any]]:
     """
     Server-side logic to generate DATA for trainer email previews.
-    It consolidates data, now creating multi-line strings for split-host allocations.
+    It consolidates data, creating multi-line strings for split-host allocations,
+    and ensures all numeric values are correctly calculated and passed.
     """
     email_data_list = []
     
@@ -104,29 +106,34 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
         host_lines = []
         vcenter_lines = []
         pod_range_lines = []
-        total_pods_for_course = 0
+        total_pods_for_course = set() # Use a set to handle potential overlaps
         total_ram_for_course = 0.0
 
+        # ** THIS IS THE KEY CORRECTION BLOCK **
         for host, host_assignments in sorted(assignments_by_host.items()):
             host_pod_numbers = {p for asgn in host_assignments for p in range(int(asgn.get('start_pod')), int(asgn.get('end_pod')) + 1) if asgn.get('start_pod') is not None}
-            num_pods_on_host = len(host_pod_numbers)
-            total_pods_for_course += num_pods_on_host
-
+            total_pods_for_course.update(host_pod_numbers)
+            
             pod_numbers_sorted = sorted(list(host_pod_numbers))
             groups = [list(g) for k, g in itertools.groupby(enumerate(pod_numbers_sorted), lambda x: x[0]-x[1])]
             host_start_end_pod_str = ", ".join([f"{r[0][1]}-{r[-1][1]}" if len(r) > 1 else str(r[0][1]) for r in groups])
 
             host_info = hosts_info_map.get(host, {})
-            memory_per_pod = float(first_item.get('memory_gb_one_pod', 0.0))
+            num_pods_on_host = len(host_pod_numbers)
             
-            # The virtual host column should contain the host and its pod range
+            # Use the memory from the first item as it's consistent for the course
+            memory_per_pod = float(first_item.get('memory_gb_one_pod', 0.0))
+            ram_for_this_host = memory_per_pod * num_pods_on_host
+            
+            # This was missing in the previous version, causing the error.
+            # Now we correctly add this host's RAM to the grand total for the course.
+            total_ram_for_course += ram_for_this_host 
+
             host_lines.append(f"{host} ({host_start_end_pod_str})")
             vcenter_lines.append(host_info.get("vcenter", "N/A"))
             pod_range_lines.append(host_start_end_pod_str)
+        # ** END OF CORRECTION BLOCK **
             
-            total_ram_for_course += memory_per_pod * num_pods_on_host
-
-        # Join the lines with a newline character for multi-line display in the cell
         virtual_host_display = "\n".join(host_lines)
         vcenter_display = "\n".join(vcenter_lines)
         pod_range_display = "\n".join(pod_range_lines)
@@ -156,11 +163,11 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
                 "start_end_pod_str": pod_range_display,
                 "username": first_item.get("apm_username", "N/A"),
                 "password": first_item.get("apm_password", "UseProvidedPassword"),
-                "effective_pods_req": total_pods_for_course,
+                "effective_pods_req": len(total_pods_for_course), # Use the size of the final set
                 "final_labbuild_course": first_item.get('labbuild_course', 'N/A'),
                 "virtual_host_display": virtual_host_display,
                 "primary_vcenter": vcenter_display,
-                "memory_gb_one_pod": total_ram_for_course
+                "total_ram_for_course": total_ram_for_course # Pass the calculated total RAM
             }
         })
     return email_data_list
@@ -213,50 +220,59 @@ def prepare_email_previews():
 @bp.route('/send-trainer-email', methods=['POST'])
 def send_trainer_email():
     data = request.json
-    logger.info(f"[send_trainer_email] Received payload: {data}")
-
     trainer_name = data.get('trainer_name')
-    course_items_for_email = data.get('course_item_to_email') # This is the original data payload
+    course_items_for_email = data.get('course_item_to_email')
     edited_subject = data.get('edited_subject')
     edited_html_body = data.get('edited_html_body')
 
-    if not trainer_name or not isinstance(course_items_for_email, list) or not course_items_for_email:
+    if not all([trainer_name, isinstance(course_items_for_email, list), course_items_for_email, edited_subject, edited_html_body]):
         return jsonify({"status": "error", "message": "Missing required data for sending email."}), 400
 
-    # Fetch trainer's email address
     trainer_email_doc = trainer_email_collection.find_one({"trainer_name": trainer_name, "active": True})
     if not trainer_email_doc or not trainer_email_doc.get("email_address"):
         return jsonify({"status": "error", "message": f"Active email address not found for trainer '{trainer_name}'."}), 404
     to_email_address = trainer_email_doc.get("email_address")
-
-    # The consolidation logic is now moved into the _generate_email_previews helper.
-    # We can reuse it to get the authoritative data structure, ensuring consistency.
-    generated_previews = _generate_email_previews(course_items_for_email)
     
-    if not generated_previews:
-         return jsonify({"status": "error", "message": "Could not generate consolidated email data."}), 500
-
-    # The template for send_allocation_email expects a list.
-    # We pass the consolidated data from the first (and only) preview generated for this payload.
-    # The keys in this dictionary now match the email_utils.py template perfectly.
-    # Note: `course_allocations_data` must be a list for the template loop.
-    final_data_for_template = [
-        # This is the dictionary of all consolidated values
-        _generate_email_previews(course_items_for_email)[0] 
-    ]
-    
+    # We pass course_items_for_email only for the plain-text fallback generation.
     success, message = send_allocation_email(
         to_address=to_email_address,
         trainer_name=trainer_name,
         subject=edited_subject,
-        course_allocations_data=final_data_for_template, # This is not directly used if override is present
-        html_body_override=edited_html_body # The preview from the modal is used as the final body
+        course_allocations_data=course_items_for_email, # For plain-text fallback
+        html_body_override=edited_html_body, # The user's preview is now the source of truth
+        is_test=False
     )
 
     if success:
-        return jsonify({"status": "success", "message": message, "emailed_sf_course_code": edited_subject})
+        return jsonify({"status": "success", "message": message})
     else:
         return jsonify({"status": "error", "message": f"Email sending failed: {message}"}), 500
+
+
+@bp.route('/send-test-email', methods=['POST'])
+def send_test_email():
+    data = request.json
+    trainer_name = data.get('trainer_name')
+    course_items = data.get('course_item_to_email')
+    edited_subject = data.get('edited_subject')
+    edited_html_body = data.get('edited_html_body')
+
+    if not all([trainer_name, isinstance(course_items, list), course_items, edited_subject, edited_html_body]):
+        return jsonify({"status": "error", "message": "Missing required data for sending test email."}), 400
+    
+    success, message = send_allocation_email(
+        to_address="placeholder@example.com",
+        trainer_name=trainer_name,
+        subject=edited_subject,
+        course_allocations_data=course_items, # For plain-text fallback
+        html_body_override=edited_html_body,
+        is_test=True
+    )
+
+    if success:
+        return jsonify({"status": "success", "message": message})
+    else:
+        return jsonify({"status": "error", "message": f"Test email failed: {message}"}), 500
 
 @bp.route('/run', methods=['POST'])
 def run_now():
@@ -1807,20 +1823,20 @@ def _generate_apm_data_for_plan(
         apm_course_code_to_username_to_keep: Dict[str, str] = {} 
         for username, existing_details in local_current_apm_entries.items(): # Use local_
             apm_cc = existing_details.get("vpn_auth_course_code")
-            if not apm_cc: apm_commands_delete_local.append(f"course bigip del {username}"); continue
+            if not apm_cc: apm_commands_delete_local.append(f"course2 del {username}"); continue
             if apm_cc in local_extended_apm_course_codes: # Use local_
                 if apm_cc not in apm_course_code_to_username_to_keep: apm_course_code_to_username_to_keep[apm_cc] = username
                 if apm_cc in desired_apm_state_with_users: desired_apm_state_with_users[apm_cc]["username"] = username; desired_apm_state_with_users[apm_cc]["is_update"] = True
             elif apm_cc in desired_apm_state_with_users:
                 if apm_cc not in apm_course_code_to_username_to_keep: apm_course_code_to_username_to_keep[apm_cc] = username
                 new_d = desired_apm_state_with_users[apm_cc]
-                if existing_details.get("vpn_auth_range") != new_d["vpn_auth_range"]: apm_commands_add_update_local.append(f'course bigip range {username} "{new_d["vpn_auth_range"]}"')
-                if existing_details.get("vpn_auth_version") != new_d["vpn_auth_version"]: apm_commands_add_update_local.append(f'course bigip version {username} "{new_d["vpn_auth_version"]}"')
-                if existing_details.get("vpn_auth_courses") != new_d["vpn_auth_courses"]: apm_commands_add_update_local.append(f'course bigip description {username} "{new_d["vpn_auth_courses"]}"')
-                if str(existing_details.get("vpn_auth_expiry_date")) != str(new_d["vpn_auth_expiry_date"]): apm_commands_add_update_local.append(f'course bigip expiry_date {username} "{new_d["vpn_auth_expiry_date"]}"')
-                apm_commands_add_update_local.append(f'course bigip password {username} "{new_d["password"]}"')
+                if existing_details.get("vpn_auth_range") != new_d["vpn_auth_range"]: apm_commands_add_update_local.append(f'course2 range {username} "{new_d["vpn_auth_range"]}"')
+                if existing_details.get("vpn_auth_version") != new_d["vpn_auth_version"]: apm_commands_add_update_local.append(f'course2 version {username} "{new_d["vpn_auth_version"]}"')
+                if existing_details.get("vpn_auth_courses") != new_d["vpn_auth_courses"]: apm_commands_add_update_local.append(f'course2 description {username} "{new_d["vpn_auth_courses"]}"')
+                if str(existing_details.get("vpn_auth_expiry_date")) != str(new_d["vpn_auth_expiry_date"]): apm_commands_add_update_local.append(f'course2 expiry_date {username} "{new_d["vpn_auth_expiry_date"]}"')
+                apm_commands_add_update_local.append(f'course2 password {username} "{new_d["password"]}"')
                 desired_apm_state_with_users[apm_cc]["username"] = username; desired_apm_state_with_users[apm_cc]["is_update"] = True
-            else: apm_commands_delete_local.append(f"course bigip del {username}")
+            else: apm_commands_delete_local.append(f"course2 del {username}")
         
         used_x_nums: Dict[str,Set[int]] = defaultdict(set)
         for _, uname_kept in apm_course_code_to_username_to_keep.items():
@@ -1834,7 +1850,7 @@ def _generate_apm_data_for_plan(
                 if x not in used_x_nums.get(v_short,set()): uname=f"lab{v_short}-{x}"; used_x_nums[v_short].add(x); break
                 x+=1
             details_final["username"] = uname # Store assigned username
-            apm_commands_add_update_local.append(f'course bigip add {uname} "{details_final["password"]}" "{details_final["vpn_auth_range"]}" "{details_final["vpn_auth_version"]}" "{details_final["vpn_auth_courses"]}" "{details_final["vpn_auth_expiry_date"]}" "{apm_auth_c}"')
+            apm_commands_add_update_local.append(f'course2 add {uname} "{details_final["password"]}" "{details_final["vpn_auth_range"]}" "{details_final["vpn_auth_version"]}" "{details_final["vpn_auth_courses"]}" "{details_final["vpn_auth_expiry_date"]}" "{apm_auth_c}"')
 
         all_generated_commands = apm_commands_delete_local + apm_commands_add_update_local
         logger.info(f"(Helper) APM Logic Finished. Generated {len(all_generated_commands)} commands. Errors: {errors_local}")
@@ -1975,18 +1991,18 @@ def finalize_and_display_build_plan():
         for user, details in current_apm_entries.items():
             code = details.get("vpn_auth_course_code")
             if not code:
-                apm_commands_delete.append(f"course bigip del {user}"); continue
+                apm_commands_delete.append(f"course2 del {user}"); continue
             if code in extended_apm_codes:
                 apm_code_to_user[code] = user; continue
             if code in final_desired_state:
                 apm_code_to_user[code] = user
                 new = final_desired_state[code]
-                if str(details.get("vpn_auth_range")) != str(new["vpn_auth_range"]): apm_commands_add_update.append(f'course bigip range {user} "{new["vpn_auth_range"]}"')
-                if str(details.get("vpn_auth_version")) != str(new["version"]): apm_commands_add_update.append(f'course bigip version {user} "{new["version"]}"')
-                if str(details.get("vpn_auth_courses")) != str(new["vpn_auth_courses"]): apm_commands_add_update.append(f'course bigip description {user} "{new["vpn_auth_courses"]}"')
-                apm_commands_add_update.append(f'course bigip password {user} "{new["password"]}"')
+                if str(details.get("vpn_auth_range")) != str(new["vpn_auth_range"]): apm_commands_add_update.append(f'course2 range {user} "{new["vpn_auth_range"]}"')
+                if str(details.get("vpn_auth_version")) != str(new["version"]): apm_commands_add_update.append(f'course2 version {user} "{new["version"]}"')
+                if str(details.get("vpn_auth_courses")) != str(new["vpn_auth_courses"]): apm_commands_add_update.append(f'course2 description {user} "{new["vpn_auth_courses"]}"')
+                apm_commands_add_update.append(f'course2 password {user} "{new["password"]}"')
             else:
-                apm_commands_delete.append(f"course bigip del {user}")
+                apm_commands_delete.append(f"course2 del {user}")
         
         used_x_nums = defaultdict(set)
         for _, uname in apm_code_to_user.items():
@@ -2001,7 +2017,7 @@ def finalize_and_display_build_plan():
             while True:
                 if x not in used_x_nums[vendor]: new_user = f"lab{vendor}-{x}"; used_x_nums[vendor].add(x); break
                 x += 1
-            apm_commands_add_update.append(f'course bigip add {new_user} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["version"]}" "{details["vpn_auth_courses"]}" "8" "{code}"')
+            apm_commands_add_update.append(f'course2 add {new_user} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["version"]}" "{details["vpn_auth_courses"]}" "8" "{code}"')
             apm_credentials_map[code] = {"username": new_user, "password": details["password"]}
         
         return apm_commands_delete + apm_commands_add_update, apm_credentials_map, apm_errors

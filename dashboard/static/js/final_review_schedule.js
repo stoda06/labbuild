@@ -1,13 +1,9 @@
-// dashboard/static/js/final_review_schedule.js
-
 document.addEventListener('DOMContentLoaded', function() {
     // --- 1. GET REFERENCES TO KEY HTML ELEMENTS ---
     const labbuildCommandsModal = document.getElementById('labbuildCommandsModal');
     const emailModal = document.getElementById('emailTrainersModal');
 
     // --- 2. PARSE DATA EMBEDDED IN THE PAGE ---
-    // The Python backend passes complex data to the page by embedding it in JSON format.
-    // We parse this data once so the script can use it.
     let buildableItemsData = [];
     let allReviewData = [];
     try {
@@ -21,16 +17,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // --- 3. UI LOGIC (UNCHANGED SECTIONS) ---
-    // This logic for scheduling options and copying commands is stable and does not need to change.
-    
-    // Logic for Scheduling Options Dropdown
     const scheduleOptionSelect = document.getElementById('schedule_option_select');
     if (scheduleOptionSelect) {
         const specificTimeAllDiv = document.getElementById('specific_time_all_details');
         const staggeredDiv = document.getElementById('staggered_details');
         const specificTimeInput = document.getElementById('schedule_start_time_all');
         const staggeredTimeInput = document.getElementById('schedule_start_time_staggered');
-        
         function toggleScheduleDetailVisibility() {
             const selectedValue = scheduleOptionSelect.value;
             if (specificTimeAllDiv) specificTimeAllDiv.style.display = (selectedValue === 'specific_time_all') ? 'flex' : 'none';
@@ -41,8 +33,6 @@ document.addEventListener('DOMContentLoaded', function() {
         scheduleOptionSelect.addEventListener('change', toggleScheduleDetailVisibility);
         toggleScheduleDetailVisibility();
     }
-
-    // Generic "Copy to Clipboard" Helper
     function setupCopyButton(buttonId, modalBodyId) {
         const copyBtn = document.getElementById(buttonId);
         const modalBody = document.getElementById(modalBodyId);
@@ -69,20 +59,16 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     setupCopyButton('copyApmCommandsBtn', 'apmCommandsModalBody');
     setupCopyButton('copyLabbuildCommandsBtn', 'labbuildCommandsModalBody');
-    
-    // Logic for "Preview LabBuild Commands" Modal
     if (labbuildCommandsModal) {
         const performTeardownCheckbox = document.getElementById('perform_teardown_first');
         function generateLabbuildCommands() {
             const modalBody = document.getElementById('labbuildCommandsModalBody');
             if (!modalBody) return;
             if (!buildableItemsData || buildableItemsData.length === 0) {
-                modalBody.innerHTML = '<p class="text-info">No buildable items in the current plan.</p>';
-                return;
+                modalBody.innerHTML = '<p class="text-info">No buildable items in the current plan.</p>'; return;
             }
             const doTeardown = performTeardownCheckbox ? performTeardownCheckbox.checked : false;
-            let commands = [];
-            let commandNum = 1;
+            let commands = []; let commandNum = 1;
             buildableItemsData.forEach(item => {
                 const assignments = item.assignments || [];
                 if (!item.vendor || !item.labbuild_course || assignments.length === 0) return;
@@ -94,38 +80,33 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (item.vendor.toLowerCase() === 'f5' && item.f5_class_number) {
                          baseArgs.push('-cn', item.f5_class_number);
                     }
-                    if (doTeardown) {
-                        commands.push(`${commandNum++}. labbuild teardown ${baseArgs.join(' ')}`);
-                    }
+                    if (doTeardown) commands.push(`${commandNum++}. labbuild teardown ${baseArgs.join(' ')}`);
                     commands.push(`${commandNum++}. labbuild setup ${baseArgs.join(' ')}`);
                 });
             });
             const pre = document.createElement('pre');
             pre.textContent = commands.length > 0 ? commands.join('\n') : "No commands to generate.";
-            modalBody.innerHTML = '';
-            modalBody.appendChild(pre);
+            modalBody.innerHTML = ''; modalBody.appendChild(pre);
         }
         labbuildCommandsModal.addEventListener('show.bs.modal', generateLabbuildCommands);
     }
     
-    // --- 4. EMAIL MODAL LOGIC (NEW ROBUST APPROACH) ---
+    // --- 4. EMAIL MODAL LOGIC ---
     if (emailModal) {
         
-        // This function is triggered when the "Prepare Emails" button is clicked.
-        // It fetches pre-rendered DATA from the server and then builds the preview.
         async function fetchAndPopulateEmailPreviews() {
             const emailsContainer = document.getElementById('trainerEmailsContainer');
             if (!emailsContainer) return;
             emailsContainer.innerHTML = '<p class="text-center"><span class="spinner-border spinner-border-sm"></span> Loading email previews from server...</p>';
 
             try {
+                // Fetch clean, consolidated data from the server.
                 const response = await fetch('/prepare-email-previews', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ all_review_items: allReviewData })
                 });
                 if (!response.ok) throw new Error(`Server responded with status ${response.status}`);
-                
                 const data = await response.json();
                 if (data.error) throw new Error(data.error);
                 
@@ -134,70 +115,71 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                let allEmailsHtml = `<div class="d-flex justify-content-end mb-3"><button class="btn btn-success btn-sm" id="sendAllEmailsBtn"><i class="fas fa-mail-bulk"></i> Send All Unsent</button></div>`;
-                
+                // Build the static HTML structure for the modal body.
+                let allEmailsHtml = `<div class="d-flex justify-content-end mb-3"><button class="btn btn-warning btn-sm me-2" id="sendAllTestsBtn"><i class="fas fa-vial"></i> Send All Tests</button><button class="btn btn-success btn-sm" id="sendAllEmailsBtn"><i class="fas fa-mail-bulk"></i> Send All Real</button></div>`;
                 data.previews.forEach(preview => {
-                    const emailItemId = `email-${preview.key.replace(/[^a-zA-Z0-9]/g, '')}`;
                     allEmailsHtml += `
-                        <div class="trainer-email-section mb-4 p-3 border rounded" 
-                             id="${emailItemId}"
-                             data-key="${preview.key}" 
-                             data-payload='${JSON.stringify(preview.payload_items)}'
-                             data-template-data='${JSON.stringify(preview.template_data)}'>
-                             <!-- ... (rest of the static HTML structure for the section) ... -->
-                             <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div class="trainer-email-section mb-4 p-3 border rounded" data-key="${preview.key}" data-payload='${JSON.stringify(preview.payload_items)}'>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
                                 <h5 class="mb-0">To: ${preview.trainer_name} (for ${preview.sf_course_code})</h5>
-                                <div>
+                                <div class="btn-group">
+                                    <button class="btn btn-sm btn-outline-warning send-test-email-btn"><i class="fas fa-vial"></i> Test</button>
                                     <button class="btn btn-sm btn-primary send-one-email-btn"><i class="fas fa-paper-plane"></i> Send</button>
-                                    <button class="btn btn-sm btn-outline-secondary copy-one-email-btn ms-2"><i class="fas fa-copy"></i> Copy HTML</button>
                                 </div>
                             </div>
                             <div class="mb-2">
                                 <label class="form-label form-label-sm fw-bold">Subject:</label>
                                 <input type="text" class="form-control form-control-sm email-subject-input" value="${preview.email_subject}">
                             </div>
-                            <iframe class="email-body-iframe" style="width: 100%; height: 300px; border: 1px solid #ccc;"></iframe>
+                            <iframe class="email-body-iframe" style="width: 100%; height: 350px; border: 1px solid #ccc;"></iframe>
                         </div>`;
                 });
-                
                 emailsContainer.innerHTML = allEmailsHtml;
                 
                 // Dynamically build the content of each iframe using the DOM.
                 document.querySelectorAll('.trainer-email-section').forEach(section => {
                     const iframe = section.querySelector('.email-body-iframe');
                     const previewData = data.previews.find(p => p.key === section.dataset.key);
-
                     if (!iframe || !previewData) return;
                     
                     const iframeDoc = iframe.contentWindow.document;
                     iframeDoc.open();
+                    
+                    // --- THIS IS THE KEY FIX: Inject the CSS directly into the iframe's head ---
+                    const emailStyles = `
+                        body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; margin: 10px; }
+                        table { border-collapse: collapse; width: 100%; margin-bottom: 15px; border: 1px solid #cccccc; }
+                        th, td { border: 1px solid #dddddd; padding: 8px; text-align: left; vertical-align: top; white-space: nowrap; }
+                        th { background-color: #f0f0f0; font-weight: bold; }
+                        p { margin-bottom: 10px; line-height: 1.5; }
+                        .footer { font-size: 9pt; color: #777777; margin-top: 20px; }
+                        .text-center { text-align: center; }
+                        .text-right { text-align: right; }
+                    `;
+                    // --- END OF FIX ---
+                    
                     iframeDoc.write(`
                         <!DOCTYPE html>
                         <html>
-                            <head><title>Email Preview</title><link rel="stylesheet" href="/static/css/final_review_schedule.css"></head>
-                            <body class="email-preview-body"></body>
+                            <head>
+                                <title>Email Preview</title>
+                                <style>${emailStyles}</style>
+                            </head>
+                            <body></body>
                         </html>
                     `);
                     iframeDoc.close();
 
                     const body = iframeDoc.body;
                     const templateData = previewData.template_data;
-                    
-                    // Helper to convert newline characters to <br> tags for HTML
                     const nl2br = (str) => (str || '').toString().replace(/\n/g, '<br>');
-
-                    // The HTML content is built here using the clean data object
+                    
                     body.innerHTML = `
                         <p>Dear ${previewData.trainer_name},</p>
                         <p>Here are the details for your course allocation (${templateData.original_sf_course_code}):</p>
-                        <table class="email-preview-table">
+                        <table>
                             <thead>
-                                <tr>
-                                    <th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th>
-                                    <th>Course Name</th><th>Start/End Pod</th><th>Username</th><th>Password</th>
-                                    <th>Students</th><th>Vendor Pods</th><th>Version</th>
-                                    <th>Virtual Host</th><th>vCenter</th><th>RAM (GB)</th>
-                                </tr>
+                                <tr><th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th><th>Course Name</th><th>Start/End Pod</th><th>Username</th><th>Password</th><th>Students</th><th>Vendor Pods</th><th>Version</th><th>Virtual Host</th><th>vCenter</th><th>RAM (GB)</th></tr>
                             </thead>
                             <tbody>
                                 <tr>
@@ -212,9 +194,9 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <td class="text-center">${templateData.effective_pods_req}</td>
                                     <td class="text-center">${templateData.effective_pods_req}</td>
                                     <td>${templateData.final_labbuild_course}</td>
-                                    <td>${nl2br(templateData.virtual_host_display)}</td>
-                                    <td>${nl2br(templateData.primary_vcenter)}</td>
-                                    <td class="text-right">${templateData.memory_gb_one_pod.toFixed(1)}</td>
+                                    <td class="virtual-host-cell">${nl2br(templateData.virtual_host_display)}</td>
+                                    <td class="vcenter-cell">${nl2br(templateData.primary_vcenter)}</td>
+                                    <td class="text-right">${templateData.total_ram_for_course.toFixed(1)}</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -225,7 +207,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 
                 addEmailActionListeners();
-
             } catch (error) {
                 console.error("Failed to fetch and populate email previews:", error);
                 emailsContainer.innerHTML = `<p class="text-danger">Failed to load email previews. Error: ${error.message}</p>`;
@@ -233,50 +214,110 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Helper function to send the final email data to the server (unchanged).
-        async function sendEmailRequest(trainerName, subject, htmlBody, payloadItems) {
-            const sendEmailUrl = emailModal.dataset.sendEmailUrl;
-            if (!sendEmailUrl) return { success: false, message: "Client-side error: Send URL missing." };
+        async function sendEmailRequest(endpointUrl, button, trainerName, subject, htmlBody, payloadItems) {
+            button.disabled = true;
+            const originalHtml = button.innerHTML;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sending...';
+            
+            // --- ROBUSTNESS CHECK ---
+            // Ensure all data being sent to the server is valid.
+            if (!trainerName || !subject || !htmlBody || !payloadItems || payloadItems.length === 0) {
+                alert("Client-side validation failed: Missing required data to send email. Please check console for details.");
+                console.error("sendEmailRequest validation failed:", { trainerName, subject, htmlBody, payloadItems });
+                button.disabled = false;
+                button.innerHTML = originalHtml;
+                return;
+            }
+            // --- END OF CHECK ---
+
             try {
-                const payload = { trainer_name: trainerName, edited_subject: subject, edited_html_body: htmlBody, course_item_to_email: payloadItems };
-                const response = await fetch(sendEmailUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const payload = { 
+                    trainer_name: trainerName, 
+                    edited_subject: subject, 
+                    edited_html_body: htmlBody, 
+                    course_item_to_email: payloadItems 
+                };
+
+                const response = await fetch(endpointUrl, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify(payload) 
+                });
+                
                 const result = await response.json();
-                return { success: response.ok && result.status === 'success', message: result.message || 'Unknown server response' };
+
+                if (response.ok && result.status === 'success') {
+                    const successClass = endpointUrl.includes('test') ? 'btn-outline-success' : 'btn-success';
+                    button.className = `btn btn-sm ${successClass}`;
+                    button.innerHTML = '<i class="fas fa-check"></i> Sent!';
+                } else {
+                    throw new Error(result.message || 'Unknown server error');
+                }
             } catch (error) {
-                return { success: false, message: `Client-side error: ${error.message}` };
+                alert(`Failed to send email: ${error.message}`);
+                button.disabled = false;
+                button.innerHTML = originalHtml;
             }
         }
         
-        // Attaches click handlers to all buttons inside the email modal (unchanged).
+        // Attaches click handlers to all buttons inside the email modal.
         function addEmailActionListeners() {
             const emailsContainer = document.getElementById('trainerEmailsContainer');
             if (!emailsContainer) return;
             
             emailsContainer.addEventListener('click', async function(event) {
-                const sendButton = event.target.closest('.send-one-email-btn');
-                const copyButton = event.target.closest('.copy-one-email-btn');
-                const sendAllButton = event.target.closest('#sendAllEmailsBtn');
+                const realSendBtn = event.target.closest('.send-one-email-btn');
+                const testSendBtn = event.target.closest('.send-test-email-btn');
+                const sendAllRealBtn = event.target.closest('#sendAllEmailsBtn');
+                const sendAllTestsBtn = event.target.closest('#sendAllTestsBtn');
 
-                if (sendButton) {
-                    const section = sendButton.closest('.trainer-email-section');
+                if (realSendBtn || testSendBtn) {
+                    const button = realSendBtn || testSendBtn;
+                    const isTest = !!testSendBtn;
+                    const endpoint = isTest ? "/send-test-email" : "/send-trainer-email";
+
+                    const section = button.closest('.trainer-email-section');
                     const trainerName = section.querySelector('h5').textContent.split('(')[0].replace('To: ', '').trim();
                     const subject = section.querySelector('.email-subject-input').value;
                     const iframe = section.querySelector('.email-body-iframe');
-                    const htmlBody = iframe.contentWindow.document.documentElement.outerHTML;
                     const payloadItems = JSON.parse(section.dataset.payload);
-                    
-                    sendButton.disabled = true; sendButton.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sending...';
-                    const result = await sendEmailRequest(trainerName, subject, htmlBody, payloadItems);
-                    if (result.success) {
-                        sendButton.classList.replace('btn-primary', 'btn-success');
-                        sendButton.innerHTML = '<i class="fas fa-check"></i> Sent!';
-                    } else {
-                        alert(`Failed to send email: ${result.message}`);
-                        sendButton.disabled = false; sendButton.innerHTML = '<i class="fas fa-paper-plane"></i> Send';
+
+                    // --- ROBUSTNESS CHECK ---
+                    // Ensure the iframe and its content are accessible before trying to read them.
+                    let htmlBody = '';
+                    if (iframe && iframe.contentWindow && iframe.contentWindow.document && iframe.contentWindow.document.documentElement) {
+                        htmlBody = iframe.contentWindow.document.documentElement.outerHTML;
                     }
-                } else if (copyButton) {
-                    setupCopyButton(null, null);
-                } else if (sendAllButton) {
-                    // Send all logic remains the same
+
+                    if (!htmlBody) {
+                        alert("Error: Could not read the email preview content. Please try again.");
+                        console.error("Could not retrieve htmlBody from iframe for section:", section);
+                        return;
+                    }
+                    // --- END OF CHECK ---
+                    
+                    await sendEmailRequest(endpoint, button, trainerName, subject, htmlBody, payloadItems);
+                
+                } else if (sendAllRealBtn || sendAllTestsBtn) {
+                    const isTest = !!sendAllTestsBtn;
+                    const buttonToClickSelector = isTest ? '.send-test-email-btn:not(.btn-success)' : '.send-one-email-btn:not(.btn-success)';
+                    const actionName = isTest ? "test emails" : "real emails";
+                    const bulkButton = sendAllRealBtn || sendAllTestsBtn;
+
+                    const allUnsentButtons = emailsContainer.querySelectorAll(buttonToClickSelector);
+                    if (allUnsentButtons.length === 0) { alert(`All ${actionName} have already been sent or are in progress.`); return; }
+                    if (!confirm(`Are you sure you want to send all ${allUnsentButtons.length} unsent ${actionName}?`)) return;
+                    
+                    const originalAllBtnHtml = bulkButton.innerHTML;
+                    bulkButton.disabled = true;
+                    bulkButton.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Sending All...`;
+                    for (let i = 0; i < allUnsentButtons.length; i++) {
+                        // We need to use .click() to trigger the full event handler for each button
+                        await allUnsentButtons[i].click();
+                    }
+                    bulkButton.disabled = false;
+                    bulkButton.innerHTML = originalAllBtnHtml;
+                    alert(`Bulk send process for ${actionName} finished. Check individual button statuses.`);
                 }
             });
         }
