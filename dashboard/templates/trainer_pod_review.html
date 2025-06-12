@@ -5,7 +5,6 @@
 
 {% block head %}
     {{ super() }}
-    {# The existing CSS file is correct and does not need changes #}
     <link rel="stylesheet" href="{{ url_for('static', filename='css/trainer_pod_review.css') }}">
 {% endblock %}
 
@@ -38,69 +37,68 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {# --- MODIFICATION START: Corrected loop and data access --- #}
-                        {# The loop now iterates over each combined 'item' #}
+                        {# --- MODIFICATION START: Simplified loop and data access --- #}
+                        {# The loop now iterates over each combined 'item' and accesses keys directly #}
                         {% for item in courses_and_trainer_pods %}
-                            {% set student_part = item.student_part %}
-                            {% set trainer_part = item.trainer_part %}
                             <tr class="trainer-data-row" 
-                                data-interim-doc-id="{{ trainer_part.interim_doc_id }}"
-                                data-labbuild-course="{{ trainer_part.labbuild_course or '' }}" 
-                                data-memory-one-pod="{{ trainer_part.memory_gb_one_pod | default(0.0) }}"
-                                data-sf-course-code-trainer="{{ trainer_part.sf_course_code }}"
-                                data-vendor="{{ trainer_part.vendor | lower if trainer_part.vendor else '' }}">
+                                data-interim-doc-id="{{ item._id }}"
+                                data-labbuild-course="{{ item.trainer_labbuild_course or '' }}" 
+                                data-memory-one-pod="{{ item.trainer_memory_gb_one_pod | default(0.0) }}"
+                                data-sf-course-code-trainer="{{ item.sf_course_code }}-TP"
+                                data-vendor="{{ item.vendor | lower if item.vendor else '' }}">
 
-                                <td class="col-sf-code" title="{{ student_part.sf_course_code }}">
-                                    <strong>{{ student_part.sf_course_code }}</strong>
-                                    <small class="d-block text-muted">{{ student_part.sf_trainer_name }}</small>
+                                <td class="col-sf-code" title="{{ item.sf_course_code }}">
+                                    <strong>{{ item.sf_course_code }}</strong>
+                                    <small class="d-block text-muted">{{ item.sf_trainer_name }}</small>
                                 </td>
-                                <td class="col-lb-course" title="{{ trainer_part.labbuild_course or 'N/A' }}">{{ trainer_part.labbuild_course or 'N/A' }}</td>
-                                <td class="col-vendor">{{ student_part.vendor | upper if student_part.vendor else 'N/A'}}</td>
+                                <td class="col-lb-course" title="{{ item.trainer_labbuild_course or 'N/A' }}">{{ item.trainer_labbuild_course or 'N/A' }}</td>
+                                <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A'}}</td>
                                 
                                 <td class="col-trainer-build-toggle">
                                     <div class="form-check d-flex justify-content-center">
                                         <input class="form-check-input build-trainer-checkbox" type="checkbox" 
                                                value="yes" id="build_trainer_{{ loop.index0 }}"
-                                               {% if not trainer_part.error_message or "capacity" in (trainer_part.error_message or "") %}
+                                               {% if not item.trainer_assignment_warning or "capacity" in (item.trainer_assignment_warning or "") %}
                                                    checked 
                                                {% endif %}
-                                               {% if trainer_part.error_message and "Disabled by Rule" in trainer_part.error_message %}
-                                                   disabled title="{{trainer_part.error_message}}"
+                                               {% if item.trainer_assignment_warning and "Disabled by Rule" in item.trainer_assignment_warning %}
+                                                   disabled title="{{item.trainer_assignment_warning}}"
                                                {% endif %}>
                                     </div>
                                 </td>
 
                                 <td class="col-interactive-assignments-trainer interactive-assignments-cell">
-                                    <div class="assignment-sub-row {% if trainer_part.error_message and 'Disabled by Rule' in trainer_part.error_message %}disabled-inputs{% endif %}">
+                                    <div class="assignment-sub-row {% if item.trainer_assignment_warning and 'Disabled by Rule' in item.trainer_assignment_warning %}disabled-inputs{% endif %}">
                                         <select name="host_assignment_tp_{{ loop.index0 }}" 
                                                 class="form-select form-select-sm sub-host-select">
                                             <option value="">-- Host --</option>
+                                            {% set assigned_host = item.trainer_assignment.host if item.trainer_assignment else '' %}
                                             {% for host_name_opt_tp in all_hosts %}
-                                            <option value="{{ host_name_opt_tp }}" {% if trainer_part.assigned_host == host_name_opt_tp %}selected{% endif %}>
+                                            <option value="{{ host_name_opt_tp }}" {% if assigned_host == host_name_opt_tp %}selected{% endif %}>
                                                 {{ host_name_opt_tp }}
                                             </option>
                                             {% endfor %}
                                         </select>
                                         <input type="number" name="start_pod_tp_{{ loop.index0 }}" 
                                                class="form-control form-control-sm sub-pod-input start-pod-input" 
-                                               value="{{ trainer_part.start_pod | default(1) }}" min="1" placeholder="Pod #">
+                                               value="{{ item.trainer_assignment.start_pod if item.trainer_assignment else '1' }}" min="1" placeholder="Pod #">
                                         <input type="number" name="end_pod_tp_{{ loop.index0 }}" 
                                                class="form-control form-control-sm sub-pod-input end-pod-input" 
-                                               value="{{ trainer_part.start_pod | default(1) }}" min="1" readonly 
+                                               value="{{ item.trainer_assignment.start_pod if item.trainer_assignment else '1' }}" min="1" readonly 
                                                title="End pod is same as start for a single trainer pod">
-                                        {% if trainer_part.error_message and "Disabled by Rule" not in trainer_part.error_message %}
-                                            <span class="error-icon-container" title="{{trainer_part.error_message}}">
+                                        {% if item.trainer_assignment_warning and "Disabled by Rule" not in item.trainer_assignment_warning %}
+                                            <span class="error-icon-container" title="{{item.trainer_assignment_warning}}">
                                                 <i class="fas fa-exclamation-triangle"></i>
                                             </span>
                                         {% endif %}
                                     </div>
-                                     {% if trainer_part.error_message and "Disabled by Rule" in trainer_part.error_message %}
-                                        <small class="text-muted fst-italic">{{trainer_part.error_message}}</small>
+                                     {% if item.trainer_assignment_warning and "Disabled by Rule" in item.trainer_assignment_warning %}
+                                        <small class="text-muted fst-italic">{{item.trainer_assignment_warning}}</small>
                                     {% endif %}
                                 </td>
                                 <td class="col-total-interactive-memory text-end">
                                     <span class="total-course-memory-display">
-                                        {% if trainer_part.error_message and "Disabled by Rule" in trainer_part.error_message %}N/A{% else %}0.00{% endif %}
+                                        {% if item.trainer_assignment_warning and "Disabled by Rule" in item.trainer_assignment_warning %}N/A{% else %}0.00{% endif %}
                                     </span> GB
                                 </td> 
                             </tr>
@@ -144,6 +142,5 @@
 
 {% block scripts %}
     {{ super() }}
-    {# The existing JS file is correct and does not need changes #}
     <script src="{{ url_for('static', filename='js/trainer_pod_review.js') }}" defer></script>
 {% endblock %}

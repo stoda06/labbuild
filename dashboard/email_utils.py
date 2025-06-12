@@ -23,16 +23,20 @@ DEFAULT_POD_ALLOCATION_HTML_TEMPLATE = """
     <style>
         body {{ font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; }}
         table {{ border-collapse: collapse; width: 100%; margin-bottom: 15px; border: 1px solid #cccccc; }}
-        th, td {{ border: 1px solid #dddddd; text-align: left; padding: 8px; vertical-align: top; }}
+        th, td {{ border: 1px solid #dddddd; text-align: left; padding: 8px; vertical-align: top; white-space: nowrap; }}
         th {{ background-color: #f0f0f0; font-weight: bold; color: #333333; }}
         p {{ margin-bottom: 10px; line-height: 1.5; }}
         .footer {{ font-size: 9pt; color: #777777; margin-top: 20px; }}
+        .text-center {{ text-align: center; }}
+        .text-right {{ text-align: right; }}
     </style>
 </head>
-<body>
+<body class="email-preview-body">
     <p>Dear {{ trainer_name }},</p>
-    <p>Here are the details for your course allocation(s):</p>
-    <table>
+    
+    {% for course in courses %}
+    <p>Here are the details for your course allocation ({{ course.original_sf_course_code | default('N/A') }}):</p>
+    <table class="email-preview-table">
         <thead>
             <tr>
                 <th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th>
@@ -42,26 +46,26 @@ DEFAULT_POD_ALLOCATION_HTML_TEMPLATE = """
             </tr>
         </thead>
         <tbody>
-            {% for course in courses %} {# 'courses' is expected to be a list of course dicts #}
             <tr>
                 <td>{{ course.original_sf_course_code | default('N/A') }}</td>
                 <td>{{ course.date_range_display | default('N/A') }}</td>
                 <td>{{ course.end_day_abbr | default('N/A') }}</td>
-                <td>{{ course.primary_location | default('N/A') }}</td>
-                <td>{{ course.labbuild_course | default('N/A') }}</td>
+                <td>{{ course.primary_location | default('Virtual') }}</td>
+                <td>{{ course.sf_course_type | default('N/A') }}</td>
                 <td>{{ course.start_end_pod_str | default('N/A') }}</td>
                 <td>{{ course.username | default('N/A') }}</td>
-                <td>{{ course.password | default('UseProvidedPassword') }}</td>
-                <td style="text-align:center;">{{ course.student_pax | default('N/A') }}</td>
-                <td style="text-align:center;">{{ course.vendor_pods_count | default(0) }}</td>
-                <td>{{ course.labbuild_course | default('N/A') }}</td> {# Version is LabBuild Course Name #}
-                <td>{{ course.primary_host_name | default('N/A') }}{% if course.vendor_pods_count and course.vendor_pods_count > 0 %} ({{ course.start_end_pod_str }}){% endif %}</td>
+                <td>{{ course.password | default('N/A') }}</td>
+                <td class="text-center">{{ course.effective_pods_req | default(0) }}</td>
+                <td class="text-center">{{ course.effective_pods_req | default(0) }}</td>
+                <td>{{ course.final_labbuild_course | default('N/A') }}</td>
+                <td>{{ course.virtual_host_display | default('N/A') }}</td>
                 <td>{{ course.primary_vcenter | default('N/A') }}</td>
-                <td style="text-align:right;">{{ "%.1f"|format(course.memory_gb_one_pod | default(0.0) | float) }}</td>
+                <td class="text-right">{{ "%.1f"|format(course.memory_gb_one_pod | default(0.0) | float) }}</td>
             </tr>
-            {% endfor %}
         </tbody>
     </table>
+    {% endfor %}
+
     <p>Best regards,<br>Your Training Team</p>
     <p class="footer">This is an automated notification. Please do not reply directly to this email.</p>
 </body>

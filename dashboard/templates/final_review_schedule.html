@@ -5,7 +5,6 @@
 
 {% block head %}
     {{ super() }}
-    {# Link to the dedicated CSS file for this page #}
     <link rel="stylesheet" href="{{ url_for('static', filename='css/final_review_schedule.css') }}">
 {% endblock %}
 
@@ -23,129 +22,68 @@
    </div>
 </div>
 
-{% if error_message %}
-    <div class="alert alert-danger">{{ error_message }}</div>
-{% endif %}
-
 <div class="card">
-  <div class="card-header">Consolidated Build, Keep-Running, and Teardown Plan</div>
+  <div class="card-header">Consolidated Build Plan</div>
   <div class="card-body">
     {% if all_items_for_review %}
-        <p>This is the final consolidated plan, sorted by SF Course Code then Start Date. Review all new builds, items to keep running, and items scheduled for teardown.</p>
+        <p>This is the final consolidated plan. Review all new builds and their generated APM credentials.</p>
         
         <div class="table-responsive">
             <table class="table table-sm table-striped table-bordered review-table" id="finalReviewTable">
                 <thead class="table-light">
                     <tr>
-                        <th class="col-type" data-column="type" data-type="string">Type <span class="sort-icon fas fa-sort"></span></th>
-                        <th class="col-sf-code" data-column="sf_course_code" data-type="string">SF Course Code <span class="sort-icon fas fa-sort"></span></th>
-                        <th class="col-lb-course" data-column="labbuild_course" data-type="string">LabBuild Course <span class="sort-icon fas fa-sort"></span></th>
-                        <th class="col-vendor" data-column="vendor" data-type="string">Vendor <span class="sort-icon fas fa-sort"></span></th>
-                        <th class="col-start-date" data-column="start_date" data-type="date">Start Date <span class="sort-icon fas fa-sort"></span></th>
-                        <th class="col-assignments">Assignments (Host: Pods/Class)</th>
+                        <th class="col-type">Type</th>
+                        <th class="col-sf-code">SF Course Code</th>
+                        <th class="col-lb-course">LabBuild Course</th>
+                        <th class="col-assignments">Assignments (Host: Pods)</th>
+                        <th class="col-apm-user">APM User</th>
+                        <th class="col-apm-pass">APM Pass</th>
                         <th class="col-status-note">Notes / Warnings</th>
                     </tr>
                 </thead>
                 <tbody id="finalReviewTableBody">
-                    {# Direct rendering of rows from Python-sorted data #}
                     {% for item in all_items_for_review %}
                     <tr>
                         <td class="col-type">
                             {% if item.type == 'Student Build' %}<span class="badge bg-primary">{{ item.type }}</span>
                             {% elif item.type == 'Trainer Build' %}<span class="badge bg-info text-dark">{{ item.type }}</span>
-                            {% elif item.type == 'Extended (Keep Running)' %}<span class="badge bg-success">{{ item.type }}</span>
-                            {% elif item.type == 'Scheduled for Teardown' %}<span class="badge bg-danger">{{ item.type }}</span>
-                            {% else %}{{ item.type or 'N/A' }}
-                            {% endif %}
+                            {% else %}{{ item.type or 'N/A' }}{% endif %}
                         </td>
                         <td class="col-sf-code">{{ item.sf_course_code or 'N/A' }}</td>
                         <td class="col-lb-course">{{ item.labbuild_course or 'N/A' }}</td>
-                        <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A' }}</td>
-                        <td class="col-start-date">
-                            {% set date_to_display = item.start_date %}
-                            {% if date_to_display and date_to_display != "N/A" and date_to_display != "Ongoing (Extended)" %}
-                                {% set timestamp_attr_val = '' %}
-                                {% if date_to_display and date_to_display.count('-') == 2 %}
-                                    {% set timestamp_attr_val = date_to_display ~ 'T00:00:00Z' %}
-                                {% endif %}
-                                <span class="local-datetime" data-timestamp="{{ timestamp_attr_val }}">
-                                    {{ date_to_display }}
-                                </span>
-                            {% else %}
-                                {{ date_to_display or 'N/A' }}
-                            {% endif %}
-                        </td>
                         <td class="col-assignments">
-                            {% if item.assignments and item.assignments is iterable and item.assignments is not string %}
+                            {% if item.assignments %}
                                 <ul>
                                 {% for assign in item.assignments %}
-                                    <li>
-                                        <strong>Host:</strong> {{ assign.host or 'N/A' }}
-                                        {% if assign.pods %}
-                                            <strong>Pod(s)/Class:</strong> {{ assign.pods }}
-                                        {% elif assign.start_pod is not none and assign.end_pod is not none %}
-                                            <strong>Pods:</strong> {{ assign.start_pod }}-{{ assign.end_pod }}
-                                        {% else %}
-                                            (No pod/class range specified)
-                                        {% endif %}
-                                    </li>
+                                    <li><strong>Host:</strong> {{ assign.host or 'N/A' }}, <strong>Pods:</strong> {{ assign.start_pod }}-{{ assign.end_pod }}</li>
                                 {% endfor %}
                                 </ul>
                             {% else %}
-                                <span class="text-muted">No specific assignments.</span>
+                                <span class="text-muted">No assignments.</span>
                             {% endif %}
                         </td>
-                        <td class="col-status-note 
-                            {% if item.type == 'Extended (Keep Running)' %}text-success{% endif %}
-                            {% if item.type == 'Scheduled for Teardown' %}text-danger{% endif %}
-                            {% if item.type in ['Student Build', 'Trainer Build'] and item.status_note and ('warning' in item.status_note.lower() or 'insufficient' in item.status_note.lower() or 'error' in item.status_note.lower()) %}
-                                status-note-build-warning 
-                            {% endif %}
-                        ">
-                            {{ item.status_note or '-' }}
-                        </td>
+                        <td class="col-apm-user"><code>{{ item.apm_username or 'N/A' }}</code></td>
+                        <td class="col-apm-pass"><code>{{ item.apm_password or 'N/A' }}</code></td>
+                        <td class="col-status-note status-note-build-warning">{{ item.status_note or '-' }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
 
-        {# --- EMAIL MODAL BUTTON --- #}
-        {% if all_items_for_review %}
         <div class="mt-4 mb-3 pt-3">
-            <button type="button" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#emailTrainersModal">
-                <i class="fas fa-envelope"></i> Prepare & Send Emails to Trainers
-            </button>
-            {# --- NEW: Generate APM Commands Button --- #}
-            <button type="button" class="btn btn-warning me-2" id="generateApmCommandsBtn" data-apm-commands-url="{{ url_for('actions.generate_apm_commands_route') }}">
-                <i class="fas fa-terminal"></i> Generate APM Commands
-            </button>
-            <span id="apmLoadingIndicator" class="spinner-border spinner-border-sm text-warning ms-2" role="status" style="display: none;"></span>
-            {# --- END NEW --- #}
+            <button type="button" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#emailTrainersModal"><i class="fas fa-envelope"></i> Prepare Emails</button>
+            <button type="button" class="btn btn-warning me-2" data-bs-toggle="modal" data-bs-target="#apmCommandsModal"><i class="fas fa-terminal"></i> Preview APM Commands</button>
         </div>
-        {% endif %}
-        {# --- END EMAIL MODAL BUTTON --- #}
-
-
-        <div class="mt-4 border-top pt-3"> {# Added border-top and pt-3 for separation #}
+        
+        <div class="mt-4 border-top pt-3">
             <form action="{{ url_for('actions.execute_scheduled_builds') }}" method="POST" id="executeBuildsForm">
-                 <input type="hidden" name="confirmed_build_plan_data" id="confirmedBuildPlanInput" 
-                        value="{{ buildable_items_json | default('[]') | escape }}">
-                 <input type="hidden" name="confirmed_teardown_plan_data" id="confirmedTeardownPlanInput"
-                        value="{{ teardownable_items_json | default('[]') | escape }}">
+                 <input type="hidden" name="confirmed_build_plan_data" id="confirmedBuildPlanInput" value="{{ buildable_items_json | default('[]') | escape }}">
                  <input type="hidden" name="batch_review_id" value="{{ batch_review_id or '' }}">
-                 
                  <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="perform_teardown_first" name="perform_teardown_first" value="yes">
-                    <label class="form-check-label" for="perform_teardown_first">
-                        Perform Teardown Before Setup for all new Student/Trainer Pod builds in this batch?
-                    </label>
-                    <small class="form-text d-block text-muted">
-                        If checked, a 'teardown' command will be scheduled to run before each 'setup' command for new builds. 
-                        'Extended' items are not affected.
-                    </small>
+                    <label class="form-check-label" for="perform_teardown_first">Perform Teardown Before Setup for all new builds in this batch?</label>
                  </div>
-                 
                  <div class="row align-items-end">
                     <div class="mb-3">
                      <label for="schedule_option_select" class="form-label">Scheduling Option:</label>
@@ -154,49 +92,24 @@
                          <option value="specific_time_all">All at Specific Time</option>
                          <option value="staggered">Staggered Start</option>
                      </select>
-                 </div>
-                    <div id="specific_time_all_details" style="display:none;" class="col-md-4 mb-3">
-                        <label for="schedule_start_time_all" class="form-label">Start All At (Local Time):</label>
-                        <input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time" id="schedule_start_time_all">
                     </div>
-                    <div id="staggered_details" style="display:none;" class="col-md-8 mb-3">
-                        <div class="row">
-                            <div class="col-md-7">
-                                <label for="schedule_start_time_staggered" class="form-label">First Job Starts At (Local Time):</label>
-                                <input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time_staggered" id="schedule_start_time_staggered">
-                            </div>
-                            <div class="col-md-5">
-                                <label for="schedule_stagger_minutes" class="form-label">Delay (mins):</label>
-                                <input type="number" class="form-control form-control-sm" name="schedule_stagger_minutes" id="schedule_stagger_minutes" value="30" min="1">
-                            </div>
-                        </div>
-                    </div>
+                    <div id="specific_time_all_details" style="display:none;" class="col-md-4 mb-3"><label for="schedule_start_time_all" class="form-label">Start All At (Local Time):</label><input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time" id="schedule_start_time_all"></div>
+                    <div id="staggered_details" style="display:none;" class="col-md-8 mb-3"><div class="row"><div class="col-md-7"><label for="schedule_start_time_staggered" class="form-label">First Job Starts At (Local Time):</label><input type="datetime-local" class="form-control form-control-sm" name="schedule_start_time_staggered" id="schedule_start_time_staggered"></div><div class="col-md-5"><label for="schedule_stagger_minutes" class="form-label">Delay (mins):</label><input type="number" class="form-control form-control-sm" name="schedule_stagger_minutes" id="schedule_stagger_minutes" value="30" min="1"></div></div></div>
                  </div>
-
-                 <div class="mt-3"> {# Button group #}
-                     <button type="submit" class="btn btn-lg btn-success" title="Confirm and schedule selected operations">
-                         <i class="fas fa-calendar-check"></i> Confirm & Schedule Operations
-                     </button>
-                    {# --- NEW: Preview LabBuild Commands Button --- #}
-                    <button type="button" class="btn btn-lg btn-outline-info ms-2" id="previewLabbuildCommandsBtn" data-bs-toggle="modal" data-bs-target="#labbuildCommandsModal">
-                        <i class="fas fa-eye"></i> Preview LabBuild Commands
-                    </button>
-                    {# --- END NEW --- #}
+                 <div class="mt-3">
+                     <button type="submit" class="btn btn-lg btn-success"><i class="fas fa-calendar-check"></i> Confirm & Schedule Operations</button>
+                    <button type="button" class="btn btn-lg btn-outline-info ms-2" data-bs-toggle="modal" data-bs-target="#labbuildCommandsModal"><i class="fas fa-eye"></i> Preview LabBuild Commands</button>
                 </div>
             </form>
         </div>
-
-    {% elif error_message %}
-        <div class="alert alert-danger m-3">{{ error_message }}</div>
-         <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary m-3">Back to Upcoming Courses</a>
     {% else %}
-        <p class="p-3">No data available or failed to load for final review.</p>
+        <p class="p-3">No data available for final review.</p>
          <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary m-3">Back to Upcoming Courses</a>
     {% endif %}
   </div> 
 </div> 
 
-{# --- Email Trainers Modal (already defined in previous step) --- #}
+<!-- Email Trainers Modal -->
 <div class="modal fade" id="emailTrainersModal" tabindex="-1" aria-labelledby="emailTrainersModalLabel" aria-hidden="true" data-send-email-url="{{ url_for('actions.send_trainer_email') }}">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content">
@@ -213,42 +126,21 @@
     </div>
   </div>
 </div>
-{# --- END Email Trainers Modal --- #}
 
-{# --- NEW: LabBuild Commands Modal --- #}
-<div class="modal fade" id="labbuildCommandsModal" tabindex="-1" aria-labelledby="labbuildCommandsModalLabel" aria-hidden="true">
+<!-- APM Commands Modal -->
+<div class="modal fade" id="apmCommandsModal" tabindex="-1" aria-labelledby="apmCommandsModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="labbuildCommandsModalLabel">Preview LabBuild Commands</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body" id="labbuildCommandsModalBody">
-        <p class="text-muted">Generating LabBuild commands...</p>
-        {# Commands will be placed inside a <pre> tag by JavaScript #}
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" id="copyLabbuildCommandsBtn" title="Copy all commands to clipboard">
-            <i class="fas fa-copy"></i> Copy All Commands
-        </button>
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-      </div>
-    </div>
-  </div>
-</div>
-{# --- END NEW MODAL --- #}
-
-{# --- NEW: APM Commands Modal --- #}
-<div class="modal fade" id="apmCommandsModal" tabindex="-1" aria-labelledby="apmCommandsModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-xl modal-dialog-scrollable"> {# modal-xl for wider content #}
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="apmCommandsModalLabel">Generated APM Commands</h5>
+        <h5 class="modal-title" id="apmCommandsModalLabel">APM Commands Preview</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body" id="apmCommandsModalBody">
-        <p class="text-muted">Generating commands...</p>
-        {# Commands will be placed inside a <pre> tag by JavaScript #}
+        {% if apm_commands_for_preview %}
+            <pre><code>{{ apm_commands_for_preview | join('\n') }}</code></pre>
+        {% else %}
+            <p class="text-info">No APM commands were generated for this plan.</p>
+        {% endif %}
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" id="copyApmCommandsBtn" title="Copy all commands to clipboard">
@@ -259,12 +151,31 @@
     </div>
   </div>
 </div>
-{# --- END NEW MODAL --- #}
 
+<!-- LabBuild Commands Modal -->
+<div class="modal fade" id="labbuildCommandsModal" tabindex="-1" aria-labelledby="labbuildCommandsModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="labbuildCommandsModalLabel">Preview LabBuild Commands</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="labbuildCommandsModalBody">
+        <p class="text-muted">Generating LabBuild commands...</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" id="copyLabbuildCommandsBtn" title="Copy all commands to clipboard">
+            <i class="fas fa-copy"></i> Copy All Commands
+        </button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 
-{# --- Embed all_review_items_json for JS (already defined in previous step) --- #}
+{# --- Embed Data for JS --- #}
 <script id="allReviewItemsJsonData" type="application/json">
-    {{ all_items_for_review | tojson | safe }}
+    {{ all_review_items_json | safe }}
 </script>
 <script id="buildableItemsJsonData" type="application/json">
   {{ buildable_items_json | default('[]') | safe }}
@@ -274,6 +185,5 @@
 
 {% block scripts %}
     {{ super() }}
-    {# Link to the dedicated JS file for this page #}
     <script src="{{ url_for('static', filename='js/final_review_schedule.js') }}" defer></script>
 {% endblock %}

@@ -60,6 +60,88 @@ from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 bp = Blueprint('actions', __name__)
 logger = logging.getLogger('dashboard.routes.actions')
 
+# --- Email Generation Logic (Moved to a Helper) ---
+def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any]]:
+    """
+    Server-side logic to generate DATA for trainer email previews.
+    It consolidates data and returns a list of data objects, NOT HTML.
+    """
+    email_data_list = []
+    
+    student_items = [
+        item for item in all_review_items 
+        if item.get("type") == "Student Build" and item.get("sf_trainer_name") and item.get("assignments")
+    ]
+    if not student_items:
+        return []
+
+    try:
+        all_hosts_set = {asgn.get("host") for item in student_items for asgn in item.get("assignments", []) if asgn.get("host")}
+        hosts_info_map = {h["host_name"]: h for h in host_collection.find({"host_name": {"$in": list(all_hosts_set)}})}
+    except PyMongoError as e:
+        logger.error(f"Failed to fetch host details for email previews: {e}")
+        hosts_info_map = {}
+
+    emails_grouped = defaultdict(list)
+    for item in student_items:
+        key = f"{item.get('sf_trainer_name', 'N/A')}|{item.get('original_sf_course_code', 'N/A')}"
+        emails_grouped[key].append(item)
+
+    for key, items in emails_grouped.items():
+        trainer_name, sf_code = key.split('|')
+        first_item = items[0]
+        logger.info(first_item)
+        
+        # Consolidate data for the single-row email format
+        all_assignments = [asgn for item in items for asgn in item.get("assignments", [])]
+        all_pod_numbers = {p for asgn in all_assignments for p in range(int(asgn.get('start_pod')), int(asgn.get('end_pod')) + 1) if asgn.get('start_pod') is not None}
+        all_item_hosts_set = {asgn.get("host") for asgn in all_assignments if asgn.get("host")}
+        
+        pod_numbers_sorted = sorted(list(all_pod_numbers))
+        start_end_pod_str = f"{pod_numbers_sorted[0]}-{pod_numbers_sorted[-1]}" if len(pod_numbers_sorted) > 1 else str(pod_numbers_sorted[0]) if pod_numbers_sorted else "N/A"
+        
+        first_pod_num = pod_numbers_sorted[0] if pod_numbers_sorted else None
+        vendor_short = (first_item.get("vendor", "xx") or "xx").lower()
+        
+        start_date_str, end_date_str = first_item.get("start_date"), first_item.get("end_date")
+        date_range_display, end_day_abbr = "N/A", "N/A"
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+            end_dt = datetime.datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
+            start_day, end_day = start_dt.strftime("%a"), end_dt.strftime("%a")
+            date_range_display = f"{start_day}-{end_day}" if start_day != end_day else start_day
+            end_day_abbr = end_day
+        except (ValueError, TypeError): pass
+
+        host_names_str = ", ".join(sorted(list(all_item_hosts_set)))
+        vcenter_str = ", ".join(sorted({hosts_info_map.get(h, {}).get("vcenter", "N/A") for h in all_item_hosts_set}))
+        
+        # This is the clean data object that will be sent to the JavaScript
+        email_data_list.append({
+            "key": key,
+            "trainer_name": trainer_name,
+            "sf_course_code": sf_code,
+            "email_subject": f"Lab Allocation for {sf_code}",
+            "payload_items": items,
+            "template_data": { # All the data needed to build the email body
+                "original_sf_course_code": sf_code,
+                "date_range_display": date_range_display,
+                "end_day_abbr": end_day_abbr,
+                "primary_location": "Virtual",
+                "sf_course_type": first_item.get('sf_course_type', 'N/A'),
+                "start_end_pod_str": start_end_pod_str,
+                # "username": f"lab{vendor_short}-{first_pod_num}" if first_pod_num is not None else f"lab{vendor_short}-X",
+                "username": first_item.get("apm_username", "N/A"),
+                "password": first_item.get("apm_password", "UseProvidedPassword"),
+                "effective_pods_req": first_item.get('effective_pods_req_student', len(all_pod_numbers)),
+                "final_labbuild_course": first_item.get('labbuild_course', 'N/A'),
+                "virtual_host_display": f"{host_names_str} ({start_end_pod_str})" if host_names_str else "N/A",
+                "primary_vcenter": vcenter_str,
+                "memory_gb_one_pod": float(first_item.get('memory_gb_one_pod', 0.0))
+            }
+        })
+    return email_data_list
+
 def _get_memory_for_course_local(course_name: str, local_course_configs_map: Dict[str, Any]) -> float:
     if not course_name: return 0.0
     config = local_course_configs_map.get(course_name)
@@ -73,168 +155,6 @@ def _get_memory_for_course_local(course_name: str, local_course_configs_map: Dic
             return 0.0
     return 0.0
 
-
-@bp.route('/send-trainer-email', methods=['POST'])
-def send_trainer_email():
-    data = request.json
-    logger.info(f"/send-trainer-email RAW received data: {data}") # Keep this for debugging
-
-    if not data:
-        logger.error("/send-trainer-email: No JSON data received.")
-        return jsonify({"status": "error", "message": "No data received."}), 400
-
-    trainer_name = data.get('trainer_name')
-    # This is expected to be a LIST of course items for this specific email
-    course_items_for_this_email_js = data.get('course_item_to_email')
-
-    logger.info(f"Extracted trainer_name: '{trainer_name}' (Type: {type(trainer_name)})")
-    logger.info(f"Extracted course_item_to_email (Type: {type(course_items_for_this_email_js)}): {course_items_for_this_email_js}")
-
-    error_messages = []
-    if not trainer_name:
-        error_messages.append("trainer_name is missing or empty.")
-    
-    # **CORRECTED VALIDATION FOR course_items_for_this_email_js**
-    if not isinstance(course_items_for_this_email_js, list):
-        error_messages.append(f"course_item_to_email is not a list (got {type(course_items_for_this_email_js)}).")
-    elif not course_items_for_this_email_js: # Check if the list is empty
-        error_messages.append("course_item_to_email list is empty (no course items provided for the email).")
-    
-    if error_messages:
-        full_error_msg = "Validation failed: " + " | ".join(error_messages)
-        logger.error(f"/send-trainer-email: {full_error_msg}")
-        # Return the detailed error message to the client for better debugging
-        return jsonify({"status": "error", "message": "Missing trainer name or valid non-empty course items list. Debug: " + full_error_msg}), 400
-        
-    if trainer_email_collection is None or host_collection is None: # type: ignore
-        logger.error("/send-trainer-email: Critical DB collection (trainer_email or host) is None.")
-        return jsonify({"status": "error", "message": "A required database service for email is unavailable."}), 500
-
-    # 1. Fetch Trainer's Email Address
-    trainer_email_doc = trainer_email_collection.find_one({"trainer_name": trainer_name, "active": True}) # type: ignore
-    if not trainer_email_doc or not trainer_email_doc.get("email_address"):
-        msg = f"Active email address not found for trainer '{trainer_name}'."
-        logger.warning(msg)
-        return jsonify({"status": "error", "message": msg}), 404
-    to_email_address = trainer_email_doc.get("email_address")
-
-    # 2. Prepare `course_allocations_for_template` for the email_utils function.
-    #    This list will be used by the email_utils.send_allocation_email function,
-    #    specifically for its Jinja template (if html_body_override is not used) and for the plain text part.
-    #    The items in `course_items_for_this_email_js` should already be well-structured by the JS.
-    
-    course_allocations_for_template: List[Dict[str, Any]] = []
-    
-    # Fetch host details once for all involved hosts in this specific email
-    all_involved_host_names_in_this_email = set()
-    for item_js_for_hosts in course_items_for_this_email_js: # Iterate through the list of items
-        for assignment_js_hosts in item_js_for_hosts.get("assignments", []):
-            if assignment_js_hosts.get("host"):
-                all_involved_host_names_in_this_email.add(assignment_js_hosts.get("host"))
-    
-    hosts_info_map_for_this_email: Dict[str, Dict[str,str]] = {}
-    if all_involved_host_names_in_this_email and host_collection is not None:
-        try:
-            host_cursor_for_email = host_collection.find({"host_name": {"$in": list(all_involved_host_names_in_this_email)}})
-            for h_doc_for_email in host_cursor_for_email:
-                hosts_info_map_for_this_email[h_doc_for_email["host_name"]] = {
-                    "location": h_doc_for_email.get("location", "Virtual"),
-                    "vcenter": h_doc_for_email.get("vcenter", "N/A")
-                }
-        except PyMongoError as e_h_email_prep:
-            logger.error(f"Error fetching host details for email construction: {e_h_email_prep}")
-
-    for item_from_js in course_items_for_this_email_js: # This is now iterating through the list
-        primary_host_name_email = "N/A"; primary_location_email = "Virtual"; primary_vcenter_email = "N/A"
-        assignments_js_email = item_from_js.get("assignments", [])
-        start_end_pod_str_email = "N/A"; vendor_pods_count_email = 0; first_pod_num_email = None
-
-        if assignments_js_email:
-            pod_ranges_email_list = []
-            actual_pods_in_assignment_email = []
-            for a_email in assignments_js_email:
-                start_p_email = a_email.get('start_pod'); end_p_email = a_email.get('end_pod')
-                if start_p_email is not None and end_p_email is not None:
-                    pod_ranges_email_list.append(f"{start_p_email}-{end_p_email}")
-                    try: actual_pods_in_assignment_email.extend(range(int(start_p_email), int(end_p_email) + 1))
-                    except ValueError: pass # Ignore if not convertible to int range
-            start_end_pod_str_email = ", ".join(pod_ranges_email_list) if pod_ranges_email_list else "N/A"
-            vendor_pods_count_email = len(set(actual_pods_in_assignment_email))
-
-            if assignments_js_email[0].get('start_pod') is not None: first_pod_num_email = assignments_js_email[0].get('start_pod')
-            primary_host_name_email = assignments_js_email[0].get('host', "N/A")
-            
-            host_details_for_email = hosts_info_map_for_this_email.get(primary_host_name_email, 
-                                                                    {"location": "Virtual (Host details N/A)", "vcenter": "N/A"})
-            primary_location_email = host_details_for_email["location"]
-            primary_vcenter_email = host_details_for_email["vcenter"]
-
-        vendor_short_email = (item_from_js.get("vendor", "xx") or "xx").lower()
-        username_email = f"lab{vendor_short_email}-{first_pod_num_email}" if first_pod_num_email is not None else f"lab{vendor_short_email}-X"
-        
-        password_email = "UseProvidedPassword" # Default placeholder
-        cfg_details_email = item_from_js.get("course_config_details_for_passwords", {}) # From JS payload
-        if cfg_details_email.get("student_password"): password_email = cfg_details_email["student_password"]
-        elif cfg_details_email.get("password"): password_email = cfg_details_email["password"]
-        
-        start_date_item_email = item_from_js.get("start_date", "N/A") # JS should send YYYY-MM-DD
-        end_date_item_email = item_from_js.get("end_date", "N/A")     # JS should send YYYY-MM-DD
-        start_day_abbr_email = "N/A"; end_day_abbr_email = "N/A"
-        try:
-            if start_date_item_email and start_date_item_email != "N/A": start_day_abbr_email = datetime.datetime.strptime(start_date_item_email, "%Y-%m-%d").strftime("%a")
-            if end_date_item_email and end_date_item_email != "N/A": end_day_abbr_email = datetime.datetime.strptime(end_date_item_email, "%Y-%m-%d").strftime("%a")
-        except ValueError: pass
-        date_range_display_email = start_day_abbr_email
-        if start_day_abbr_email != "N/A" and end_day_abbr_email != "N/A" and start_day_abbr_email != end_day_abbr_email:
-            date_range_display_email = f"{start_day_abbr_email}-{end_day_abbr_email}"
-        elif start_day_abbr_email == "N/A": date_range_display_email = "N/A"; end_day_abbr_email = "N/A"
-        
-        course_alloc_for_template = {
-            "original_sf_course_code": item_from_js.get("original_sf_course_code", item_from_js.get("sf_course_code", "N/A")),
-            "date_range_display": date_range_display_email,
-            "end_day_abbr": end_day_abbr_email,
-            "primary_location": primary_location_email,
-            "labbuild_course": item_from_js.get("sf_course_type", "N/A"),
-            "start_end_pod_str": start_end_pod_str_email,
-            "username": username_email,
-            "password": password_email,
-            "student_pax": item_from_js.get("sf_pax_count", 'N/A'),
-            "vendor_pods_count": vendor_pods_count_email,
-            "primary_host_name": primary_host_name_email,
-            "primary_vcenter": primary_vcenter_email,
-            "memory_gb_one_pod": float(item_from_js.get("memory_gb_one_pod", 0.0))
-        }
-        course_allocations_for_template.append(course_alloc_for_template)
-    
-    if not course_allocations_for_template: # Should be caught by earlier check, but defensive
-        logger.error("/send-trainer-email: No course items could be processed for the email template.")
-        return jsonify({"status": "error", "message": "Internal error preparing email content."}), 500
-
-    # 3. Construct Email Subject using the specific course code from the JS payload
-    # If course_items_for_this_email_js has multiple items (e.g. Maestro components),
-    # use the first one's original_sf_course_code for the subject.
-    email_subject_course_code = course_items_for_this_email_js[0].get('original_sf_course_code', 
-                                                                      course_items_for_this_email_js[0].get('sf_course_code', "Course"))
-    
-    # Use the edited subject from JS if provided, otherwise construct it
-    final_email_subject = data.get('edited_subject', f"Lab Allocation for {email_subject_course_code}")
-
-    # 4. Send Email
-    success, message = send_allocation_email(
-        to_address=to_email_address,
-        trainer_name=trainer_name,
-        subject=final_email_subject,
-        course_allocations_data=course_allocations_for_template, # Pass the list of dicts
-        html_body_override=data.get('edited_html_body') 
-    )
-
-    if success:
-        return jsonify({"status": "success", "message": message, "emailed_sf_course_code": email_subject_course_code})
-    else:
-        error_detail = message if "SMTP" in message or "rendering" in message or "configuration" in message else f"Email sending failed for {email_subject_course_code}. Server message: {message}"
-        return jsonify({"status": "error", "message": error_detail, "emailed_sf_course_code": email_subject_course_code}), 500
-
-# --- HELPER FUNCTION (can be moved to utils if preferred) ---
 def _get_memory_for_course(course_name: str) -> float:
     """Fetches memory_gb_per_pod for a given course name."""
     if course_config_collection is None: return 0.0
@@ -249,6 +169,71 @@ def _get_memory_for_course(course_name: str) -> float:
     except Exception as e:
         logger.error(f"Error getting memory for course '{course_name}': {e}")
         return 0.0
+
+# --- NEW Route to Generate Email Previews ---
+@bp.route('/prepare-email-previews', methods=['POST'])
+def prepare_email_previews():
+    """
+    Server-side route to generate all email previews.
+    Takes the full review data and returns structured HTML for the modal.
+    """
+    all_review_items = request.json.get('all_review_items')
+    if not isinstance(all_review_items, list):
+        return jsonify({"error": "Invalid data format."}), 400
+    
+    email_previews = _generate_email_previews(all_review_items)
+    
+    return jsonify({"previews": email_previews})
+
+
+# --- UPDATED Route to Send Emails ---
+@bp.route('/send-trainer-email', methods=['POST'])
+def send_trainer_email():
+    data = request.json
+    logger.info(f"[send_trainer_email] Received payload: {data}")
+
+    trainer_name = data.get('trainer_name')
+    course_items_for_email = data.get('course_item_to_email') # This is the original data payload
+    edited_subject = data.get('edited_subject')
+    edited_html_body = data.get('edited_html_body')
+
+    if not trainer_name or not isinstance(course_items_for_email, list) or not course_items_for_email:
+        return jsonify({"status": "error", "message": "Missing required data for sending email."}), 400
+
+    # Fetch trainer's email address
+    trainer_email_doc = trainer_email_collection.find_one({"trainer_name": trainer_name, "active": True})
+    if not trainer_email_doc or not trainer_email_doc.get("email_address"):
+        return jsonify({"status": "error", "message": f"Active email address not found for trainer '{trainer_name}'."}), 404
+    to_email_address = trainer_email_doc.get("email_address")
+
+    # The consolidation logic is now moved into the _generate_email_previews helper.
+    # We can reuse it to get the authoritative data structure, ensuring consistency.
+    generated_previews = _generate_email_previews(course_items_for_email)
+    
+    if not generated_previews:
+         return jsonify({"status": "error", "message": "Could not generate consolidated email data."}), 500
+
+    # The template for send_allocation_email expects a list.
+    # We pass the consolidated data from the first (and only) preview generated for this payload.
+    # The keys in this dictionary now match the email_utils.py template perfectly.
+    # Note: `course_allocations_data` must be a list for the template loop.
+    final_data_for_template = [
+        # This is the dictionary of all consolidated values
+        _generate_email_previews(course_items_for_email)[0] 
+    ]
+    
+    success, message = send_allocation_email(
+        to_address=to_email_address,
+        trainer_name=trainer_name,
+        subject=edited_subject,
+        course_allocations_data=final_data_for_template, # This is not directly used if override is present
+        html_body_override=edited_html_body # The preview from the modal is used as the final body
+    )
+
+    if success:
+        return jsonify({"status": "success", "message": message, "emailed_sf_course_code": edited_subject})
+    else:
+        return jsonify({"status": "error", "message": f"Email sending failed: {message}"}), 500
 
 @bp.route('/run', methods=['POST'])
 def run_now():
@@ -1494,17 +1479,37 @@ def prepare_trainer_pods():
     # --- 1. Internal Helper Functions ---
 
     def _update_finalized_student_assignments(batch_id, student_plan_data):
-        # ... (This helper function is correct and remains unchanged) ...
-        if not student_plan_data: return None, "No student plan data provided."
-        update_ops, doc_ids_to_fetch = [], []
+        """
+        STEP 1: Persist Student Assignments.
+        Updates the interim DB to mark student assignments as 'student_confirmed'
+        and returns the full, updated documents for the next step.
+        """
+        if not student_plan_data:
+            return None, "No student plan data provided."
+        
+        update_ops = []
+        doc_ids_to_fetch = []
         for item in student_plan_data:
             doc_id_str = item.get('interim_doc_id')
-            if not doc_id_str: logger.warning("Missing 'interim_doc_id' in student data."); continue
+            if not doc_id_str:
+                logger.warning("Missing 'interim_doc_id' in student data.")
+                continue
+            
             doc_ids_to_fetch.append(ObjectId(doc_id_str))
-            update_payload = {"assignments": item.get("interactive_assignments", []), "status": "student_confirmed", "updated_at": datetime.datetime.now(pytz.utc), "f5_class_number": item.get("f5_class_number")}
+            # Create a lean payload containing only the user's final decisions
+            update_payload = {
+                "assignments": item.get("interactive_assignments", []),
+                "status": "student_confirmed", 
+                "updated_at": datetime.datetime.now(pytz.utc)
+                # Note: f5_class_number was set in the previous step and is not modified here.
+            }
             update_ops.append(UpdateOne({"_id": ObjectId(doc_id_str), "batch_review_id": batch_id}, {"$set": update_payload}))
+
         try:
-            if update_ops: interim_alloc_collection.bulk_write(update_ops)
+            if update_ops:
+                interim_alloc_collection.bulk_write(update_ops)
+            
+            # Re-fetch the now-updated full documents to ensure we have the latest state
             confirmed_docs = list(interim_alloc_collection.find({"_id": {"$in": doc_ids_to_fetch}}))
             return confirmed_docs, None
         except (PyMongoError, BulkWriteError, InvalidId) as e:
@@ -1512,49 +1517,77 @@ def prepare_trainer_pods():
             return None, "Error saving confirmed student assignments."
 
     def _prepare_data_for_trainer_logic(confirmed_student_courses):
-        # ... (This helper function is correct and remains unchanged) ...
-        prep_data = { "build_rules": list(build_rules_collection.find().sort("priority", ASCENDING)), "all_hosts_dd": sorted([h['host_name'] for h in host_collection.find({"include_for_build": "true"}) if 'host_name' in h]), "working_host_caps_gb": {}, "taken_pods_vendor": defaultdict(set), "lb_courses_on_host": defaultdict(set), "course_configs_for_mem": list(course_config_collection.find({}, {"course_name": 1, "memory_gb_per_pod": 1, "memory": 1, "_id": 0})) }
-        hosts_docs = list(host_collection.find({"include_for_build": "true"}))
-        initial_host_caps = get_hosts_available_memory_parallel(hosts_docs) if hosts_docs else {}
-        prep_data["working_host_caps_gb"] = {h: cap for h, cap in initial_host_caps.items() if cap is not None}
-        db_cursor = alloc_collection.find({"extend": "true"}, {"courses.vendor": 1, "courses.pod_details": 1})
-        for tag_doc in db_cursor:
-            for course in tag_doc.get("courses", []):
-                vendor = course.get("vendor", "").lower()
-                if not vendor: continue
-                for pd in course.get("pod_details", []):
-                    if pd.get("pod_number") is not None: prep_data["taken_pods_vendor"][vendor].add(pd.get("pod_number"))
-                    if vendor == 'f5':
-                        if pd.get("class_number") is not None: prep_data["taken_pods_vendor"][vendor].add(pd.get("class_number"))
-                        for np in pd.get("pods", []):
-                            if np.get("pod_number") is not None: prep_data["taken_pods_vendor"][vendor].add(np.get("pod_number"))
-        for stud_course in confirmed_student_courses:
-            vendor, lb_course, mem_one_pod = stud_course.get("vendor", "").lower(), stud_course.get("final_labbuild_course"), float(stud_course.get("memory_gb_one_pod", 0.0))
-            for asgn in stud_course.get("assignments", []):
-                host = asgn.get("host")
-                if not all([host, vendor, lb_course]): continue
-                prep_data["lb_courses_on_host"][host].add(lb_course)
-                try:
-                    s_pod, e_pod = int(asgn.get('start_pod', 0)), int(asgn.get('end_pod', 0))
-                    if s_pod > 0 and e_pod >= s_pod:
-                        num_pods = e_pod - s_pod + 1
-                        for i in range(s_pod, e_pod + 1): prep_data["taken_pods_vendor"][vendor].add(i)
-                        mem_deduct = mem_one_pod + ((num_pods - 1) * mem_one_pod * SUBSEQUENT_POD_MEMORY_FACTOR if num_pods > 1 else 0)
-                        prep_data["working_host_caps_gb"][host] = max(0, round(prep_data["working_host_caps_gb"].get(host, 0.0) - mem_deduct, 2))
-                except (ValueError, TypeError): pass
-        return prep_data, None
+        """
+        Aggregates all data needed for the trainer pod allocation logic.
+        """
+        prep_data = {
+            "build_rules": [], "all_hosts_dd": [], "working_host_caps_gb": {},
+            "taken_pods_vendor": defaultdict(set), "lb_courses_on_host": defaultdict(set),
+            "course_configs_for_mem": []
+        }
+        try:
+            prep_data["build_rules"] = list(build_rules_collection.find().sort("priority", ASCENDING))
+            
+            # --- FIX: Convert the cursor to a list before passing it ---
+            hosts_docs = list(host_collection.find({"include_for_build": "true"}))
+            prep_data["all_hosts_dd"] = sorted([hd['host_name'] for hd in hosts_docs if 'host_name' in hd])
+            initial_host_caps = get_hosts_available_memory_parallel(hosts_docs) if hosts_docs else {}
+            # --- END FIX ---
+
+            prep_data["working_host_caps_gb"] = {h: cap for h, cap in initial_host_caps.items() if cap is not None}
+            
+            db_cursor = alloc_collection.find({"extend": "true"}, {"courses.vendor": 1, "courses.pod_details": 1})
+            for tag_doc in db_cursor:
+                for course in tag_doc.get("courses", []):
+                    vendor = course.get("vendor", "").lower()
+                    if not vendor: continue
+                    for pd in course.get("pod_details", []):
+                        if pd.get("pod_number") is not None: prep_data["taken_pods_vendor"][vendor].add(pd.get("pod_number"))
+                        if vendor == 'f5':
+                            if pd.get("class_number") is not None: prep_data["taken_pods_vendor"][vendor].add(pd.get("class_number"))
+                            for np in pd.get("pods", []):
+                                if np.get("pod_number") is not None: prep_data["taken_pods_vendor"][vendor].add(np.get("pod_number"))
+            
+            for stud_course in confirmed_student_courses:
+                vendor, lb_course = stud_course.get("vendor", "").lower(), stud_course.get("final_labbuild_course")
+                mem_one_pod = float(stud_course.get("memory_gb_one_pod", 0.0))
+                for asgn in stud_course.get("assignments", []):
+                    host = asgn.get("host")
+                    if not all([host, vendor, lb_course]): continue
+                    prep_data["lb_courses_on_host"][host].add(lb_course)
+                    try:
+                        s_pod, e_pod = int(asgn.get('start_pod', 0)), int(asgn.get('end_pod', 0))
+                        if s_pod > 0 and e_pod >= s_pod:
+                            num_pods = e_pod - s_pod + 1
+                            for i in range(s_pod, e_pod + 1): prep_data["taken_pods_vendor"][vendor].add(i)
+                            mem_deduct = mem_one_pod + ((num_pods - 1) * mem_one_pod * SUBSEQUENT_POD_MEMORY_FACTOR if num_pods > 1 else 0)
+                            prep_data["working_host_caps_gb"][host] = max(0, round(prep_data["working_host_caps_gb"].get(host, 0.0) - mem_deduct, 2))
+                    except (ValueError, TypeError): pass
+            
+            prep_data["course_configs_for_mem"] = list(course_config_collection.find({}, {"course_name": 1, "memory_gb_per_pod": 1, "memory": 1, "_id": 0}))
+            return prep_data, None
+        except (PyMongoError, Exception) as e:
+            logger.error(f"Error preparing data for trainer logic: {e}", exc_info=True)
+            return None, "Error preparing data for trainer pod assignment."
 
     def _propose_trainer_pod_for_course(student_course_doc, prep_data, batch_state):
-        # ... (This helper function is correct and remains unchanged) ...
+        """
+        STEP 3: Propose a single Trainer Pod.
+        Determines the assignment for a single trainer pod based on rules and available resources.
+        Modifies batch_state in place and returns the DB payload and display data.
+        """
         student_sf_code, vendor, sf_type, f5_class_number = student_course_doc.get('sf_course_code'), student_course_doc.get('vendor', '').lower(), student_course_doc.get('sf_course_type', ''), student_course_doc.get('f5_class_number')
         tp_sf_code = f"{student_sf_code}-TP"
+        
         relevant_rules = _find_all_matching_rules(prep_data["build_rules"], vendor, student_sf_code, sf_type)
         is_disabled = any(r.get("actions", {}).get("disable_trainer_pod") for r in relevant_rules)
-        trainer_payload = {"status": "pending_trainer_review", "updated_at": datetime.datetime.now(pytz.utc)}
+
+        db_update_payload = {"updated_at": datetime.datetime.now(pytz.utc)}
         display_data = {"interim_doc_id": str(student_course_doc["_id"]), "sf_course_code": tp_sf_code, "vendor": vendor.upper(), "f5_class_number": f5_class_number}
+
         if is_disabled:
-            trainer_payload.update({"trainer_labbuild_course": None, "trainer_assignment": None, "trainer_assignment_warning": "Trainer pod build explicitly disabled by rule."})
-            display_data.update({"labbuild_course": "N/A - Disabled", "error_message": trainer_payload["trainer_assignment_warning"]})
+            db_update_payload.update({"trainer_labbuild_course": None, "trainer_assignment": None, "trainer_assignment_warning": "Trainer pod build explicitly disabled by rule."})
+            display_data.update({"labbuild_course": "N/A - Disabled", "error_message": db_update_payload["trainer_assignment_warning"]})
         else:
             lb_course, mem_one_pod = student_course_doc.get('final_labbuild_course'), float(student_course_doc.get('memory_gb_one_pod', 0.0))
             tp_rules = _find_all_matching_rules(prep_data["build_rules"], vendor, tp_sf_code, sf_type)
@@ -1562,10 +1595,13 @@ def prepare_trainer_pods():
             for r in tp_rules:
                 for k in ["set_labbuild_course", "host_priority", "start_pod_number"]:
                     if k not in eff_actions_tp and k in r.get("actions", {}): eff_actions_tp[k] = r["actions"][k]
+            
             if eff_actions_tp.get("set_labbuild_course"): lb_course = eff_actions_tp.get("set_labbuild_course")
             if lb_course != student_course_doc.get('final_labbuild_course'): mem_one_pod = _get_memory_for_course_local(lb_course, {c['course_name']: c for c in prep_data["course_configs_for_mem"]})
-            trainer_payload.update({"trainer_labbuild_course": lb_course, "trainer_memory_gb_one_pod": mem_one_pod})
+
+            db_update_payload.update({"trainer_labbuild_course": lb_course, "trainer_memory_gb_one_pod": mem_one_pod})
             display_data.update({"labbuild_course": lb_course, "memory_gb_one_pod": mem_one_pod})
+            
             host, pod, warning = None, None, None
             if lb_course and mem_one_pod > 0:
                 hosts_to_try = eff_actions_tp.get("host_priority", prep_data["all_hosts_dd"])
@@ -1584,12 +1620,14 @@ def prepare_trainer_pods():
                         break
                 if host is None: warning = "No suitable host found with available capacity."
             else: warning = "Cannot assign trainer pod: Missing LabBuild course or memory is zero."
-            trainer_payload.update({"trainer_assignment": {"host": host, "start_pod": pod, "end_pod": pod} if host and pod else None, "trainer_assignment_warning": warning})
+            
+            db_update_payload.update({"trainer_assignment": {"host": host, "start_pod": pod, "end_pod": pod} if host and pod else None, "trainer_assignment_warning": warning})
             display_data.update({"assigned_host": host, "start_pod": pod, "end_pod": pod, "error_message": warning})
-        return trainer_payload, display_data
+            
+        return db_update_payload, display_data
 
     def _save_trainer_proposals(trainer_updates, batch_id):
-        # ... (This helper remains unchanged) ...
+        """STEP 4: Save Trainer Proposals to the Database."""
         if not trainer_updates: return True
         try:
             update_ops = [UpdateOne({"_id": item["_id"], "batch_review_id": batch_id}, {"$set": item["payload"]}) for item in trainer_updates]
@@ -1601,9 +1639,9 @@ def prepare_trainer_pods():
             flash("Error saving trainer pod proposals.", "danger")
             return False
 
-    # --- 2. Main execution flow of the route ---
+    # --- Main execution flow of the route ---
     if not batch_review_id or not final_student_plan_json:
-        flash("Review session ID or student plan missing.", "danger")
+        flash("Session ID or student plan missing.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
     
     try:
@@ -1624,33 +1662,22 @@ def prepare_trainer_pods():
     batch_trainer_state = {"working_host_caps_gb": prep_data["working_host_caps_gb"], "taken_pods_vendor": prep_data["taken_pods_vendor"], "lb_courses_on_host": prep_data["lb_courses_on_host"]}
     
     trainer_updates_for_db = []
-    
-    # --- MODIFICATION START: Correctly prepare data for the template ---
-    # Create a new list to hold the combined data for the template
     display_items_for_template = []
     
     for student_doc in confirmed_student_courses:
-        # Get the proposed trainer details
         trainer_payload, trainer_display_data = _propose_trainer_pod_for_course(student_doc, prep_data, batch_trainer_state)
-        
-        # Add the trainer payload to the list of DB updates
         trainer_updates_for_db.append({"_id": student_doc["_id"], "payload": trainer_payload})
-        
-        # Create a single combined dictionary for the template for this course
-        # This dictionary will contain both the student's info and the proposed trainer info
-        combined_display_item = {
-            "student_part": student_doc, # The full document for the student part
-            "trainer_part": trainer_display_data # The dictionary created for the trainer part
-        }
-        display_items_for_template.append(combined_display_item)
-    # --- MODIFICATION END ---
+        # Merge the proposed trainer data into the student doc for immediate display
+        student_doc.update(trainer_payload)
+        display_items_for_template.append(student_doc)
 
     if not _save_trainer_proposals(trainer_updates_for_db, batch_review_id):
         return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
 
+    # STEP 5: Render the final page
     return render_template(
         'trainer_pod_review.html',
-        courses_and_trainer_pods=display_items_for_template, # Pass the corrected list
+        courses_and_trainer_pods=display_items_for_template,
         batch_review_id=batch_review_id,
         current_theme=current_theme,
         all_hosts=prep_data["all_hosts_dd"],
@@ -1802,17 +1829,23 @@ def _generate_apm_data_for_plan(
 
 @bp.route('/finalize-and-display-build-plan', methods=['POST'])
 def finalize_and_display_build_plan():
+    """
+    Receives final trainer decisions, updates the DB with all final assignments
+    (including APM credentials), and displays the full build/teardown plan.
+    """
     current_theme = request.cookies.get('theme', 'light')
-    batch_review_id_outer = request.form.get('batch_review_id')
-    final_trainer_plan_json_outer = request.form.get('final_trainer_assignments_for_review')
+    batch_review_id = request.form.get('batch_review_id')
+    final_trainer_plan_json = request.form.get('final_trainer_assignments_for_review')
+    logger.info(f"[finalize_and_display_build_plan] Starting for Batch ID: {batch_review_id}")
 
-    # --- Sub-function: Update Trainer Assignments in Interim DB ---
-    def _update_finalized_trainer_assignments(batch_id_inner: str, trainer_assignments_data: List[Dict]) -> bool:
+    # --- Internal Helper Functions ---
+
+    def _update_finalized_trainer_assignments(batch_id, trainer_assignments_data):
+        # ... (This helper is correct and remains unchanged) ...
+        if not trainer_assignments_data: return True, "No trainer assignments to update."
         update_ops: List[UpdateOne] = []
         try:
-            if interim_alloc_collection is None:
-                logger.error("_update_finalized_trainer_assignments: interim_alloc_collection is None.")
-                return False
+            if interim_alloc_collection is None: return False, "Database service unavailable."
             for trainer_data in trainer_assignments_data:
                 doc_id_str = trainer_data.get('interim_doc_id')
                 build_trainer = trainer_data.get('build_trainer', False)
@@ -1820,414 +1853,274 @@ def finalize_and_display_build_plan():
                 
                 payload: Dict[str, Any] = {"updated_at": datetime.datetime.now(pytz.utc)}
                 if build_trainer:
-                    payload["trainer_labbuild_course"] = trainer_data.get("labbuild_course")
-                    payload["trainer_memory_gb_one_pod"] = trainer_data.get("memory_gb_one_pod")
-                    assignments = trainer_data.get("interactive_assignments", [])
-                    payload["trainer_assignment_final"] = assignments if isinstance(assignments, list) else []
-                    payload["trainer_assignment_final_warning"] = trainer_data.get("error_message")
-                    payload["status"] = "trainer_confirmed"
+                    payload.update({
+                        "trainer_labbuild_course": trainer_data.get("labbuild_course"),
+                        "trainer_memory_gb_one_pod": trainer_data.get("memory_gb_one_pod"),
+                        "trainer_assignment": trainer_data.get("interactive_assignments", []),
+                        "trainer_assignment_warning": trainer_data.get("error_message"),
+                        "status": "trainer_confirmed"
+                    })
                 else:
-                    payload["trainer_assignment_final"] = None
-                    error_msg = trainer_data.get("error_message", "Skipped by user/rule.")
-                    payload["trainer_assignment_final_warning"] = error_msg
-                    if "Disabled by rule" in str(error_msg) or "Skipping trainer pod for" in str(error_msg):
-                        payload["status"] = "trainer_disabled_by_rule"
-                    else:
-                        payload["status"] = "trainer_skipped_by_user"
-                update_ops.append(UpdateOne({"_id": ObjectId(doc_id_str), "batch_review_id": batch_id_inner}, {"$set": payload}))
+                    payload.update({"trainer_assignment": None, "status": "trainer_skipped_by_user", "trainer_assignment_warning": "Build skipped by user."})
+                update_ops.append(UpdateOne({"_id": ObjectId(doc_id_str), "batch_review_id": batch_id}, {"$set": payload}))
             
             if update_ops:
                 result = interim_alloc_collection.bulk_write(update_ops)
-                logger.info(f"Updated {result.modified_count} trainer assignments in interim (batch '{batch_id_inner}').")
-            return True
-        except (PyMongoError, BulkWriteError) as e:
-            logger.error(f"Error saving finalized trainer assignments to interim DB: {e}", exc_info=True)
-            flash("Error saving finalized trainer assignments.", "danger"); return False
-        except Exception as e_gen:
-            logger.error(f"Unexpected error during trainer final update: {e_gen}", exc_info=True)
-            flash("Unexpected error saving trainer assignments.", "danger"); return False
-
-    # --- Sub-function: Fetch supporting data (hosts, course_configs) ---
-    def _fetch_supporting_data() -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, Any]]]:
-        hosts_map: Dict[str, Dict[str, str]] = {}
-        configs_map: Dict[str, Dict[str, Any]] = {}
-        try:
-            if host_collection is not None:
-                for h_doc in host_collection.find({}):
-                    h_name = h_doc.get("host_name")
-                    if h_name: hosts_map[h_name] = {"location": h_doc.get("location", "Virtual"), "vcenter": h_doc.get("vcenter", "N/A")}
-            if course_config_collection is not None:
-                for cc_doc in course_config_collection.find({}):
-                    cc_name = cc_doc.get("course_name")
-                    # Sanitize ObjectIds from course_config right away
-                    if cc_name: configs_map[cc_name] = {k: (str(v) if isinstance(v, ObjectId) else v) for k,v in cc_doc.items()}
-        except PyMongoError as e: logger.error(f"Error fetching supporting data (hosts/course_configs): {e}")
-        return hosts_map, configs_map
-
-    # --- Sub-function: Process Interim Documents for Display ---
-    def _process_interim_documents(
-        batch_id_inner: str,
-        local_hosts_info_map: Dict[str, Dict[str, str]],
-        local_course_configs_map: Dict[str, Dict[str, Any]]
-    ) -> List[Dict]:
-        processed_items: List[Dict] = []
-        finalized_statuses = ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]
-        if interim_alloc_collection is None:
-            logger.error("_process_interim_documents: interim_alloc_collection is None.")
-            return processed_items
-        
-        try:
-            cursor = interim_alloc_collection.find({
-                "batch_review_id": batch_id_inner, "status": {"$in": finalized_statuses}
-            }).sort([("sf_start_date", ASCENDING), ("sf_course_code", ASCENDING)])
-
-            for doc in cursor:
-                sf_code = doc.get("sf_course_code"); vendor = doc.get("vendor"); sf_trainer = doc.get("sf_trainer_name")
-                sf_pax = doc.get("sf_pax_count"); start_date = doc.get("sf_start_date"); end_date = doc.get("sf_end_date")
-                f5_class_num = doc.get("f5_class_number")
-
-                common_data = {
-                    "type": "Student Build", "sf_course_code": sf_code, "original_sf_course_code": sf_code,
-                    "vendor": vendor, "start_date": start_date, "end_date": end_date,
-                    "status_note": doc.get("student_assignment_final_warning") or doc.get("student_assignment_warning"),
-                    "sf_trainer_name": sf_trainer, "sf_pax_count": sf_pax, "f5_class_number": f5_class_num
-                }
-                maestro_cfg = doc.get("maestro_split_config_details_rule")
-                is_maestro = isinstance(maestro_cfg, dict) and vendor == "cp"
-
-                if is_maestro:
-                    maestro_comp_assignments_source = doc.get("initial_interactive_sub_rows_student", [])
-                    if not maestro_comp_assignments_source and doc.get("student_assignments_final"):
-                        maestro_comp_assignments_source = [] # Reconstruct
-                        final_asgns=doc.get("student_assignments_final",[]);main_lb=maestro_cfg.get("main_course","m-r81");main_c=int(maestro_cfg.get("main_course_count",2));r1_lb=maestro_cfg.get("rack1_course","m-r1");r2_lb=maestro_cfg.get("rack2_course","m-r2")
-                        for i,a in enumerate(final_asgns): cur_a=a.copy();
-                        if "labbuild_course" not in cur_a: cur_a["labbuild_course"] = main_lb if i<main_c else (r1_lb if i==main_c else (r2_lb if i==main_c+1 else main_lb))
-                        maestro_comp_assignments_source.append(cur_a)
-                    
-                    comp_details_list=[]; total_mem=0.0; all_asgns_display=[]
-                    for comp_asgn in maestro_comp_assignments_source:
-                        lb=comp_asgn.get("labbuild_course") or maestro_cfg.get("main_course","maestro-r81"); asgns=[comp_asgn]; all_asgns_display.extend(asgns)
-                        hosts=list(set(a.get("host") for a in asgns if a.get("host"))); h_details=[{"name":h, **local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in hosts]
-                        mem=_get_memory_for_course_local(lb,local_course_configs_map); pods_in_seg=0
-                        if comp_asgn.get("start_pod") is not None and comp_asgn.get("end_pod") is not None: 
-                            try: pods_in_seg=int(comp_asgn.get("end_pod",0))-int(comp_asgn.get("start_pod",0))+1; 
-                            except:pass
-                        total_mem+=mem*max(1,pods_in_seg); cfg=local_course_configs_map.get(lb,{})
-                        comp_details_list.append({"component_labbuild_course":lb,"component_assignments":asgns,"component_memory_gb_one_pod":mem,"component_host_details":h_details,"component_course_config":cfg})
-                    processed_items.append({**common_data,"labbuild_course":"Maestro Course (Multi-Component)","assignments":all_asgns_display,"memory_gb_one_pod":total_mem,"host_details_for_assignments":list({d['name']:d for c in comp_details_list for d in c.get("component_host_details",[])}.values()),"course_config_details_for_passwords":local_course_configs_map.get(maestro_cfg.get("main_course","maestro-r81"),{}),"is_maestro_course":True,"maestro_component_details":comp_details_list})
-                else: # Standard Student
-                    s_asgns=doc.get("student_assignments_final",[]);s_hosts=list(set(a.get("host") for a in s_asgns if a.get("host")));s_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in s_hosts];s_lbc=doc.get("final_labbuild_course_student");s_cfg=local_course_configs_map.get(s_lbc,{}) if s_lbc else {};
-                    processed_items.append({**common_data,"labbuild_course":s_lbc,"assignments":s_asgns,"memory_gb_one_pod":doc.get("memory_gb_one_student_pod"),"host_details_for_assignments":s_hdetails,"course_config_details_for_passwords":s_cfg})
-                
-                # Trainer Part
-                if doc.get("status")=="trainer_disabled_by_rule" or doc.get("trainer_labbuild_course") or doc.get("status")=="trainer_skipped_by_user":
-                    t_asgns=doc.get("trainer_assignment_final",[]);t_hosts=list(set(a.get("host") for a in t_asgns if a.get("host"))) if t_asgns else [];t_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in t_hosts]
-                    t_note=doc.get("trainer_assignment_final_warning") or doc.get("trainer_assignment_warning");
-                    if doc.get("status")=="trainer_disabled_by_rule":t_note=doc.get("trainer_assignment_final_warning")
-                    elif doc.get("status")=="trainer_skipped_by_user":t_note="Build skipped by user."
-                    t_lbc=doc.get("trainer_labbuild_course");t_cfg=local_course_configs_map.get(t_lbc,{}) if t_lbc else {}
-                    t_sfc_display = sf_code;
-                    if t_lbc or doc.get("status") in ["trainer_disabled_by_rule", "trainer_skipped_by_user"]: t_sfc_display = sf_code + ("-TP (Skipped)" if not t_lbc and doc.get("status") != "trainer_confirmed" else "-TP")
-                    processed_items.append({"type":"Trainer Build","sf_course_code":t_sfc_display,"original_sf_course_code":sf_code,"labbuild_course":t_lbc if t_lbc else "N/A (Skipped/Disabled)","vendor":vendor,"start_date":start_date,"end_date":end_date,"assignments":t_asgns if t_asgns else [],"memory_gb_one_pod":doc.get("trainer_memory_gb_one_pod") if t_lbc else 0.0,"status_note":t_note,"sf_trainer_name":sf_trainer,"host_details_for_assignments":t_hdetails,"course_config_details_for_passwords":t_cfg,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num})
-        except PyMongoError as e: logger.error(f"Error fetching interim batch items: {e}", exc_info=True); flash("Error fetching review data.", "danger")
-        except Exception as e_proc: logger.error(f"Error processing interim items: {e_proc}", exc_info=True); flash("Error processing review data.", "danger")
-        return processed_items
-
-
-    # --- Sub-function: Process Interim Documents for Display ---
-    def _process_interim_documents(
-        batch_id_inner: str,
-        local_hosts_info_map: Dict[str, Dict[str, str]],
-        local_course_configs_map: Dict[str, Dict[str, Any]],
-        apm_credentials_map: Dict[str, Dict[str,str]] # apm_auth_code -> {"username": "...", "password": "..."}
-    ) -> List[Dict]:
-        processed_items: List[Dict] = []
-        finalized_statuses = ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]
-        if interim_alloc_collection is None: logger.error("Sub _process_interim: interim_alloc_collection is None."); return processed_items
-        
-        try:
-            cursor = interim_alloc_collection.find({"batch_review_id":batch_id_inner, "status":{"$in":finalized_statuses}}).sort([("sf_start_date",ASCENDING),("sf_course_code",ASCENDING)])
-            for doc in cursor:
-                sf_code=doc.get("sf_course_code");vendor=doc.get("vendor");sf_trainer=doc.get("sf_trainer_name");sf_pax=doc.get("sf_pax_count");start_date=doc.get("sf_start_date");end_date=doc.get("sf_end_date");f5_class_num=doc.get("f5_class_number")
-                
-                # Get APM username/password for the student part of this course
-                student_apm_auth_code = sf_code # Key for student APM entry
-                student_apm_creds = apm_credentials_map.get(student_apm_auth_code, {})
-                student_apm_user = student_apm_creds.get("username", f"lab{vendor}-?") # Fallback with '?' if not found
-                student_apm_pass = student_apm_creds.get("password", "N/A")
-
-                common_data = {"type":"Student Build","sf_course_code":sf_code,"original_sf_course_code":sf_code,"vendor":vendor,"start_date":start_date,"end_date":end_date,"status_note":doc.get("student_assignment_final_warning") or doc.get("student_assignment_warning"),"sf_trainer_name":sf_trainer,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num, 
-                               "apm_username": student_apm_user, "apm_password": student_apm_pass}
-                
-                maestro_cfg=doc.get("maestro_split_config_details_rule");is_maestro=isinstance(maestro_cfg,dict) and vendor=="cp"
-                if is_maestro:
-                    maestro_comp_assignments=doc.get("initial_interactive_sub_rows_student",[])
-                    # ... (rest of Maestro splitting logic from your previous correct version, ensuring common_data is spread) ...
-                    # Each Maestro component item will inherit the `apm_username` and `apm_password` from `common_data`
-                    # as APM entries are per original_sf_course_code for students.
-                    if not maestro_comp_assignments and doc.get("student_assignments_final"): # Fallback
-                        maestro_comp_assignments = [] # Reconstruct
-                        final_asgns=doc.get("student_assignments_final",[]);main_lb=maestro_cfg.get("main_course","m-r81");main_c=int(maestro_cfg.get("main_course_count",2));r1_lb=maestro_cfg.get("rack1_course","m-r1");r2_lb=maestro_cfg.get("rack2_course","m-r2")
-                        for i,a in enumerate(final_asgns): cur_a=a.copy();
-                        if "labbuild_course" not in cur_a: cur_a["labbuild_course"] = main_lb if i<main_c else (r1_lb if i==main_c else (r2_lb if i==main_c+1 else main_lb))
-                        maestro_comp_assignments.append(cur_a)
-                    comp_details_list=[]; total_mem=0.0; all_asgns_display=[]
-                    for comp_asgn in maestro_comp_assignments:
-                        lb=comp_asgn.get("labbuild_course") or maestro_cfg.get("main_course","maestro-r81"); asgns=[comp_asgn]; all_asgns_display.extend(asgns)
-                        hosts=list(set(a.get("host") for a in asgns if a.get("host"))); h_details=[{"name":h, **local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in hosts]
-                        mem=_get_memory_for_course_local(lb,local_course_configs_map); pods_in_seg=0
-                        if comp_asgn.get("start_pod") is not None and comp_asgn.get("end_pod") is not None: 
-                            try: pods_in_seg=int(comp_asgn.get("end_pod",0))-int(comp_asgn.get("start_pod",0))+1; 
-                            except:pass
-                        total_mem+=mem*max(1,pods_in_seg); cfg=local_course_configs_map.get(lb,{})
-                        comp_details_list.append({"component_labbuild_course":lb,"component_assignments":asgns,"component_memory_gb_one_pod":mem,"component_host_details":h_details,"component_course_config":cfg})
-                    processed_items.append({**common_data,"labbuild_course":"Maestro Course (Multi-Component)","assignments":all_asgns_display,"memory_gb_one_pod":total_mem,"host_details_for_assignments":list({d['name']:d for c in comp_details_list for d in c.get("component_host_details",[])}.values()),"course_config_details_for_passwords":local_course_configs_map.get(maestro_cfg.get("main_course","maestro-r81"),{}),"is_maestro_course":True,"maestro_component_details":comp_details_list})
-                else: # Standard Student
-                    s_asgns=doc.get("student_assignments_final",[]);s_hosts=list(set(a.get("host") for a in s_asgns if a.get("host")));s_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in s_hosts];s_lbc=doc.get("final_labbuild_course_student");s_cfg=local_course_configs_map.get(s_lbc,{}) if s_lbc else {};
-                    processed_items.append({**common_data,"labbuild_course":s_lbc,"assignments":s_asgns,"memory_gb_one_pod":doc.get("memory_gb_one_student_pod"),"host_details_for_assignments":s_hdetails,"course_config_details_for_passwords":s_cfg})
-                
-                # Trainer Part
-                if doc.get("status")=="trainer_disabled_by_rule" or doc.get("trainer_labbuild_course") or doc.get("status")=="trainer_skipped_by_user":
-                    t_lbc=doc.get("trainer_labbuild_course")
-                    trainer_apm_auth_code=f"{sf_code}-TP"
-                    trainer_apm_creds = apm_credentials_map.get(trainer_apm_auth_code, {})
-                    trainer_apm_user = trainer_apm_creds.get("username", f"lab{vendor}-X-TP" if vendor else "labxx-X-TP")
-                    trainer_apm_pass = trainer_apm_creds.get("password", "N/A")
-                    
-                    t_sfc_display = sf_code;
-                    if t_lbc or doc.get("status") in ["trainer_disabled_by_rule","trainer_skipped_by_user"]: t_sfc_display = sf_code + ("-TP (Skipped)" if not t_lbc and doc.get("status")!="trainer_confirmed" else "-TP")
-                    
-                    t_asgns=doc.get("trainer_assignment_final",[]);t_hosts=list(set(a.get("host") for a in t_asgns if a.get("host"))) if t_asgns else [];t_hdetails=[{"name":h,**local_hosts_info_map.get(h,{"location":"V","vcenter":"N/A"})} for h in t_hosts];t_note=doc.get("trainer_assignment_final_warning") or doc.get("trainer_assignment_warning");
-                    if doc.get("status")=="trainer_disabled_by_rule":t_note=doc.get("trainer_assignment_final_warning")
-                    elif doc.get("status")=="trainer_skipped_by_user":t_note="Build skipped by user."
-                    t_cfg=local_course_configs_map.get(t_lbc,{}) if t_lbc else {}
-                    processed_items.append({"type":"Trainer Build","sf_course_code":t_sfc_display,"original_sf_course_code":sf_code,"labbuild_course":t_lbc if t_lbc else "N/A (Skipped/Disabled)","vendor":vendor,"start_date":start_date,"end_date":end_date,"assignments":t_asgns if t_asgns else [],"memory_gb_one_pod":doc.get("trainer_memory_gb_one_pod") if t_lbc else 0.0,"status_note":t_note,"sf_trainer_name":sf_trainer,"host_details_for_assignments":t_hdetails,"course_config_details_for_passwords":t_cfg,"sf_pax_count":sf_pax,"f5_class_number":f5_class_num, 
-                                          "apm_username": trainer_apm_user, "apm_password": trainer_apm_pass})
-        except PyMongoError as e: logger.error(f"Error fetching interim items: {e}", exc_info=True); flash("Error fetching review data.", "danger")
-        except Exception as e_proc: logger.error(f"Error processing interim items: {e_proc}", exc_info=True); flash("Error processing review data.", "danger")
-        return processed_items
-
-    # --- Sub-function: Fetch "Extend: True" Allocations ---
-    def _fetch_extended_allocations(
-        local_hosts_info_map: Dict[str, Dict[str, str]],
-        apm_credentials_map: Dict[str, Dict[str, str]] # Added to include APM user/pass
-    ) -> List[Dict]:
-        extended_items: List[Dict] = []
-        if alloc_collection is None:
-            logger.warning("_fetch_extended_allocations: alloc_collection is None.")
-            return extended_items
-        try:
-            cursor = alloc_collection.find({"extend": {"$regex": "^true$", "$options": "i"}})
-            for tag_doc in cursor:
-                tag = tag_doc.get("tag", "N/A_EXT")
-                for course_alloc in tag_doc.get("courses", []):
-                    v_ext = course_alloc.get("vendor")
-                    lb_ext = course_alloc.get("course_name")
-                    sdate_ext = _format_date_for_review(str(course_alloc.get("start_date", "")), f"ext {tag} s")
-                    edate_ext = _format_date_for_review(str(course_alloc.get("end_date", "")), f"ext {tag} e")
-                    
-                    sfc_ext = tag # Default APM auth code key for extended is the tag
-                    if v_ext and lb_ext: # Heuristic to derive SF code from tag
-                        p = tag.split('_')
-                        if len(p) > 1 and v_ext.upper() in p[0].upper():
-                            pot_sfc = p[1]
-                            if re.match(r'^[A-Z0-9\-]+$', pot_sfc):
-                                sfc_ext = pot_sfc
-                    
-                    # Get APM username/password for this extended item
-                    extended_apm_details = apm_credentials_map.get(sfc_ext, {})
-                    apm_user_ext = extended_apm_details.get("username", "N/A (Extended)")
-                    apm_pass_ext = extended_apm_details.get("password", "N/A (Extended)")
-                    
-                    asgn_details_ext = []
-                    for pd_ext in course_alloc.get("pod_details", []):
-                        h_ext = pd_ext.get("host", "N/A")
-                        itemid_ext = str(pd_ext.get("pod_number") or pd_ext.get("class_number") or "N/A")
-                        nested_str = ""
-                        
-                        # --- CORRECTED BLOCK for F5 nested pods ---
-                        if v_ext and v_ext.lower() == 'f5' and pd_ext.get("pods"):
-                            pods_data = pd_ext.get("pods", [])
-                            if isinstance(pods_data, list):
-                                f5_pns = [
-                                    str(np.get("pod_number"))
-                                    for np in pods_data
-                                    if isinstance(np, dict) and np.get("pod_number") is not None
-                                ]
-                                if f5_pns:
-                                    nested_str = f" (Pods: {', '.join(f5_pns)})"
-                            else:
-                                logger.warning(f"Tag '{tag}', Course '{lb_ext}': 'pods' field is not a list: {type(pods_data)}. Skipping nested pods string.")
-                        # --- END CORRECTED BLOCK ---
-                                
-                        asgn_details_ext.append({"host": h_ext, "pods": f"{itemid_ext}{nested_str}"})
-                    
-                    extended_items.append({
-                        "type": "Extended (Keep Running)", "sf_course_code": sfc_ext,
-                        "original_sf_course_code": sfc_ext, "labbuild_course": lb_ext or "N/A",
-                        "vendor": v_ext or "N/A", "start_date": sdate_ext, "end_date": edate_ext,
-                        "status_note": f"Keep Running (Tag: {tag})", "assignments": asgn_details_ext,
-                        "sf_trainer_name": course_alloc.get("trainer", "N/A"),
-                        "sf_pax_count": course_alloc.get("pax", "N/A"),
-                        "apm_username": apm_user_ext, # Add APM username
-                        "apm_password": apm_pass_ext   # Add APM password
-                    })
-        except PyMongoError as e:
-            logger.error(f"Error fetching extended items: {e}", exc_info=True)
-        return extended_items
-
-    # --- Sub-function: Sort final list ---
-    def _sort_final_list(items: List[Dict]) -> None:
-        type_order_map = {
-            "Student Build": 1,
-            "Trainer Build": 2,
-            "Extended (Keep Running)": 3,
-            # Add other types here if they exist and need specific ordering
-            "Scheduled for Teardown": 0 # Example, if you had this type
-        }
-        def get_sort_key(item: Dict) -> Tuple[int, datetime.date, str]: # Primary sort key is now type_priority
-            # 1. Primary Sort: Type (Student, Trainer, Extended)
-            item_type_str = item.get("type", "")
-            type_priority = type_order_map.get(item_type_str, 99) # Default to a high number for unknown types
-
-            # 2. Secondary Sort: Start Date
-            date_str = item.get("start_date", "")
-            sort_date = datetime.date.max # Default for N/A or unparseable dates
-            if date_str and date_str != "N/A" and date_str != "Ongoing (Extended)":
-                try:
-                    sort_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-                except ValueError:
-                    logger.warning(f"Sorting: Could not parse date '{date_str}' for item '{item.get('sf_course_code', '')}'. Using default max date.")
-            elif date_str == "Ongoing (Extended)": # Make "Ongoing" sort like very old dates to appear first within "Extended"
-                sort_date = datetime.date.min
-
-            # 3. Tertiary Sort: SF Course Code
-            # Use original_sf_course_code if present (especially for trainer pods to group with students),
-            # otherwise fall back to sf_course_code.
-            sort_code = (item.get("original_sf_course_code") or item.get("sf_course_code") or "").lower()
-            
-            return (type_priority, sort_date, sort_code)
-
-        try:
-            items.sort(key=get_sort_key)
-            logger.debug("Final review list sorted by Type, then Start Date, then SF Course Code.")
+                logger.info(f"Updated {result.modified_count} trainer assignments in interim (batch '{batch_id}').")
+            return True, None
         except Exception as e:
-            logger.error(f"Error sorting final list: {e}", exc_info=True)
+            logger.error(f"Error saving finalized trainer assignments to interim DB: {e}", exc_info=True)
+            return False, "Error saving finalized trainer assignments."
 
+    def _fetch_all_plan_data(batch_id):
+        # ... (This helper is correct) ...
+        finalized_statuses = ["student_confirmed", "trainer_confirmed", "trainer_skipped_by_user", "trainer_disabled_by_rule"]
+        try:
+            if interim_alloc_collection is None: return [], "Database service unavailable."
+            cursor = interim_alloc_collection.find(
+                {"batch_review_id": batch_id, "status": {"$in": finalized_statuses}}
+            ).sort([("sf_start_date", ASCENDING), ("sf_course_code", ASCENDING)])
+            return list(cursor), None
+        except PyMongoError as e:
+            logger.error(f"Error fetching final plan items for batch '{batch_id}': {e}", exc_info=True)
+            return [], "Error fetching review data."
+    
+    def _generate_apm_data_for_plan(final_plan_items: List[Dict]) -> Tuple[List[str], Dict[str, Any], List[str]]:
+        """
+        STEP 3: Generate APM Commands.
+        Generates APM commands and credentials based on the final build plan.
+        """
+        logger.info(f"--- APM Data Generation Started for {len(final_plan_items)} plan items ---")
+        
+        apm_commands_delete, apm_commands_add_update, apm_errors = [], [], []
+        desired_apm_state, apm_credentials_map = defaultdict(lambda: {"all_pod_numbers": set()}), {}
 
-    # --- Sub-function: Sanitize for JSON ---
-    def _sanitize_for_json(data_item: Any) -> Any:
-        if isinstance(data_item, list):
-            return [_sanitize_for_json(i) for i in data_item]
-        elif isinstance(data_item, dict):
-            return {str(k): _sanitize_for_json(v) for k, v in data_item.items()}
-        elif isinstance(data_item, ObjectId):
-            return str(data_item)
-        elif isinstance(data_item, datetime.datetime): # Check if it's a datetime object
-            dt = data_item # Assign to dt
-            # Now, the timezone logic applies to dt
-            if dt.tzinfo is None:
-                dt = pytz.utc.localize(dt) # Make naive datetime timezone-aware (UTC)
+        # Fetch current APM state
+        try:
+            apm_list_url = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
+            response = requests.get(apm_list_url, timeout=15); response.raise_for_status()
+            current_apm_entries = response.json()
+        except Exception as e:
+            apm_errors.append(f"Could not fetch current APM state: {e}")
+            current_apm_entries = {}
+        
+        # Fetch extended (keep-alive) tags
+        extended_apm_codes = set()
+        if alloc_collection is not None:
+            try:
+                for doc in alloc_collection.find({"extend": "true"}, {"tag": 1, "_id": 0}):
+                    if doc.get("tag"): extended_apm_codes.add(doc.get("tag"))
+            except PyMongoError: apm_errors.append("Could not fetch extended allocation tags.")
+
+        # --- FIX IS HERE: Ensure 'details' dict is always populated ---
+        for item in final_plan_items:
+            sf_code = item.get("sf_course_code")
+            if not sf_code: continue
+
+            # Student pods
+            if item.get("assignments"):
+                if "details" not in desired_apm_state[sf_code]:
+                    desired_apm_state[sf_code]["details"] = {"trainer": item.get("sf_trainer_name", "N/A"), "type": item.get("sf_course_type", "Course"), "version": item.get("final_labbuild_course", "N/A"), "vendor": item.get("vendor", "xx").lower()}
+                for asgn in item.get("assignments", []):
+                    s, e = asgn.get("start_pod"), asgn.get("end_pod")
+                    if s is not None and e is not None: [desired_apm_state[sf_code]["all_pod_numbers"].add(p) for p in range(int(s), int(e) + 1)]
+            
+            # Trainer pods
+            if item.get("trainer_assignment"):
+                key_tp = f"{sf_code}-TP"
+                if "details" not in desired_apm_state[key_tp]:
+                     desired_apm_state[key_tp]["details"] = {"trainer": "Trainer Pods", "type": item.get("sf_course_type", "Trainer Setup"), "version": item.get("trainer_labbuild_course", "N/A"), "vendor": item.get("vendor", "xx").lower()}
+                for asgn_tp in item["trainer_assignment"]:
+                    s, e = asgn_tp.get("start_pod"), asgn_tp.get("end_pod")
+                    if s is not None and e is not None: [desired_apm_state[key_tp]["all_pod_numbers"].add(p) for p in range(int(s), int(e) + 1)]
+        
+        # *** FIX IS HERE ***
+        # The 'final_desired_state' dictionary was missing the 'version' key.
+        final_desired_state = { 
+            code: { 
+                "vpn_auth_courses": f"{d['details']['trainer']} - {d['details']['type']}"[:250], 
+                "vpn_auth_range": _create_contiguous_ranges(list(d["all_pod_numbers"])), 
+                "version": d["details"]["version"],  # Ensure 'version' is included
+                "password": _generate_random_password(), 
+                "vendor_short": d["details"]["vendor"] 
+            } for code, d in desired_apm_state.items() if d["all_pod_numbers"] 
+        }
+        # *** END FIX ***
+        
+        # Generate commands
+        apm_code_to_user = {}
+        for user, details in current_apm_entries.items():
+            code = details.get("vpn_auth_course_code")
+            if not code:
+                apm_commands_delete.append(f"course bigip del {user}"); continue
+            if code in extended_apm_codes:
+                apm_code_to_user[code] = user; continue
+            if code in final_desired_state:
+                apm_code_to_user[code] = user
+                new = final_desired_state[code]
+                if str(details.get("vpn_auth_range")) != str(new["vpn_auth_range"]): apm_commands_add_update.append(f'course bigip range {user} "{new["vpn_auth_range"]}"')
+                if str(details.get("vpn_auth_version")) != str(new["version"]): apm_commands_add_update.append(f'course bigip version {user} "{new["version"]}"')
+                if str(details.get("vpn_auth_courses")) != str(new["vpn_auth_courses"]): apm_commands_add_update.append(f'course bigip description {user} "{new["vpn_auth_courses"]}"')
+                apm_commands_add_update.append(f'course bigip password {user} "{new["password"]}"')
             else:
-                dt = dt.astimezone(pytz.utc) # Convert aware datetime to UTC
-            return dt.isoformat().replace("+00:00", "Z") # Return the ISO string
-        elif isinstance(data_item, datetime.date):
-            return data_item.isoformat() # Convert date to ISO string
-        return data_item # Return as is if not a special type
-    # --- End Sub-functions ---
+                apm_commands_delete.append(f"course bigip del {user}")
+        
+        used_x_nums = defaultdict(set)
+        for _, uname in apm_code_to_user.items():
+            m = re.match(r"lab([a-z0-9]+)-(\d+)", uname.lower()); 
+            if m: used_x_nums[m.group(1)].add(int(m.group(2)))
+
+        for code, details in final_desired_state.items():
+            if code in apm_code_to_user:
+                apm_credentials_map[code] = {"username": apm_code_to_user[code], "password": details["password"]}
+                continue
+            vendor, x = details["vendor_short"], 1
+            while True:
+                if x not in used_x_nums[vendor]: new_user = f"lab{vendor}-{x}"; used_x_nums[vendor].add(x); break
+                x += 1
+            apm_commands_add_update.append(f'course bigip add {new_user} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["version"]}" "{details["vpn_auth_courses"]}" "8" "{code}"')
+            apm_credentials_map[code] = {"username": new_user, "password": details["password"]}
+        
+        return apm_commands_delete + apm_commands_add_update, apm_credentials_map, apm_errors
+
+
+    def _update_db_with_apm(batch_id, apm_creds_map):
+        # ... (This helper is correct and remains unchanged) ...
+        if not apm_creds_map: return True, "No APM credentials to update."
+        update_ops: List[UpdateOne] = []
+        for apm_code, creds in apm_creds_map.items():
+            if apm_code.endswith("-TP"):
+                sf_code = apm_code[:-3]
+                payload = {"trainer_apm_username": creds.get("username"), "trainer_apm_password": creds.get("password")}
+                update_ops.append(UpdateOne({"batch_review_id": batch_id, "sf_course_code": sf_code}, {"$set": payload}))
+            else:
+                payload = {"student_apm_username": creds.get("username"), "student_apm_password": creds.get("password")}
+                update_ops.append(UpdateOne({"batch_review_id": batch_id, "sf_course_code": apm_code}, {"$set": payload}))
+        try:
+            if update_ops and interim_alloc_collection is not None: interim_alloc_collection.bulk_write(update_ops)
+            return True, None
+        except Exception as e:
+            logger.error(f"Error updating interim DB with APM credentials: {e}", exc_info=True)
+            return False, "Database error while saving APM credentials."
+
+    def _process_plan_for_display(final_plan_docs):
+        """
+        STEP 6: Prepare Data for Rendering.
+        **THIS IS THE CORRECTED VERSION WITH LOGGING**
+        """
+        processed_items: List[Dict] = []
+        logger.info(f"[_process_plan_for_display] Processing {len(final_plan_docs)} final documents for display.")
+
+        for doc in final_plan_docs:
+            sf_code = doc.get("sf_course_code")
+            vendor = doc.get("vendor")
+            logger.debug(f"[_process_plan_for_display] Processing doc for SF Code: {sf_code}")
+
+            # --- Student Part ---
+            student_item = {
+                "type": "Student Build",
+                "sf_course_code": sf_code,
+                "original_sf_course_code": sf_code,
+                "labbuild_course": doc.get("final_labbuild_course"),
+                "sf_course_type": doc.get("sf_course_type"),
+                "vendor": vendor,
+                "start_date": doc.get("sf_start_date"),
+                "end_date": doc.get("sf_end_date"),
+                "assignments": doc.get("assignments", []),
+                "status_note": doc.get("student_assignment_warning"),
+                "sf_trainer_name": doc.get("sf_trainer_name"),
+                "f5_class_number": doc.get("f5_class_number"),
+                "sf_pax_count": doc.get("sf_pax_count"),
+                "effective_pods_req_student": doc.get("effective_pods_req"),
+                "memory_gb_one_pod": doc.get("memory_gb_one_pod"),
+                "apm_username": doc.get("student_apm_username"),
+                "apm_password": doc.get("student_apm_password"),
+            }
+            processed_items.append(student_item)
+            logger.debug(f"[_process_plan_for_display] Added student item: {student_item}")
+
+            # --- Trainer Part ---
+            if doc.get("status") in ["trainer_confirmed", "trainer_skipped_by_user", "trainer_disabled_by_rule"]:
+                is_skipped = not doc.get("trainer_assignment")
+                trainer_sfc_display = sf_code + ("-TP (Skipped)" if is_skipped else "-TP")
+                
+                trainer_item = {
+                    "type": "Trainer Build",
+                    "sf_course_code": trainer_sfc_display,
+                    "original_sf_course_code": sf_code,
+                    "labbuild_course": doc.get("trainer_labbuild_course") or "N/A",
+                    "vendor": vendor,
+                    "start_date": doc.get("sf_start_date"),
+                    "end_date": doc.get("sf_end_date"),
+                    "assignments": doc.get("trainer_assignment") or [],
+                    "status_note": doc.get("trainer_assignment_warning"),
+                    "sf_trainer_name": doc.get("sf_trainer_name"),
+                    "f5_class_number": doc.get("f5_class_number"),
+                    "apm_username": doc.get("trainer_apm_username"),
+                    "apm_password": doc.get("trainer_apm_password"),
+                }
+                processed_items.append(trainer_item)
+                logger.debug(f"[_process_plan_for_display] Added trainer item: {trainer_item}")
+
+        return processed_items
+    
+    def _sanitize_for_json(data):
+        # ... (This helper is correct and remains unchanged) ...
+        if isinstance(data, list): return [_sanitize_for_json(i) for i in data]
+        if isinstance(data, dict): return {str(k): _sanitize_for_json(v) for k,v in data.items()}
+        if isinstance(data, ObjectId): return str(data)
+        if isinstance(data, datetime.datetime):
+            dt = data.astimezone(pytz.utc) if data.tzinfo else pytz.utc.localize(data)
+            return dt.isoformat().replace("+00:00", "Z")
+        if isinstance(data, datetime.date): return data.isoformat()
+        return data
 
     # --- Main Route Logic ---
-    if not batch_review_id_outer:
-        flash("Review session ID missing.", "danger"); return redirect(url_for('main.view_upcoming_courses'))
-
-    final_trainer_assignments_data_outer: List[Dict] = []
-    if final_trainer_plan_json_outer:
-        try:
-            parsed_outer_data = json.loads(final_trainer_plan_json_outer)
-            if isinstance(parsed_outer_data, list): final_trainer_assignments_data_outer = parsed_outer_data
-        except json.JSONDecodeError:
-            logger.error("Error decoding final_trainer_plan_json_outer."); flash("Error processing trainer assignments.", "danger")
-            return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id_outer))
-
-    if not _update_finalized_trainer_assignments(batch_review_id_outer, final_trainer_assignments_data_outer):
-        return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id_outer))
-
-    hosts_map_main, configs_map_main = _fetch_supporting_data()
+    if not batch_review_id or not final_trainer_plan_json:
+        flash("Session ID or final plan missing.", "danger"); return redirect(url_for('main.view_upcoming_courses'))
     
-    # --- Generate APM data (usernames, passwords, commands) on page load ---
-    # Fetch current APM entries and extended APM course codes for the helper
-    current_apm_entries_for_helper: Dict[str, Dict[str, Any]] = {}
     try:
-        apm_list_url = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
-        response = requests.get(apm_list_url, timeout=15); response.raise_for_status()
-        current_apm_entries_for_helper = response.json()
-    except Exception as e: logger.error(f"FinalizePage: Error fetching current APM entries for helper: {e}")
+        trainer_plan_data = json.loads(final_trainer_plan_json)
+    except json.JSONDecodeError:
+        flash("Error processing final trainer assignments.", "danger"); return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id))
 
-    extended_apm_codes_for_helper: Set[str] = set()
-    try:
-        if alloc_collection is not None:
-            cursor = alloc_collection.find({"extend": "true"}, {"tag": 1, "courses.apm_vpn_auth_course_code": 1, "_id": 0})
-            for doc_ext in cursor: # ... (populate extended_apm_codes_for_helper)
-                found_ext = False;
-                for ca_ext in doc_ext.get("courses",[]):
-                    if ca_ext.get("apm_vpn_auth_course_code"): extended_apm_codes_for_helper.add(ca_ext["apm_vpn_auth_course_code"]); found_ext=True
-                if not found_ext and doc_ext.get("tag"): extended_apm_codes_for_helper.add(doc_ext.get("tag"))
-    except PyMongoError as e_ext: logger.error(f"FinalizePage: Error fetching extended APM codes for helper: {e_ext}")
+    success, error = _update_finalized_trainer_assignments(batch_review_id, trainer_plan_data)
+    if not success:
+        flash(error, "danger"); return redirect(url_for('actions.prepare_trainer_pods', batch_review_id=batch_review_id))
 
-    # Fetch plan items for APM logic (all confirmed for the current session)
-    plan_items_for_apm_helper: List[Dict] = []
-    if interim_alloc_collection is not None:
-        try:
-            # If batch_review_id_outer is None or empty, this fetches all confirmed items,
-            # which is what we want for a fresh APM generation on page load.
-            query_filter_apm_helper = {"status": {"$in": ["student_confirmed", "trainer_confirmed"]}}
-            if batch_review_id_outer: # Scope to batch if ID is present
-                 query_filter_apm_helper["batch_review_id"] = batch_review_id_outer
-            
-            apm_plan_cursor = interim_alloc_collection.find(query_filter_apm_helper)
-            plan_items_for_apm_helper = list(apm_plan_cursor)
-        except PyMongoError as e_apm_fetch_helper:
-            logger.error(f"FinalizePage: Error fetching plan items for APM logic helper: {e_apm_fetch_helper}")
-            # Continue with empty list, errors will be reported by helper
-
-    # Call the APM logic helper
-    _, apm_credentials_map, apm_generation_errors = _generate_apm_data_for_plan(
-        plan_items_for_apm_helper,
-        current_apm_entries_for_helper,
-        extended_apm_codes_for_helper
-    )
+    final_plan_docs, error = _fetch_all_plan_data(batch_review_id)
+    if error:
+        flash(error, "danger"); return redirect(url_for('main.index'))
+    logger.info(f"[finalize_and_display_build_plan] Fetched {len(final_plan_docs)} final docs from interim DB.")
     
-    if apm_generation_errors:
-        flash("Note: Errors occurred during APM data pre-generation: " + " | ".join(apm_generation_errors), "info")
-            
-    # Now process interim documents for display, passing the apm_credentials_map
-    processed_interim_items_main = _process_interim_documents(batch_review_id_outer, hosts_map_main, configs_map_main, apm_credentials_map)
-    extended_items_list_main = _fetch_extended_allocations(hosts_map_main, apm_credentials_map)
-    
-    final_list_for_display_and_json_main = processed_interim_items_main + extended_items_list_main
-    _sort_final_list(final_list_for_display_and_json_main)
+    apm_commands, apm_creds_map, apm_errors = _generate_apm_data_for_plan(final_plan_docs)
+    if apm_errors:
+        flash("Note: Errors occurred during APM data generation: " + " | ".join(apm_errors), "info")
+    logger.info(f"[finalize_and_display_build_plan] Generated {len(apm_commands)} APM commands and {len(apm_creds_map)} credential pairs.")
 
-    sanitized_all_items_for_review_main = [_sanitize_for_json(item) for item in final_list_for_display_and_json_main]
-    sanitized_buildable_items_main = [
-        item for item in sanitized_all_items_for_review_main
+    success, error = _update_db_with_apm(batch_review_id, apm_creds_map)
+    if not success:
+        flash(error, "danger")
+        
+    final_plan_docs_with_apm, _ = _fetch_all_plan_data(batch_review_id)
+    processed_plan_items = _process_plan_for_display(final_plan_docs_with_apm)
+    
+    sanitized_all_items = _sanitize_for_json(processed_plan_items)
+    sanitized_buildable_items = [
+        item for item in sanitized_all_items
         if item.get("type") in ["Student Build", "Trainer Build"] and item.get("assignments")
     ]
+    logger.info(f"[finalize_and_display_build_plan] Final list of {len(sanitized_all_items)} items being passed to template.")
+    logger.debug(f"[finalize_and_display_build_plan] Sanitized data for template: {json.dumps(sanitized_all_items, indent=2)}")
 
-    buildable_json_str_main = "[]"; all_review_json_str_main = "[]"
-    try:
-        buildable_json_str_main = json.dumps(sanitized_buildable_items_main)
-        all_review_json_str_main = json.dumps(sanitized_all_items_for_review_main)
-    except TypeError as te:
-        logger.error(f"TypeError during json.dumps: {te}", exc_info=True); flash("Error preparing data for JS.", "danger")
-    except Exception as e_json:
-        logger.error(f"General error during json.dumps: {e_json}", exc_info=True); flash("Server error preparing data for JS.", "danger")
-
+    
     return render_template(
         'final_review_schedule.html',
-        all_items_for_review=sanitized_all_items_for_review_main,
-        buildable_items_json=buildable_json_str_main,
-        all_review_items_json=all_review_json_str_main,
-        batch_review_id=batch_review_id_outer,
+        all_items_for_review=sanitized_all_items,
+        buildable_items_json=json.dumps(sanitized_buildable_items),
+        all_review_items_json=json.dumps(sanitized_all_items),
+        apm_commands_for_preview=apm_commands,
+        batch_review_id=batch_review_id,
         current_theme=current_theme,
     )
 
@@ -2367,8 +2260,8 @@ def execute_scheduled_builds():
             # Create a descriptive tag
             tag_type_suffix = item_to_build.get('type','item').split(' ')[0].lower()
             tag = f"{item_sf_code.replace('/', '_').replace(' ', '_')}_{tag_type_suffix}"
-            if len(assignments) > 1:
-                tag += f"_part{assignment_idx+1}"
+            # if len(assignments) > 1:
+            #     tag += f"_part{assignment_idx+1}"
             base_args_for_item_assignment.extend(['-t', tag[:45]]) # Keep tag reasonably short
 
             # Add F5 class number if applicable (ensure key exists in item_to_build)
