@@ -11,6 +11,7 @@ import re
 import io
 import json
 import os # For SMTP env vars
+import itertools
 import smtplib # For SMTP
 from email.mime.text import MIMEText # For email body
 from email.mime.multipart import MIMEMultipart # For email structure
@@ -64,7 +65,7 @@ logger = logging.getLogger('dashboard.routes.actions')
 def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any]]:
     """
     Server-side logic to generate DATA for trainer email previews.
-    It consolidates data and returns a list of data objects, NOT HTML.
+    It consolidates data, now creating multi-line strings for split-host allocations.
     """
     email_data_list = []
     
@@ -90,19 +91,46 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
     for key, items in emails_grouped.items():
         trainer_name, sf_code = key.split('|')
         first_item = items[0]
-        logger.info(first_item)
         
-        # Consolidate data for the single-row email format
-        all_assignments = [asgn for item in items for asgn in item.get("assignments", [])]
-        all_pod_numbers = {p for asgn in all_assignments for p in range(int(asgn.get('start_pod')), int(asgn.get('end_pod')) + 1) if asgn.get('start_pod') is not None}
-        all_item_hosts_set = {asgn.get("host") for asgn in all_assignments if asgn.get("host")}
-        
-        pod_numbers_sorted = sorted(list(all_pod_numbers))
-        start_end_pod_str = f"{pod_numbers_sorted[0]}-{pod_numbers_sorted[-1]}" if len(pod_numbers_sorted) > 1 else str(pod_numbers_sorted[0]) if pod_numbers_sorted else "N/A"
-        
-        first_pod_num = pod_numbers_sorted[0] if pod_numbers_sorted else None
-        vendor_short = (first_item.get("vendor", "xx") or "xx").lower()
-        
+        # --- Group assignments by host ---
+        assignments_by_host = defaultdict(list)
+        for item in items:
+            for asgn in item.get("assignments", []):
+                host = asgn.get("host")
+                if host:
+                    assignments_by_host[host].append(asgn)
+
+        # --- Generate multi-line strings for display ---
+        host_lines = []
+        vcenter_lines = []
+        pod_range_lines = []
+        total_pods_for_course = 0
+        total_ram_for_course = 0.0
+
+        for host, host_assignments in sorted(assignments_by_host.items()):
+            host_pod_numbers = {p for asgn in host_assignments for p in range(int(asgn.get('start_pod')), int(asgn.get('end_pod')) + 1) if asgn.get('start_pod') is not None}
+            num_pods_on_host = len(host_pod_numbers)
+            total_pods_for_course += num_pods_on_host
+
+            pod_numbers_sorted = sorted(list(host_pod_numbers))
+            groups = [list(g) for k, g in itertools.groupby(enumerate(pod_numbers_sorted), lambda x: x[0]-x[1])]
+            host_start_end_pod_str = ", ".join([f"{r[0][1]}-{r[-1][1]}" if len(r) > 1 else str(r[0][1]) for r in groups])
+
+            host_info = hosts_info_map.get(host, {})
+            memory_per_pod = float(first_item.get('memory_gb_one_pod', 0.0))
+            
+            # The virtual host column should contain the host and its pod range
+            host_lines.append(f"{host} ({host_start_end_pod_str})")
+            vcenter_lines.append(host_info.get("vcenter", "N/A"))
+            pod_range_lines.append(host_start_end_pod_str)
+            
+            total_ram_for_course += memory_per_pod * num_pods_on_host
+
+        # Join the lines with a newline character for multi-line display in the cell
+        virtual_host_display = "\n".join(host_lines)
+        vcenter_display = "\n".join(vcenter_lines)
+        pod_range_display = "\n".join(pod_range_lines)
+
         start_date_str, end_date_str = first_item.get("start_date"), first_item.get("end_date")
         date_range_display, end_day_abbr = "N/A", "N/A"
         try:
@@ -113,31 +141,26 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
             end_day_abbr = end_day
         except (ValueError, TypeError): pass
 
-        host_names_str = ", ".join(sorted(list(all_item_hosts_set)))
-        vcenter_str = ", ".join(sorted({hosts_info_map.get(h, {}).get("vcenter", "N/A") for h in all_item_hosts_set}))
-        
-        # This is the clean data object that will be sent to the JavaScript
         email_data_list.append({
             "key": key,
             "trainer_name": trainer_name,
             "sf_course_code": sf_code,
             "email_subject": f"Lab Allocation for {sf_code}",
             "payload_items": items,
-            "template_data": { # All the data needed to build the email body
+            "template_data": {
                 "original_sf_course_code": sf_code,
                 "date_range_display": date_range_display,
                 "end_day_abbr": end_day_abbr,
                 "primary_location": "Virtual",
                 "sf_course_type": first_item.get('sf_course_type', 'N/A'),
-                "start_end_pod_str": start_end_pod_str,
-                # "username": f"lab{vendor_short}-{first_pod_num}" if first_pod_num is not None else f"lab{vendor_short}-X",
+                "start_end_pod_str": pod_range_display,
                 "username": first_item.get("apm_username", "N/A"),
                 "password": first_item.get("apm_password", "UseProvidedPassword"),
-                "effective_pods_req": first_item.get('effective_pods_req_student', len(all_pod_numbers)),
+                "effective_pods_req": total_pods_for_course,
                 "final_labbuild_course": first_item.get('labbuild_course', 'N/A'),
-                "virtual_host_display": f"{host_names_str} ({start_end_pod_str})" if host_names_str else "N/A",
-                "primary_vcenter": vcenter_str,
-                "memory_gb_one_pod": float(first_item.get('memory_gb_one_pod', 0.0))
+                "virtual_host_display": virtual_host_display,
+                "primary_vcenter": vcenter_display,
+                "memory_gb_one_pod": total_ram_for_course
             }
         })
     return email_data_list

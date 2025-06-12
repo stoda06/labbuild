@@ -119,14 +119,13 @@ document.addEventListener('DOMContentLoaded', function() {
             emailsContainer.innerHTML = '<p class="text-center"><span class="spinner-border spinner-border-sm"></span> Loading email previews from server...</p>';
 
             try {
-                // Step 1: Fetch clean, consolidated data from the server.
                 const response = await fetch('/prepare-email-previews', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ all_review_items: allReviewData })
                 });
-
                 if (!response.ok) throw new Error(`Server responded with status ${response.status}`);
+                
                 const data = await response.json();
                 if (data.error) throw new Error(data.error);
                 
@@ -135,7 +134,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                // Step 2: Build the static HTML structure for the modal body.
                 let allEmailsHtml = `<div class="d-flex justify-content-end mb-3"><button class="btn btn-success btn-sm" id="sendAllEmailsBtn"><i class="fas fa-mail-bulk"></i> Send All Unsent</button></div>`;
                 
                 data.previews.forEach(preview => {
@@ -144,8 +142,10 @@ document.addEventListener('DOMContentLoaded', function() {
                         <div class="trainer-email-section mb-4 p-3 border rounded" 
                              id="${emailItemId}"
                              data-key="${preview.key}" 
-                             data-payload='${JSON.stringify(preview.payload_items)}'>
-                            <div class="d-flex justify-content-between align-items-center mb-2">
+                             data-payload='${JSON.stringify(preview.payload_items)}'
+                             data-template-data='${JSON.stringify(preview.template_data)}'>
+                             <!-- ... (rest of the static HTML structure for the section) ... -->
+                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <h5 class="mb-0">To: ${preview.trainer_name} (for ${preview.sf_course_code})</h5>
                                 <div>
                                     <button class="btn btn-sm btn-primary send-one-email-btn"><i class="fas fa-paper-plane"></i> Send</button>
@@ -162,7 +162,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 emailsContainer.innerHTML = allEmailsHtml;
                 
-                // Step 3: Dynamically build the content of each iframe using the DOM.
+                // Dynamically build the content of each iframe using the DOM.
                 document.querySelectorAll('.trainer-email-section').forEach(section => {
                     const iframe = section.querySelector('.email-body-iframe');
                     const previewData = data.previews.find(p => p.key === section.dataset.key);
@@ -174,21 +174,19 @@ document.addEventListener('DOMContentLoaded', function() {
                     iframeDoc.write(`
                         <!DOCTYPE html>
                         <html>
-                            <head>
-                                <title>Email Preview</title>
-                                <link rel="stylesheet" href="/static/css/final_review_schedule.css">
-                            </head>
-                            <body class="email-preview-body">
-                                <!-- Content will be inserted here by JS -->
-                            </body>
+                            <head><title>Email Preview</title><link rel="stylesheet" href="/static/css/final_review_schedule.css"></head>
+                            <body class="email-preview-body"></body>
                         </html>
                     `);
                     iframeDoc.close();
 
-                    // Now, build and insert the content using DOM methods
                     const body = iframeDoc.body;
                     const templateData = previewData.template_data;
                     
+                    // Helper to convert newline characters to <br> tags for HTML
+                    const nl2br = (str) => (str || '').toString().replace(/\n/g, '<br>');
+
+                    // The HTML content is built here using the clean data object
                     body.innerHTML = `
                         <p>Dear ${previewData.trainer_name},</p>
                         <p>Here are the details for your course allocation (${templateData.original_sf_course_code}):</p>
@@ -203,32 +201,27 @@ document.addEventListener('DOMContentLoaded', function() {
                             </thead>
                             <tbody>
                                 <tr>
-                                    <td>${templateData.original_sf_course_code || 'N/A'}</td>
-                                    <td>${templateData.date_range_display || 'N/A'}</td>
-                                    <td>${templateData.end_day_abbr || 'N/A'}</td>
-                                    <td>${templateData.primary_location || 'Virtual'}</td>
-                                    <td>${templateData.sf_course_type || 'N/A'}</td>
-                                    <td>${templateData.start_end_pod_str || 'N/A'}</td>
-                                    <td>${templateData.username || 'N/A'}</td>
-                                    <td>${templateData.password || 'N/A'}</td>
-                                    <td class="text-center">${templateData.effective_pods_req || 0}</td>
-                                    <td class="text-center">${templateData.effective_pods_req || 0}</td>
-                                    <td>${templateData.final_labbuild_course || 'N/A'}</td>
-                                    <td>${templateData.virtual_host_display || 'N/A'}</td>
-                                    <td>${templateData.primary_vcenter || 'N/A'}</td>
-                                    <td class="text-right">${(templateData.memory_gb_one_pod || 0).toFixed(1)}</td>
+                                    <td>${templateData.original_sf_course_code}</td>
+                                    <td>${templateData.date_range_display}</td>
+                                    <td>${templateData.end_day_abbr}</td>
+                                    <td>${templateData.primary_location}</td>
+                                    <td>${templateData.sf_course_type}</td>
+                                    <td>${nl2br(templateData.start_end_pod_str)}</td>
+                                    <td>${templateData.username}</td>
+                                    <td>${templateData.password}</td>
+                                    <td class="text-center">${templateData.effective_pods_req}</td>
+                                    <td class="text-center">${templateData.effective_pods_req}</td>
+                                    <td>${templateData.final_labbuild_course}</td>
+                                    <td>${nl2br(templateData.virtual_host_display)}</td>
+                                    <td>${nl2br(templateData.primary_vcenter)}</td>
+                                    <td class="text-right">${templateData.memory_gb_one_pod.toFixed(1)}</td>
                                 </tr>
                             </tbody>
                         </table>
                         <p>Best regards,<br>Your Training Team</p>
                         <p class="footer">This is an automated notification. Please do not reply directly to this email.</p>
                     `;
-
-                    // Make the iframe content editable after it has been fully rendered.
-                    iframe.onload = () => {
-                        try { iframe.contentDocument.body.contentEditable = true; }
-                        catch(e) { console.error("Could not make iframe editable:", e); }
-                    };
+                    iframe.onload = () => { try { iframe.contentDocument.body.contentEditable = true; } catch(e) {} };
                 });
                 
                 addEmailActionListeners();
