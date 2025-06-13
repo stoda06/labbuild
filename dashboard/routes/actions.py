@@ -1170,127 +1170,19 @@ def _format_date_for_review(raw_date_str: Optional[str], context: str) -> str:
         logger.warning(f"Could not parse date '{raw_date_str}' for {context}, keeping original.")
         return raw_date_str
 
-def _allocate_specific_maestro_component(
-    component_labbuild_course: str,
-    num_pods_to_allocate: int,
-    target_host_or_priority_list: Union[str, List[str]],
-    allow_spillover_for_component: bool,
-    all_available_hosts: List[str],
-    pods_assigned_in_this_batch: Dict[str, set],
-    db_locked_pods: Dict[str, set],
-    current_host_capacities_gb: Dict[str, float],
-    memory_per_pod_for_component: float,
-    vendor_code: str,
-    start_pod_suggestion: int = 1
-) -> Tuple[List[Dict[str, Any]], Optional[str], float]:
-    assignments_for_component: List[Dict[str, Any]] = []
-    warning_message: Optional[str] = None
-    total_memory_consumed_for_component = 0.0
-    pods_left_for_this_component = num_pods_to_allocate
-
-    if num_pods_to_allocate <= 0: # No pods needed for this component
-        return assignments_for_component, warning_message, total_memory_consumed_for_component
-    if memory_per_pod_for_component <= 0:
-        warning_message = f"Memory for component '{component_labbuild_course}' is 0 or less. Cannot allocate."
-        logger.warning(f"  {warning_message}")
-        return assignments_for_component, warning_message, total_memory_consumed_for_component
-
-
-    hosts_to_try_for_component: List[str] = []
-    if isinstance(target_host_or_priority_list, str):
-        if target_host_or_priority_list in current_host_capacities_gb:
-            hosts_to_try_for_component = [target_host_or_priority_list]
-        else:
-            warning_message = f"Pinned host '{target_host_or_priority_list}' for '{component_labbuild_course}' not available or no capacity info."
-            return assignments_for_component, warning_message, total_memory_consumed_for_component
-    elif isinstance(target_host_or_priority_list, list):
-        hosts_to_try_for_component.extend([h for h in target_host_or_priority_list if h in current_host_capacities_gb])
-        if allow_spillover_for_component:
-            hosts_to_try_for_component.extend(sorted([
-                h_n for h_n in all_available_hosts if h_n not in hosts_to_try_for_component and h_n in current_host_capacities_gb
-            ]))
-    else:
-        warning_message = f"Invalid target_host_or_priority_list type for '{component_labbuild_course}'."
-        return assignments_for_component, warning_message, total_memory_consumed_for_component
-
-    if not hosts_to_try_for_component:
-        warning_message = f"No suitable hosts found for '{component_labbuild_course}' based on priority/pinning ({num_pods_to_allocate} pods needed)."
-        return assignments_for_component, warning_message, total_memory_consumed_for_component
-
-    logger.debug(f"  Allocating for '{component_labbuild_course}': Needs {pods_left_for_this_component} pods. Hosts to try: {hosts_to_try_for_component}. Start Suggestion: {start_pod_suggestion}")
-
-    for host_target in hosts_to_try_for_component:
-        if pods_left_for_this_component <= 0: break
-        current_host_cap = current_host_capacities_gb.get(host_target, 0.0)
-        assigned_on_this_host_segment: List[int] = []
-        candidate_pod_num = start_pod_suggestion
-        temp_pods_left_on_host_iter = pods_left_for_this_component
-
-        while temp_pods_left_on_host_iter > 0:
-            actual_candidate_pod_num = candidate_pod_num
-            while True:
-                if actual_candidate_pod_num not in db_locked_pods.get(vendor_code, set()) and \
-                   actual_candidate_pod_num not in pods_assigned_in_this_batch.get(vendor_code, set()):
-                    break
-                actual_candidate_pod_num += 1
-
-            mem_needed_for_this_pod = memory_per_pod_for_component
-            if assigned_on_this_host_segment: # If we've already put at least one pod of this type on this host *in this segment*
-                 mem_needed_for_this_pod *= SUBSEQUENT_POD_MEMORY_FACTOR
-            
-            if current_host_cap >= mem_needed_for_this_pod:
-                assigned_on_this_host_segment.append(actual_candidate_pod_num)
-                pods_assigned_in_this_batch.setdefault(vendor_code, set()).add(actual_candidate_pod_num)
-                new_host_cap = max(0, round(current_host_cap - mem_needed_for_this_pod, 2))
-                current_host_capacities_gb[host_target] = new_host_cap # Update global capacity
-                current_host_cap = new_host_cap # Update local loop variable
-                total_memory_consumed_for_component += mem_needed_for_this_pod
-                pods_left_for_this_component -= 1
-                temp_pods_left_on_host_iter -=1
-                logger.info(f"    Assigned pod {actual_candidate_pod_num} of '{component_labbuild_course}' to {host_target}. Pods left for component: {pods_left_for_this_component}. Host '{host_target}' cap left: {current_host_cap:.2f}GB")
-                candidate_pod_num = actual_candidate_pod_num + 1
-            else:
-                warn_host_full_comp = f"Host '{host_target}' capacity limit for '{component_labbuild_course}' (needs {mem_needed_for_this_pod:.2f}GB, has {current_host_cap:.2f}GB)."
-                warning_message = (warning_message + ". " if warning_message else "") + warn_host_full_comp
-                logger.warning(f"    {warn_host_full_comp}")
-                break
-        
-        if assigned_on_this_host_segment:
-            assigned_on_this_host_segment.sort()
-            start_p, end_p = assigned_on_this_host_segment[0], assigned_on_this_host_segment[0]
-            for i in range(1, len(assigned_on_this_host_segment)):
-                if assigned_on_this_host_segment[i] == end_p + 1:
-                    end_p = assigned_on_this_host_segment[i]
-                else:
-                    assignments_for_component.append({"host": host_target, "start_pod": start_p, "end_pod": end_p, "labbuild_course": component_labbuild_course})
-                    start_p = end_p = assigned_on_this_host_segment[i]
-            assignments_for_component.append({"host": host_target, "start_pod": start_p, "end_pod": end_p, "labbuild_course": component_labbuild_course})
-
-    if pods_left_for_this_component > 0:
-        warn_not_all_comp = f"Could not allocate all {num_pods_to_allocate} pods for '{component_labbuild_course}'; {pods_left_for_this_component} remain unassigned."
-        warning_message = (warning_message + ". " if warning_message else "") + warn_not_all_comp
-        logger.warning(f"  {warn_not_all_comp}")
-
-    return assignments_for_component, warning_message, round(total_memory_consumed_for_component, 2)
-# --- END Helper ---
-
-# Assume bp is defined in your routes file, e.g.
-# bp = Blueprint('actions', __name__)
-
 @bp.route('/intermediate-build-review', methods=['POST'])
 def intermediate_build_review():
     """
-    Handles the intermediate build review process. This function is refactored
+    Handles the intermediate build review process. This function contains nested helpers
     to create lean, essential-only documents in the interim collection while
     still providing auto-assignment suggestions to the user.
     """
     current_theme = request.cookies.get('theme', 'light')
     selected_courses_json = request.form.get('selected_courses')
 
-    # --- 1. Internal Helper Functions ---
+    # --- 1. NESTED HELPER FUNCTIONS ---
 
     def _fetch_and_prepare_initial_data() -> Optional[Dict[str, Any]]:
-        # ... (This helper function is correct and remains unchanged) ...
         initial_data = {
             "build_rules": [], "all_available_host_names": [], "host_memory_start_of_batch": {},
             "db_locked_pods": defaultdict(set),
@@ -1330,56 +1222,66 @@ def intermediate_build_review():
             flash("Error fetching configuration data. Cannot proceed.", "danger")
             return None
 
-    def _process_single_course(course_input, initial_data, batch_state):
-        """
-        Processes one course, runs auto-assignment, and creates a lean document for the DB
-        and a detailed dictionary for the template.
-        """
-        
-        def _auto_assign_pods(eff_pods_req, final_lb_course, mem_per_pod, vendor, eff_actions):
-            """Simulates pod assignments and returns the proposed assignments and any warnings."""
-            hosts_to_try = eff_actions.get("host_priority", initial_data["all_available_host_names"])
-            if eff_actions.get("allow_spillover", True):
-                hosts_to_try = list(dict.fromkeys(hosts_to_try + initial_data["all_available_host_names"]))
-            start_suggestion = max(1, int(eff_actions.get('start_pod_number', 1)))
-            
-            assignments, warning, _ = _allocate_specific_maestro_component(
-                final_lb_course, eff_pods_req, hosts_to_try,
-                batch_state["pods_assigned"], initial_data["db_locked_pods"], 
-                batch_state["capacities"], mem_per_pod, vendor, start_suggestion
-            )
-            return assignments, warning
+    def _propose_contiguous_assignments(
+        num_pods_to_allocate: int,
+        hosts_to_try: List[str],
+        memory_per_pod: float,
+        vendor_code: str,
+        start_pod_suggestion: int,
+        pods_assigned_in_this_batch: Dict[str, set],
+        db_locked_pods: Dict[str, set],
+        current_host_capacities_gb: Dict[str, float]
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        assignments: List[Dict[str, Any]] = []
+        warning_message: Optional[str] = None
+        pods_left_to_assign = num_pods_to_allocate
 
-        def _allocate_specific_maestro_component(course, num_pods, hosts, pods_assigned, locked, caps, mem, vendor, start_sugg):
-            assignments, warning_msg, mem_consumed = [], None, 0.0
-            pods_left = num_pods
-            if num_pods <= 0 or mem <= 0: return assignments, "Invalid pod count or memory.", mem_consumed
-            for host in hosts:
-                if pods_left <= 0: break
-                host_cap = caps.get(host, 0.0)
-                assigned_on_host = []
-                cand_pod = start_sugg
-                while pods_left > 0:
-                    while cand_pod in locked.get(vendor, set()) or cand_pod in pods_assigned.get(vendor, set()): cand_pod += 1
-                    mem_needed = mem * (SUBSEQUENT_POD_MEMORY_FACTOR if assigned_on_host else 1)
-                    if host_cap >= mem_needed:
-                        assigned_on_host.append(cand_pod)
-                        pods_assigned.setdefault(vendor, set()).add(cand_pod)
-                        caps[host] = max(0, round(host_cap - mem_needed, 2))
-                        host_cap = caps[host]
-                        mem_consumed += mem_needed
-                        pods_left -= 1
-                        cand_pod += 1
-                    else: warning_msg = f"Host '{host}' capacity limit."; break
-                if assigned_on_host:
-                    s, e = assigned_on_host[0], assigned_on_host[0]
-                    for i in range(1, len(assigned_on_host)):
-                        if assigned_on_host[i] == e + 1: e = assigned_on_host[i]
-                        else: assignments.append({"host": host, "start_pod": s, "end_pod": e}); s = e = assigned_on_host[i]
-                    assignments.append({"host": host, "start_pod": s, "end_pod": e})
-            if pods_left > 0: warning_msg = (warning_msg + ". " if warning_msg else "") + f"Could not allocate all {num_pods} pods; {pods_left} remain."
-            return assignments, warning_msg, round(mem_consumed, 2)
+        if pods_left_to_assign <= 0: return [], None
+        if memory_per_pod <= 0: return [], "Memory for LabBuild course is 0, cannot allocate."
+
+        unavailable_pods = db_locked_pods.get(vendor_code, set()).union(pods_assigned_in_this_batch.get(vendor_code, set()))
+        logger.debug(f"  Attempting to allocate {pods_left_to_assign} pods for vendor '{vendor_code}'. Unavailable: {sorted(list(unavailable_pods))}")
+
+        for host_target in hosts_to_try:
+            if pods_left_to_assign <= 0: break
+            host_capacity = current_host_capacities_gb.get(host_target, 0.0)
             
+            # Estimate max pods that could fit to optimize search
+            if memory_per_pod > 0 and SUBSEQUENT_POD_MEMORY_FACTOR > 0:
+                max_pods_by_mem = int(host_capacity / (memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR))
+            else:
+                max_pods_by_mem = pods_left_to_assign
+            
+            pods_to_find_on_this_host = min(pods_left_to_assign, max(1, max_pods_by_mem))
+            if pods_to_find_on_this_host == 0: continue
+
+            found_block, candidate_start_pod, attempts = False, start_pod_suggestion, 0
+            while not found_block and attempts < 1000: # Safety break
+                attempts += 1
+                potential_range = range(candidate_start_pod, candidate_start_pod + pods_to_find_on_this_host)
+                first_conflict = next((p for p in potential_range if p in unavailable_pods), -1)
+                
+                if first_conflict == -1:
+                    memory_needed = memory_per_pod + (pods_to_find_on_this_host - 1) * memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+                    if host_capacity >= memory_needed:
+                        start_pod, end_pod = potential_range.start, potential_range.stop - 1
+                        assignments.append({"host": host_target, "start_pod": start_pod, "end_pod": end_pod})
+                        for i in range(start_pod, end_pod + 1): pods_assigned_in_this_batch[vendor_code].add(i)
+                        current_host_capacities_gb[host_target] -= memory_needed
+                        pods_left_to_assign -= pods_to_find_on_this_host
+                        logger.info(f"    SUCCESS: Assigned block {start_pod}-{end_pod} to host '{host_target}'.")
+                        found_block = True
+                    else:
+                        break # Not enough memory on this host for this block size
+                else:
+                    candidate_start_pod = first_conflict + 1
+
+        if pods_left_to_assign > 0:
+            warn_final = f"Could not allocate all pods; {pods_left_to_assign} remain unassigned."
+            warning_message = (warning_message + ". " if warning_message else "") + warn_final
+        return assignments, warning_message
+
+    def _process_single_course(course_input, initial_data, batch_state, batch_review_id):
         sf_code, vendor, sf_course_type, user_lb_course = course_input.get('sf_course_code', 'UNKNOWN'), course_input.get('vendor', '').lower(), course_input.get('sf_course_type', 'N/A'), course_input.get('labbuild_course')
         
         eff_actions = {}
@@ -1404,10 +1306,22 @@ def intermediate_build_review():
         
         mem_per_pod = _get_memory_for_course_local(final_lb_course, {c['course_name']: c for c in initial_data["course_configs"]}) if final_lb_course else 0.0
 
-        # Run auto-assignment to get proposed rows and any warnings
-        assignments, auto_assign_warn = _auto_assign_pods(max(0, eff_pods_req), final_lb_course, mem_per_pod, vendor, eff_actions)
+        hosts_to_try = eff_actions.get("host_priority", initial_data["all_available_host_names"])
+        allow_spill = eff_actions.get("allow_spillover", True)
+        if allow_spill:
+            hosts_to_try = list(dict.fromkeys(hosts_to_try + initial_data["all_available_host_names"]))
 
-        # --- REFACTORED: Create the lean document ---
+        assignments, auto_assign_warn = _propose_contiguous_assignments(
+            num_pods_to_allocate=max(0, eff_pods_req),
+            hosts_to_try=hosts_to_try,
+            memory_per_pod=mem_per_pod,
+            vendor_code=vendor,
+            start_pod_suggestion=max(1, int(eff_actions.get('start_pod_number', 1))),
+            pods_assigned_in_this_batch=batch_state["pods_assigned"],
+            db_locked_pods=initial_data["db_locked_pods"],
+            current_host_capacities_gb=batch_state["capacities"]
+        )
+
         interim_doc = {
             "_id": ObjectId(), "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
             "sf_course_code": sf_code, "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
@@ -1415,30 +1329,26 @@ def intermediate_build_review():
             "sf_pax_count": int(course_input.get('sf_pax_count', 0)),
             "vendor": vendor, "final_labbuild_course": final_lb_course, "effective_pods_req": max(0, eff_pods_req),
             "memory_gb_one_pod": mem_per_pod,
-            # This 'assignments' field will be populated by the user's interaction on the next page
             "assignments": [], 
         }
         
         if vendor == 'f5':
             next_class_num = batch_state['f5_class_number_cursor']
-            while next_class_num in initial_data['db_locked_pods']['f5']: next_class_num += 1
+            while next_class_num in initial_data['db_locked_pods'].get('f5', set()): next_class_num += 1
             interim_doc['f5_class_number'] = next_class_num
             batch_state['f5_class_number_cursor'] = next_class_num + 1
 
-        # Combine warnings for display
         final_warning = (warning + ". " if warning else "") + (auto_assign_warn or "")
-        if not assignments and interim_doc["effective_pods_req"] > 0 and "Could not auto-assign" not in final_warning:
-            final_warning += " Could not auto-assign due to insufficient resources."
+        if not assignments and interim_doc["effective_pods_req"] > 0:
+            final_warning += " Could not auto-assign any pods due to resource or contiguity constraints."
 
-        # --- Create a separate, detailed dictionary for the template ---
         display_doc = interim_doc.copy()
         display_doc["initial_interactive_sub_rows_student"] = assignments
         display_doc["student_assignment_warning"] = final_warning.strip() or None
         
         return interim_doc, display_doc
 
-    def _save_interim_proposals(proposals):
-        # ... (This helper remains unchanged) ...
+    def _save_interim_proposals(proposals, batch_review_id):
         if not proposals: return True
         try:
             update_ops = [UpdateOne({"_id": p["_id"]}, {"$set": p}, upsert=True) for p in proposals]
@@ -1465,7 +1375,7 @@ def intermediate_build_review():
     if initial_data is None:
         return redirect(url_for('main.view_upcoming_courses'))
     
-    batch_review_id = str(ObjectId())
+    batch_review_id = str(ObjectId()) # batch_review_id is defined here in the main route scope
     batch_state = {
         "capacities": initial_data["host_memory_start_of_batch"].copy(),
         "pods_assigned": defaultdict(set),
@@ -1473,24 +1383,24 @@ def intermediate_build_review():
     }
     
     try:
-        del_res = interim_alloc_collection.delete_many({})
-        logger.info(f"Purged {del_res.deleted_count} old interim allocation documents. Starting new batch: {batch_review_id}")
+        if interim_alloc_collection is not None:
+            del_res = interim_alloc_collection.delete_many({})
+            logger.info(f"Purged {del_res.deleted_count} old interim allocation documents. Starting new batch: {batch_review_id}")
     except PyMongoError as e:
         logger.error(f"Error purging old interim items: {e}", exc_info=True)
         
     db_docs_to_save, display_docs_for_template = [], []
     for course_input in selected_courses_input:
-        interim_db_doc, display_template_doc = _process_single_course(course_input, initial_data, batch_state)
+        interim_db_doc, display_template_doc = _process_single_course(course_input, initial_data, batch_state, batch_review_id)
+        
         if interim_db_doc:
             db_docs_to_save.append(interim_db_doc)
-            # Add the string version of the ID to the display doc for the template
             display_template_doc['interim_doc_id'] = str(interim_db_doc['_id'])
-            # Rename keys for template consistency
             display_template_doc['final_labbuild_course_student'] = display_template_doc.get('final_labbuild_course')
             display_template_doc['effective_pods_req_student'] = display_template_doc.get('effective_pods_req')
             display_docs_for_template.append(display_template_doc)
             
-    if not _save_interim_proposals(db_docs_to_save):
+    if not _save_interim_proposals(db_docs_to_save, batch_review_id):
         return redirect(url_for('main.view_upcoming_courses'))
 
     return render_template(
@@ -2527,36 +2437,76 @@ def bulk_teardown_items():
         flash("Error processing selected items for teardown.", "danger")
         return redirect(url_for('main.view_allocations', **request.form))
 
+    # --- Grouping and Range Merging Logic ---
     tasks_to_run = []
-    for item in selected_items:
-        if not all(k in item for k in ['vendor', 'course', 'host', 'item_type', 'item_number', 'tag']):
-            logger.warning(f"Skipping invalid item in bulk teardown (infra): {item}")
-            continue
-        
-        args = [
-            'teardown', # Not --db-only, so full teardown
-            '-v', item['vendor'],
-            '-g', item['course'],
-            '--host', item['host'],
-            '-t', item['tag']
-        ]
-        item_num_str = str(item['item_number'])
-        if item['item_type'] == 'f5_class':
-            args.extend(['-cn', item_num_str])
-        elif item['item_type'] == 'pod':
-            args.extend(['-s', item_num_str, '-e', item_num_str])
-            if item.get('vendor', '').lower() == 'f5' and item.get('class_number'):
-                args.extend(['-cn', str(item['class_number'])])
-        else:
-            logger.warning(f"Unknown item_type '{item['item_type']}' for bulk teardown. Skipping.")
-            continue
-        
-        description = f"Teardown Infra for {item['item_type']} {item_num_str} (Tag: {item['tag']}, Course: {item['course']})"
-        tasks_to_run.append({'args': args, 'description': description})
-        # DB deletion should happen AFTER successful labbuild teardown.
-        # This is complex to coordinate from a simple fire-and-forget thread.
-        # For now, user will need to run bulk DB delete separately or individual DB delete.
+    # Group items by a tuple key: (vendor, course, host, tag, class_number_for_f5)
+    grouped_items = defaultdict(lambda: {'pods': set(), 'f5_classes': set()})
 
+    for item in selected_items:
+        try:
+            if not all(k in item for k in ['vendor', 'course', 'host', 'item_type', 'item_number', 'tag']):
+                logger.warning(f"Skipping invalid item in bulk teardown: {item}")
+                continue
+            
+            # **FIX**: Ensure item_number is converted to an integer immediately.
+            item_number_int = int(item['item_number'])
+
+            class_context = int(item.get('class_number')) if item.get('vendor', '').lower() == 'f5' and item.get('class_number') else None
+            group_key = (item['vendor'], item['course'], item['host'], item['tag'], class_context)
+
+            if item['item_type'] == 'f5_class':
+                grouped_items[group_key]['f5_classes'].add(item_number_int)
+            elif item['item_type'] == 'pod':
+                grouped_items[group_key]['pods'].add(item_number_int)
+        except (ValueError, TypeError) as e:
+             logger.warning(f"Skipping item due to data conversion error: {e}. Item: {item}")
+             continue
+    
+    logger.info(f"Bulk Teardown: Grouped selected items into {len(grouped_items)} potential jobs.")
+
+    # Process each group to create labbuild commands
+    for group_key, items in grouped_items.items():
+        vendor, course, host, tag, class_num = group_key
+
+        # 1. Process F5 Classes (each is a separate job)
+        for f5_class_to_tear in sorted(list(items['f5_classes'])):
+            args = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-cn', str(f5_class_to_tear)]
+            desc = f"Teardown F5 Class {f5_class_to_tear} (Tag: {tag})"
+            tasks_to_run.append({'args': args, 'description': desc})
+
+        # 2. Process Pods (merge contiguous ranges)
+        if items['pods']:
+            sorted_pods = sorted(list(items['pods']))
+            
+            if not sorted_pods: continue
+
+            # **FIX**: Ensure start_range and end_range are always integers.
+            start_range = sorted_pods[0]
+            end_range = sorted_pods[0]
+
+            for i in range(1, len(sorted_pods)):
+                # Now this comparison is safe (int vs int)
+                if sorted_pods[i] != end_range + 1:
+                    # Create job for the completed range
+                    args = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-s', str(start_range), '-e', str(end_range)]
+                    if class_num is not None: args.extend(['-cn', str(class_num)])
+                    desc = f"Teardown Pods {start_range}-{end_range} (Tag: {tag})"
+                    tasks_to_run.append({'args': args, 'description': desc})
+                    
+                    # Start a new range (with an integer)
+                    start_range = sorted_pods[i]
+                    end_range = sorted_pods[i]
+                else:
+                    # Extend the current range
+                    end_range = sorted_pods[i]
+            
+            # Add the last range after the loop finishes
+            args = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-s', str(start_range), '-e', str(end_range)]
+            if class_num is not None: args.extend(['-cn', str(class_num)])
+            desc = f"Teardown Pods {start_range}-{end_range} (Tag: {tag})"
+            tasks_to_run.append({'args': args, 'description': desc})
+
+    # --- Dispatch the generated tasks ---
     if tasks_to_run:
         _dispatch_bulk_labbuild_tasks(tasks_to_run, "infrastructure_teardown")
     else:

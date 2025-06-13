@@ -159,13 +159,7 @@
 
 <div class="bulk-actions-bar" id="bulkActionsBar">
     <span id="selectedItemsCount" class="me-3">0 items selected</span>
-    <form id="bulkActionSubmitActualForm" method="POST" class="d-inline-flex align-items-center" style="gap: 0.5rem;">
-        <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputForSubmit">
-        {% for key, value in current_filters.items() %}
-            <input type="hidden" name="{{ key }}" value="{{ value }}">
-        {% endfor %}
-        <input type="hidden" name="page" value="{{ current_page }}">
-
+    <div class="d-inline-flex align-items-center" style="gap: 0.5rem;">
         <div class="btn-group" role="group">
             <button type="button" class="btn btn-sm btn-outline-success bulk-action-trigger" data-action="power_on" title="Power ON selected"><i class="fas fa-play"></i> On</button>
             <button type="button" class="btn btn-sm btn-outline-danger bulk-action-trigger" data-action="power_off" title="Power OFF selected"><i class="fas fa-stop"></i> Off</button>
@@ -174,7 +168,7 @@
             <button type="button" class="btn btn-sm btn-danger bulk-action-trigger" data-action="teardown_infra" title="Teardown Infrastructure"><i class="fas fa-fire-alt"></i> Infra</button>
             <button type="button" class="btn btn-sm btn-warning bulk-action-trigger" data-action="delete_db" title="Delete DB Entries"><i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i> DB</button>
         </div>
-    </form>
+    </div>
 </div>
 
 <div class="card">
@@ -205,8 +199,8 @@
               <th class="col-tag">Tag</th>
               <th class="col-vendor">Vendor</th>
               <th class="col-course">Course Name</th>
-              <th class="col-date">Start Date</th> {# New Column #}
-              <th class="col-date">End Date</th>   {# New Column #}
+              <th class="col-date">Start Date</th>
+              <th class="col-date">End Date</th>
               <th class="col-type">Type</th>
               <th class="col-number">Number / Contained Pods</th>
               <th class="col-host">Host</th>
@@ -392,9 +386,10 @@
   </div> 
 </div>
 
-<form id="bulkActionSubmitActualForm" method="POST" style="display: none;">
-    <input type="hidden" name="selected_items_json" id="selectedItemsJsonInputForSubmit">
-    {% for key, value_param in current_filters.items() %}{# Renamed value to value_param #}
+{# --- THIS IS THE CORRECTED FORM FOR BULK ACTIONS --- #}
+<form id="bulkActionSubmitForm" method="POST" style="display: none;">
+    <input type="hidden" name="selected_items_json" id="selectedItemsJsonInput">
+    {% for key, value_param in current_filters.items() %}
         <input type="hidden" name="{{ key }}" value="{{ value_param }}">
     {% endfor %}
     <input type="hidden" name="page" value="{{ current_page }}">
@@ -411,10 +406,9 @@
       const bulkActionsBar = document.getElementById('bulkActionsBar');
       const selectedItemsCountSpan = document.getElementById('selectedItemsCount');
       
-      const bulkActionSubmitActualForm = document.getElementById('bulkActionSubmitActualForm');
-      const selectedItemsJsonInputForSubmit = document.getElementById('selectedItemsJsonInputForSubmit');
+      const bulkActionSubmitForm = document.getElementById('bulkActionSubmitForm');
+      const selectedItemsJsonInput = document.getElementById('selectedItemsJsonInput');
       const bulkActionTriggerButtons = document.querySelectorAll('.bulk-action-trigger');
-
 
       function updateBulkActionsBarVisibility() {
           if (!bulkActionsBar || !selectedItemsCountSpan) return;
@@ -487,8 +481,8 @@
                   return;
               }
 
-              if (bulkActionSubmitActualForm && selectedItemsJsonInputForSubmit) {
-                  selectedItemsJsonInputForSubmit.value = JSON.stringify(selectedItems);
+              if (bulkActionSubmitForm && selectedItemsJsonInput) {
+                  selectedItemsJsonInput.value = JSON.stringify(selectedItems);
                   let actionUrl = "";
                   if (action === 'power_on') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='start') }}";
                   else if (action === 'power_off') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='stop') }}";
@@ -496,8 +490,8 @@
                   else if (action === 'delete_db') actionUrl = "{{ url_for('actions.bulk_db_delete_items') }}";
                   
                   if (actionUrl) {
-                      bulkActionSubmitActualForm.action = actionUrl;
-                      bulkActionSubmitActualForm.submit();
+                      bulkActionSubmitForm.action = actionUrl;
+                      bulkActionSubmitForm.submit();
                   } else {
                       alert("Selected bulk action ('" + action + "') is not configured.");
                   }
@@ -515,7 +509,7 @@
                 // Native confirm is handled by the browser based on its return value
               }
               const filterParams = new URLSearchParams(window.location.search);
-              filterParams.forEach((value_param, key_param) => { // Renamed to avoid conflict
+              filterParams.forEach((value_param, key_param) => {
                   if ((key_param.startsWith('filter_') || key_param === 'page') && 
                       !form.querySelector(`input[name="${key_param}"]`)) {
                       const hiddenInput = document.createElement('input');
@@ -527,7 +521,6 @@
       });
 
       updateBulkActionsBarVisibility(); 
-      // Ensure local times are updated after initial render and any dynamic updates
       if (typeof updateLocalTimes === "function") { 
           updateLocalTimes(); 
       }
