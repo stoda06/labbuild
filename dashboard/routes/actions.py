@@ -3348,3 +3348,22 @@ def bulk_teardown_tags():
         flash("No valid items found within the selected tags to tear down.", "info")
 
     return redirect(url_for('main.all_notifications'))
+
+@bp.route('/export-current-lab-report')
+def export_current_lab_report():
+    """
+    Dummy endpoint for the 'Current Lab Report' export functionality.
+    """
+    logger.info("DUMMY ACTION: 'Export Current Lab Report' was triggered.")
+    flash("Feature not yet implemented: The 'Current Lab Report' export is under development.", "info")
+    return redirect(url_for('main.view_allocations'))
+
+# --- NEW: Dummy Route for Trainer Pod Allocation ---
+@bp.route('/export-trainer-pod-allocation')
+def export_trainer_pod_allocation():
+    """
+    Dummy endpoint for the 'Trainer Pod Allocation' export functionality.
+    """
+    logger.info("DUMMY ACTION: 'Trainer Pod Allocation' export was triggered.")
+    flash("Feature not yet implemented: The 'Trainer Pod Allocation' export is under development.", "info")
+    return redirect(url_for('main.view_allocations'))

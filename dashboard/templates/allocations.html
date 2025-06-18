@@ -40,9 +40,16 @@
   <h1>Current Allocations</h1>
   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
 </div>
-<div class="mb-3 text-end">
-    <a href="{{ url_for('actions.export_allocations_excel') }}" class="btn btn-success btn-sm"><i class="fas fa-file-excel"></i> Export to Excel</a>
+{# --- MODIFIED BUTTONS AREA --- #}
+<div class="mb-3 d-flex justify-content-end gap-2">
+    <a href="{{ url_for('actions.export_current_lab_report') }}" class="btn btn-success btn-sm">
+        <i class="fas fa-file-excel"></i> Current Lab Report
+    </a>
+    <a href="{{ url_for('actions.export_trainer_pod_allocation') }}" class="btn btn-info btn-sm">
+        <i class="fas fa-user-graduate"></i> Trainer Pod Allocation
+    </a>
 </div>
+{# --- END MODIFICATION --- #}
 <div class="card mb-4">
   <div class="card-header">Filter Allocations</div>
   <div class="card-body">
