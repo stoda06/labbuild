@@ -1173,16 +1173,16 @@ def _format_date_for_review(raw_date_str: Optional[str], context: str) -> str:
 @bp.route('/intermediate-build-review', methods=['POST'])
 def intermediate_build_review():
     """
-    Handles the intermediate build review process. This function contains nested helpers
-    to create lean, essential-only documents in the interim collection while
-    still providing auto-assignment suggestions to the user.
+    Handles the intermediate build review process. Includes special logic for "Maestro"
+    split-build courses, creating separate build items for each component type.
     """
     current_theme = request.cookies.get('theme', 'light')
     selected_courses_json = request.form.get('selected_courses')
 
-    # --- 1. NESTED HELPER FUNCTIONS ---
+    # --- 1. NESTED HELPER FUNCTIONS (UNCHANGED) ---
 
     def _fetch_and_prepare_initial_data() -> Optional[Dict[str, Any]]:
+        # This helper function remains the same as the previous version.
         initial_data = {
             "build_rules": [], "all_available_host_names": [], "host_memory_start_of_batch": {},
             "db_locked_pods": defaultdict(set),
@@ -1222,7 +1222,7 @@ def intermediate_build_review():
             flash("Error fetching configuration data. Cannot proceed.", "danger")
             return None
 
-    def _propose_contiguous_assignments(
+    def _propose_assignments(
         num_pods_to_allocate: int,
         hosts_to_try: List[str],
         memory_per_pod: float,
@@ -1232,121 +1232,186 @@ def intermediate_build_review():
         db_locked_pods: Dict[str, set],
         current_host_capacities_gb: Dict[str, float]
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        # This helper function remains the same as the previous version.
         assignments: List[Dict[str, Any]] = []
         warning_message: Optional[str] = None
-        pods_left_to_assign = num_pods_to_allocate
-
-        if pods_left_to_assign <= 0: return [], None
+        if num_pods_to_allocate <= 0: return [], None
         if memory_per_pod <= 0: return [], "Memory for LabBuild course is 0, cannot allocate."
-
         unavailable_pods = db_locked_pods.get(vendor_code, set()).union(pods_assigned_in_this_batch.get(vendor_code, set()))
-        logger.debug(f"  Attempting to allocate {pods_left_to_assign} pods for vendor '{vendor_code}'. Unavailable: {sorted(list(unavailable_pods))}")
-
+        best_overallocated_contiguous_option: Optional[Tuple[str, int]] = None
         for host_target in hosts_to_try:
-            if pods_left_to_assign <= 0: break
-            host_capacity = current_host_capacities_gb.get(host_target, 0.0)
-            
-            # Estimate max pods that could fit to optimize search
-            if memory_per_pod > 0 and SUBSEQUENT_POD_MEMORY_FACTOR > 0:
-                max_pods_by_mem = int(host_capacity / (memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR))
-            else:
-                max_pods_by_mem = pods_left_to_assign
-            
-            pods_to_find_on_this_host = min(pods_left_to_assign, max(1, max_pods_by_mem))
-            if pods_to_find_on_this_host == 0: continue
-
-            found_block, candidate_start_pod, attempts = False, start_pod_suggestion, 0
-            while not found_block and attempts < 1000: # Safety break
+            candidate_start_pod = start_pod_suggestion
+            attempts = 0
+            while attempts < 1000:
                 attempts += 1
-                potential_range = range(candidate_start_pod, candidate_start_pod + pods_to_find_on_this_host)
+                potential_range = range(candidate_start_pod, candidate_start_pod + num_pods_to_allocate)
                 first_conflict = next((p for p in potential_range if p in unavailable_pods), -1)
-                
                 if first_conflict == -1:
-                    memory_needed = memory_per_pod + (pods_to_find_on_this_host - 1) * memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+                    start_pod, end_pod = potential_range.start, potential_range.stop - 1
+                    memory_needed = memory_per_pod + (num_pods_to_allocate - 1) * memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+                    host_capacity = current_host_capacities_gb.get(host_target, 0.0)
                     if host_capacity >= memory_needed:
-                        start_pod, end_pod = potential_range.start, potential_range.stop - 1
                         assignments.append({"host": host_target, "start_pod": start_pod, "end_pod": end_pod})
                         for i in range(start_pod, end_pod + 1): pods_assigned_in_this_batch[vendor_code].add(i)
                         current_host_capacities_gb[host_target] -= memory_needed
-                        pods_left_to_assign -= pods_to_find_on_this_host
-                        logger.info(f"    SUCCESS: Assigned block {start_pod}-{end_pod} to host '{host_target}'.")
-                        found_block = True
-                    else:
-                        break # Not enough memory on this host for this block size
+                        return assignments, None
+                    elif best_overallocated_contiguous_option is None:
+                        best_overallocated_contiguous_option = (host_target, start_pod)
+                    break
                 else:
                     candidate_start_pod = first_conflict + 1
-
+        if best_overallocated_contiguous_option:
+            host_target, start_pod = best_overallocated_contiguous_option
+            end_pod = start_pod + num_pods_to_allocate - 1
+            assignments.append({"host": host_target, "start_pod": start_pod, "end_pod": end_pod})
+            memory_needed = memory_per_pod + (num_pods_to_allocate - 1) * memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+            warning_message = f"Memory Warning: Host '{host_target}' may be over-allocated."
+            for i in range(start_pod, end_pod + 1): pods_assigned_in_this_batch[vendor_code].add(i)
+            current_host_capacities_gb[host_target] -= memory_needed
+            return assignments, warning_message
+        pods_left_to_assign = num_pods_to_allocate
+        for host_target in hosts_to_try:
+            if pods_left_to_assign <= 0: break
+            while pods_left_to_assign > 0:
+                search_start_pod = start_pod_suggestion
+                while search_start_pod in unavailable_pods: search_start_pod += 1
+                potential_block_size = 0
+                for i in range(pods_left_to_assign):
+                    if (search_start_pod + i) in unavailable_pods: break
+                    potential_block_size += 1
+                if potential_block_size > 0:
+                    start_pod, end_pod = search_start_pod, search_start_pod + potential_block_size - 1
+                    assignments.append({"host": host_target, "start_pod": start_pod, "end_pod": end_pod})
+                    mem_consumed = memory_per_pod + (potential_block_size - 1) * memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+                    if current_host_capacities_gb.get(host_target, 0.0) < mem_consumed:
+                        warn = f"Memory Warning: Host '{host_target}' may be over-allocated by block {start_pod}-{end_pod}."
+                        warning_message = (warning_message + " " if warning_message else "") + warn
+                    current_host_capacities_gb[host_target] -= mem_consumed
+                    pods_left_to_assign -= potential_block_size
+                    for i in range(start_pod, end_pod + 1): unavailable_pods.add(i)
+                else:
+                    break
         if pods_left_to_assign > 0:
             warn_final = f"Could not allocate all pods; {pods_left_to_assign} remain unassigned."
-            warning_message = (warning_message + ". " if warning_message else "") + warn_final
-        return assignments, warning_message
+            warning_message = (warning_message + " " if warning_message else "") + warn_final
+        return assignments, warning_message.strip() if warning_message else None
 
     def _process_single_course(course_input, initial_data, batch_state, batch_review_id):
-        sf_code, vendor, sf_course_type, user_lb_course = course_input.get('sf_course_code', 'UNKNOWN'), course_input.get('vendor', '').lower(), course_input.get('sf_course_type', 'N/A'), course_input.get('labbuild_course')
+        """
+        Processes a single Salesforce course. If it's a Maestro course, it "explodes" it
+        into multiple build items. Otherwise, it processes it as a standard course.
+        Returns a LIST of (interim_doc, display_doc) tuples.
+        """
+        sf_code, vendor, sf_course_type = course_input.get('sf_course_code', 'UNKNOWN'), course_input.get('vendor', '').lower(), course_input.get('sf_course_type', 'N/A')
         
-        eff_actions = {}
         matched_rules = _find_all_matching_rules(initial_data["build_rules"], vendor, sf_code, sf_course_type)
+        
+        # --- NEW: Maestro Split Build Logic ---
+        maestro_rule_config = None
+        rule_based_actions = {}
         for rule in matched_rules:
-            for key in ["set_labbuild_course", "set_max_pods", "override_pods_req", "host_priority", "allow_spillover", "start_pod_number"]:
-                if key not in eff_actions and key in rule.get("actions", {}): eff_actions[key] = rule["actions"][key]
+            # Capture the first maestro_split_build action found (due to priority sort)
+            if "maestro_split_build" in rule.get("actions", {}) and not maestro_rule_config:
+                maestro_rule_config = rule["actions"]["maestro_split_build"]
+            # Capture all other highest-priority actions
+            for key in ["set_labbuild_course", "host_priority", "allow_spillover", "start_pod_number", "set_max_pods", "override_pods_req"]:
+                 if key not in rule_based_actions and key in rule.get("actions", {}):
+                     rule_based_actions[key] = rule["actions"][key]
 
-        final_lb_course, warning = None, None
-        available_courses = initial_data["available_lab_courses"].get(vendor, set())
-        if user_lb_course and user_lb_course in available_courses: final_lb_course = user_lb_course
+        if maestro_rule_config:
+            logger.info(f"Applying Maestro Split Build logic for SF Course '{sf_code}'.")
+            processed_items = []
+            
+            base_interim_doc = {
+                "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
+                "sf_course_code": sf_code, "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
+                "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code), "sf_end_date": _format_date_for_review(course_input.get('sf_end_date'), sf_code),
+                "sf_pax_count": int(course_input.get('sf_pax_count', 0)), "vendor": vendor,
+                "maestro_split_config_details_rule": maestro_rule_config # Store the rule for later steps
+            }
+
+            # Define the parts of the split build
+            split_parts = [
+                {"name": "Rack 1", "pods": 1, "course": maestro_rule_config.get("rack1_course"), "hosts": [maestro_rule_config.get("rack_host")]},
+                {"name": "Rack 2", "pods": 1, "course": maestro_rule_config.get("rack2_course"), "hosts": [maestro_rule_config.get("rack_host")]},
+                {"name": "Main Pods", "pods": 2, "course": maestro_rule_config.get("main_course"), "hosts": [h for h in rule_based_actions.get("host_priority", []) if h.lower() != 'hotshot']}
+            ]
+
+            for part in split_parts:
+                part_doc = base_interim_doc.copy()
+                part_doc["_id"] = ObjectId()
+                part_doc["final_labbuild_course"] = part["course"]
+                part_doc["effective_pods_req"] = part["pods"]
+                # part_doc["sf_course_code"] = f"{sf_code}-{part['name'].replace(' ','')}" # Create a unique display code
+                
+                mem = _get_memory_for_course_local(part["course"], {c['course_name']: c for c in initial_data["course_configs"]})
+                part_doc["memory_gb_one_pod"] = mem
+
+                assignments, warn = _propose_assignments(
+                    num_pods_to_allocate=part["pods"], hosts_to_try=part["hosts"], memory_per_pod=mem,
+                    vendor_code=vendor, start_pod_suggestion=rule_based_actions.get("start_pod_number", 1),
+                    pods_assigned_in_this_batch=batch_state["pods_assigned"], db_locked_pods=initial_data["db_locked_pods"],
+                    current_host_capacities_gb=batch_state["capacities"]
+                )
+
+                display_doc = part_doc.copy()
+                display_doc["initial_interactive_sub_rows_student"] = assignments
+                display_doc["student_assignment_warning"] = warn
+                processed_items.append((part_doc, display_doc))
+
+            return processed_items
+            
+        # --- Standard (non-Maestro) Build Logic ---
         else:
-            if user_lb_course: warning = f"User selection '{user_lb_course}' invalid. "
-            rule_course = eff_actions.get('set_labbuild_course')
-            if rule_course and rule_course in available_courses: final_lb_course = rule_course
-            elif rule_course: warning = (warning or "") + f"Rule course '{rule_course}' is invalid."
-        
-        pods_req_str, pods_req_calc_match = course_input.get('sf_pods_req', '1'), re.match(r"^\s*(\d+)", str(course_input.get('sf_pods_req', '1')))
-        eff_pods_req = int(pods_req_calc_match.group(1)) if pods_req_calc_match else 1
-        if eff_actions.get("override_pods_req") is not None: eff_pods_req = int(eff_actions.get("override_pods_req"))
-        if eff_actions.get("set_max_pods") is not None: eff_pods_req = min(eff_pods_req, int(eff_actions.get("set_max_pods")))
-        
-        mem_per_pod = _get_memory_for_course_local(final_lb_course, {c['course_name']: c for c in initial_data["course_configs"]}) if final_lb_course else 0.0
+            final_lb_course, warning = None, None
+            available_courses = initial_data["available_lab_courses"].get(vendor, set())
+            user_lb_course = course_input.get('labbuild_course')
+            if user_lb_course and user_lb_course in available_courses: final_lb_course = user_lb_course
+            else:
+                if user_lb_course: warning = f"User selection '{user_lb_course}' invalid. "
+                rule_course = rule_based_actions.get('set_labbuild_course')
+                if rule_course and rule_course in available_courses: final_lb_course = rule_course
+                elif rule_course: warning = (warning or "") + f"Rule course '{rule_course}' is invalid."
+            
+            pods_req_str, pods_req_calc_match = course_input.get('sf_pods_req', '1'), re.match(r"^\s*(\d+)", str(course_input.get('sf_pods_req', '1')))
+            eff_pods_req = int(pods_req_calc_match.group(1)) if pods_req_calc_match else 1
+            if rule_based_actions.get("override_pods_req") is not None: eff_pods_req = int(rule_based_actions.get("override_pods_req"))
+            if rule_based_actions.get("set_max_pods") is not None: eff_pods_req = min(eff_pods_req, int(rule_based_actions.get("set_max_pods")))
+            
+            mem_per_pod = _get_memory_for_course_local(final_lb_course, {c['course_name']: c for c in initial_data["course_configs"]}) if final_lb_course else 0.0
 
-        hosts_to_try = eff_actions.get("host_priority", initial_data["all_available_host_names"])
-        allow_spill = eff_actions.get("allow_spillover", True)
-        if allow_spill:
-            hosts_to_try = list(dict.fromkeys(hosts_to_try + initial_data["all_available_host_names"]))
+            hosts_to_try = rule_based_actions.get("host_priority", initial_data["all_available_host_names"])
+            if rule_based_actions.get("allow_spillover", True):
+                hosts_to_try = list(dict.fromkeys(hosts_to_try + initial_data["all_available_host_names"]))
 
-        assignments, auto_assign_warn = _propose_contiguous_assignments(
-            num_pods_to_allocate=max(0, eff_pods_req),
-            hosts_to_try=hosts_to_try,
-            memory_per_pod=mem_per_pod,
-            vendor_code=vendor,
-            start_pod_suggestion=max(1, int(eff_actions.get('start_pod_number', 1))),
-            pods_assigned_in_this_batch=batch_state["pods_assigned"],
-            db_locked_pods=initial_data["db_locked_pods"],
-            current_host_capacities_gb=batch_state["capacities"]
-        )
+            assignments, auto_assign_warn = _propose_assignments(
+                num_pods_to_allocate=max(0, eff_pods_req), hosts_to_try=hosts_to_try, memory_per_pod=mem_per_pod,
+                vendor_code=vendor, start_pod_suggestion=max(1, int(rule_based_actions.get('start_pod_number', 1))),
+                pods_assigned_in_this_batch=batch_state["pods_assigned"], db_locked_pods=initial_data["db_locked_pods"],
+                current_host_capacities_gb=batch_state["capacities"]
+            )
+            
+            interim_doc = {
+                "_id": ObjectId(), "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
+                "sf_course_code": sf_code, "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
+                "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code), "sf_end_date": _format_date_for_review(course_input.get('sf_end_date'), sf_code),
+                "sf_pax_count": int(course_input.get('sf_pax_count', 0)),
+                "vendor": vendor, "final_labbuild_course": final_lb_course, "effective_pods_req": max(0, eff_pods_req),
+                "memory_gb_one_pod": mem_per_pod, "assignments": []
+            }
+            if vendor == 'f5':
+                next_class_num = batch_state['f5_class_number_cursor']
+                while next_class_num in initial_data['db_locked_pods'].get('f5', set()): next_class_num += 1
+                interim_doc['f5_class_number'] = next_class_num
+                batch_state['f5_class_number_cursor'] = next_class_num + 1
 
-        interim_doc = {
-            "_id": ObjectId(), "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
-            "sf_course_code": sf_code, "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
-            "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code), "sf_end_date": _format_date_for_review(course_input.get('sf_end_date'), sf_code),
-            "sf_pax_count": int(course_input.get('sf_pax_count', 0)),
-            "vendor": vendor, "final_labbuild_course": final_lb_course, "effective_pods_req": max(0, eff_pods_req),
-            "memory_gb_one_pod": mem_per_pod,
-            "assignments": [], 
-        }
-        
-        if vendor == 'f5':
-            next_class_num = batch_state['f5_class_number_cursor']
-            while next_class_num in initial_data['db_locked_pods'].get('f5', set()): next_class_num += 1
-            interim_doc['f5_class_number'] = next_class_num
-            batch_state['f5_class_number_cursor'] = next_class_num + 1
-
-        final_warning = (warning + ". " if warning else "") + (auto_assign_warn or "")
-        if not assignments and interim_doc["effective_pods_req"] > 0:
-            final_warning += " Could not auto-assign any pods due to resource or contiguity constraints."
-
-        display_doc = interim_doc.copy()
-        display_doc["initial_interactive_sub_rows_student"] = assignments
-        display_doc["student_assignment_warning"] = final_warning.strip() or None
-        
-        return interim_doc, display_doc
+            final_warning = (warning + ". " if warning else "") + (auto_assign_warn or "")
+            if not assignments and interim_doc["effective_pods_req"] > 0: final_warning += " Could not auto-assign any pods."
+            
+            display_doc = interim_doc.copy()
+            display_doc["initial_interactive_sub_rows_student"] = assignments
+            display_doc["student_assignment_warning"] = final_warning.strip() or None
+            return [(interim_doc, display_doc)] # Return as a list for consistency
 
     def _save_interim_proposals(proposals, batch_review_id):
         if not proposals: return True
@@ -1375,7 +1440,7 @@ def intermediate_build_review():
     if initial_data is None:
         return redirect(url_for('main.view_upcoming_courses'))
     
-    batch_review_id = str(ObjectId()) # batch_review_id is defined here in the main route scope
+    batch_review_id = str(ObjectId())
     batch_state = {
         "capacities": initial_data["host_memory_start_of_batch"].copy(),
         "pods_assigned": defaultdict(set),
@@ -1391,9 +1456,9 @@ def intermediate_build_review():
         
     db_docs_to_save, display_docs_for_template = [], []
     for course_input in selected_courses_input:
-        interim_db_doc, display_template_doc = _process_single_course(course_input, initial_data, batch_state, batch_review_id)
+        processed_items = _process_single_course(course_input, initial_data, batch_state, batch_review_id)
         
-        if interim_db_doc:
+        for interim_db_doc, display_template_doc in processed_items:
             db_docs_to_save.append(interim_db_doc)
             display_template_doc['interim_doc_id'] = str(interim_db_doc['_id'])
             display_template_doc['final_labbuild_course_student'] = display_template_doc.get('final_labbuild_course')
@@ -1419,7 +1484,8 @@ def prepare_trainer_pods():
     """
     Receives finalized student assignments, saves them, and then proposes
     assignments for the corresponding trainer pods for a final review.
-    This function is refactored with internal helpers for clarity.
+    This version ensures contiguous allocation of trainer pods for each vendor
+    and allows allocation on any available host if priority hosts are full.
     """
     current_theme = request.cookies.get('theme', 'light')
     final_student_plan_json = request.form.get('final_build_plan')
@@ -1450,7 +1516,6 @@ def prepare_trainer_pods():
                 "assignments": item.get("interactive_assignments", []),
                 "status": "student_confirmed", 
                 "updated_at": datetime.datetime.now(pytz.utc)
-                # Note: f5_class_number was set in the previous step and is not modified here.
             }
             update_ops.append(UpdateOne({"_id": ObjectId(doc_id_str), "batch_review_id": batch_id}, {"$set": update_payload}))
 
@@ -1458,7 +1523,6 @@ def prepare_trainer_pods():
             if update_ops:
                 interim_alloc_collection.bulk_write(update_ops)
             
-            # Re-fetch the now-updated full documents to ensure we have the latest state
             confirmed_docs = list(interim_alloc_collection.find({"_id": {"$in": doc_ids_to_fetch}}))
             return confirmed_docs, None
         except (PyMongoError, BulkWriteError, InvalidId) as e:
@@ -1477,12 +1541,9 @@ def prepare_trainer_pods():
         try:
             prep_data["build_rules"] = list(build_rules_collection.find().sort("priority", ASCENDING))
             
-            # --- FIX: Convert the cursor to a list before passing it ---
             hosts_docs = list(host_collection.find({"include_for_build": "true"}))
             prep_data["all_hosts_dd"] = sorted([hd['host_name'] for hd in hosts_docs if 'host_name' in hd])
             initial_host_caps = get_hosts_available_memory_parallel(hosts_docs) if hosts_docs else {}
-            # --- END FIX ---
-
             prep_data["working_host_caps_gb"] = {h: cap for h, cap in initial_host_caps.items() if cap is not None}
             
             db_cursor = alloc_collection.find({"extend": "true"}, {"courses.vendor": 1, "courses.pod_details": 1})
@@ -1521,7 +1582,7 @@ def prepare_trainer_pods():
 
     def _propose_trainer_pod_for_course(student_course_doc, prep_data, batch_state):
         """
-        STEP 3: Propose a single Trainer Pod.
+        STEP 3: Propose a single Trainer Pod using a per-vendor cursor and flexible host allocation.
         Determines the assignment for a single trainer pod based on rules and available resources.
         Modifies batch_state in place and returns the DB payload and display data.
         """
@@ -1553,24 +1614,60 @@ def prepare_trainer_pods():
             
             host, pod, warning = None, None, None
             if lb_course and mem_one_pod > 0:
-                hosts_to_try = eff_actions_tp.get("host_priority", prep_data["all_hosts_dd"])
-                start_pod_sugg = eff_actions_tp.get("start_pod_number", 1)
+                # --- MODIFIED HOST SELECTION LOGIC ---
+                priority_hosts_from_rule = eff_actions_tp.get("host_priority")
+                all_available_hosts = prep_data.get("all_hosts_dd", [])
+                
+                if isinstance(priority_hosts_from_rule, list) and priority_hosts_from_rule:
+                    # Construct a final list that tries priority hosts first, then spills over to all others.
+                    # dict.fromkeys preserves order and removes duplicates.
+                    hosts_to_try = list(dict.fromkeys(priority_hosts_from_rule + all_available_hosts))
+                    logger.info(f"Trainer pod for '{tp_sf_code}' will try priority hosts first: {priority_hosts_from_rule}, then spill over.")
+                else:
+                    # If no priority list is defined, simply try all available hosts.
+                    hosts_to_try = all_available_hosts
+                    logger.info(f"Trainer pod for '{tp_sf_code}' will try all available hosts: {hosts_to_try}")
+                # --- END OF MODIFICATION ---
+
+                start_pod_sugg_from_rule = eff_actions_tp.get("start_pod_number", 1)
+                cand_pod = batch_state["vendor_pod_cursors"].get(vendor, start_pod_sugg_from_rule)
+                
+                pod_found = False
                 for host_cand in hosts_to_try:
-                    cand_pod = start_pod_sugg
-                    while cand_pod in batch_state["taken_pods_vendor"].get(vendor, set()): cand_pod += 1
-                    is_first = lb_course not in batch_state["lb_courses_on_host"].get(host_cand, set())
-                    mem_needed = round(mem_one_pod * (SUBSEQUENT_POD_MEMORY_FACTOR if not is_first else 1.0), 2)
-                    host_cap = batch_state["working_host_caps_gb"].get(host_cand, 0.0)
-                    if host_cap >= mem_needed:
-                        host, pod = host_cand, cand_pod
-                        batch_state["taken_pods_vendor"][vendor].add(pod)
-                        batch_state["lb_courses_on_host"][host].add(lb_course)
-                        batch_state["working_host_caps_gb"][host] = max(0, round(host_cap - mem_needed, 2))
-                        break
-                if host is None: warning = "No suitable host found with available capacity."
-            else: warning = "Cannot assign trainer pod: Missing LabBuild course or memory is zero."
+                    search_pod = cand_pod
+                    
+                    while True: # Keep searching for the next available pod number
+                        if search_pod not in batch_state["taken_pods_vendor"].get(vendor, set()):
+                            is_first = lb_course not in batch_state["lb_courses_on_host"].get(host_cand, set())
+                            mem_needed = round(mem_one_pod * (SUBSEQUENT_POD_MEMORY_FACTOR if not is_first else 1.0), 2)
+                            host_cap = batch_state["working_host_caps_gb"].get(host_cand, 0.0)
+                            
+                            if host_cap >= mem_needed:
+                                host, pod = host_cand, search_pod
+                                pod_found = True
+                                break # Found a spot on this host
+                            else:
+                                # Not enough memory on this host for any pod of this type, try next host.
+                                break 
+                        search_pod += 1
+                    
+                    if pod_found:
+                        break # Exit the host loop since we found a spot
+
+                if pod_found:
+                    batch_state["taken_pods_vendor"][vendor].add(pod)
+                    is_first_on_host = lb_course not in batch_state["lb_courses_on_host"].get(host, set())
+                    mem_consumed = round(mem_one_pod * (SUBSEQUENT_POD_MEMORY_FACTOR if not is_first_on_host else 1.0), 2)
+                    batch_state["working_host_caps_gb"][host] = max(0, round(batch_state["working_host_caps_gb"].get(host, 0.0) - mem_consumed, 2))
+                    batch_state["lb_courses_on_host"][host].add(lb_course)
+                    batch_state["vendor_pod_cursors"][vendor] = pod + 1
+                    logger.info(f"Assigned trainer pod {pod} to {host}. Next cursor for '{vendor}' is {pod + 1}.")
+                else:
+                    warning = "No suitable host found with available capacity and a free contiguous pod number."
+            else:
+                warning = "Cannot assign trainer pod: Missing LabBuild course or memory is zero."
             
-            db_update_payload.update({"trainer_assignment": {"host": host, "start_pod": pod, "end_pod": pod} if host and pod else None, "trainer_assignment_warning": warning})
+            db_update_payload.update({"trainer_assignment": {"host": host, "start_pod": pod, "end_pod": pod} if host and pod is not None else None, "trainer_assignment_warning": warning})
             display_data.update({"assigned_host": host, "start_pod": pod, "end_pod": pod, "error_message": warning})
             
         return db_update_payload, display_data
@@ -1604,11 +1701,18 @@ def prepare_trainer_pods():
     if err:
         flash(err, "danger"); return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
 
+    confirmed_student_courses.sort(key=lambda x: (x.get('vendor', 'zzz'), x.get('sf_start_date', '')))
+
     prep_data, err = _prepare_data_for_trainer_logic(confirmed_student_courses)
     if err:
         flash(err, "danger"); return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
 
-    batch_trainer_state = {"working_host_caps_gb": prep_data["working_host_caps_gb"], "taken_pods_vendor": prep_data["taken_pods_vendor"], "lb_courses_on_host": prep_data["lb_courses_on_host"]}
+    batch_trainer_state = {
+        "working_host_caps_gb": prep_data["working_host_caps_gb"],
+        "taken_pods_vendor": prep_data["taken_pods_vendor"],
+        "lb_courses_on_host": prep_data["lb_courses_on_host"],
+        "vendor_pod_cursors": defaultdict(lambda: 100)
+    }
     
     trainer_updates_for_db = []
     display_items_for_template = []
@@ -1616,14 +1720,12 @@ def prepare_trainer_pods():
     for student_doc in confirmed_student_courses:
         trainer_payload, trainer_display_data = _propose_trainer_pod_for_course(student_doc, prep_data, batch_trainer_state)
         trainer_updates_for_db.append({"_id": student_doc["_id"], "payload": trainer_payload})
-        # Merge the proposed trainer data into the student doc for immediate display
         student_doc.update(trainer_payload)
         display_items_for_template.append(student_doc)
 
     if not _save_trainer_proposals(trainer_updates_for_db, batch_review_id):
         return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
 
-    # STEP 5: Render the final page
     return render_template(
         'trainer_pod_review.html',
         courses_and_trainer_pods=display_items_for_template,
@@ -3119,3 +3221,68 @@ def generate_apm_commands_route():
     
     logger.info(f"APM Route: Command Generation Successful. {final_message}")
     return jsonify({"commands": all_commands, "message": final_message})
+
+@bp.route('/allocations/update-summary', methods=['POST'])
+def update_allocation_summary():
+    """
+    API endpoint to handle in-line edits of an allocation group's summary.
+    """
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Invalid request format, JSON expected."}), 415
+
+    data = request.json
+    logger.info(f"Received allocation summary update request: {data}")
+
+    # --- 1. Extract and Validate Identifiers ---
+    tag = data.get('tag')
+    # The group is identified by its first course name for the update query
+    course_name = data.get('course_name')
+
+    if not tag or not course_name:
+        return jsonify({"success": False, "error": "Missing tag or course_name identifier."}), 400
+
+    # --- 2. Build the MongoDB Update Payload ---
+    update_payload = {}
+    # Create a mapping from the keys received from JS to the DB field names
+    field_map = {
+        'start_date': 'courses.$.start_date',
+        'end_date': 'courses.$.end_date',
+        'trainer_name': 'courses.$.trainer_name',
+        'apm_username': 'courses.$.apm_username',
+        'apm_password': 'courses.$.apm_password'
+    }
+
+    for key, db_field in field_map.items():
+        if key in data: # Check if the key exists in the request
+            update_payload[db_field] = data[key]
+
+    if not update_payload:
+        return jsonify({"success": True, "message": "No changes detected."})
+
+    # --- 3. Perform the Database Update ---
+    if alloc_collection is None:
+        return jsonify({"success": False, "error": "Database service unavailable."}), 503
+
+    try:
+        result = alloc_collection.update_one(
+            {"tag": tag, "courses.course_name": course_name},
+            {"$set": update_payload}
+        )
+
+        if result.matched_count == 0:
+            logger.warning(f"No allocation found for tag '{tag}' and course '{course_name}' to update.")
+            return jsonify({"success": False, "error": "Allocation not found. It may have been recently deleted."}), 404
+        
+        if result.modified_count == 0:
+            logger.info(f"Allocation for tag '{tag}' matched but no fields were changed.")
+            return jsonify({"success": True, "message": "No changes made."})
+
+        logger.info(f"Successfully updated allocation summary for tag '{tag}', course '{course_name}'.")
+        return jsonify({"success": True, "message": "Allocation updated successfully."})
+
+    except PyMongoError as e:
+        logger.error(f"DB error updating allocation summary for tag '{tag}': {e}", exc_info=True)
+        return jsonify({"success": False, "error": f"Database error: {e}"}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error updating allocation summary for tag '{tag}': {e}", exc_info=True)
+        return jsonify({"success": False, "error": "An unexpected server error occurred."}), 500

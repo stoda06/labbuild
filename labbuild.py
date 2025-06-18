@@ -98,6 +98,13 @@ def main():
     setup_parser.add_argument('--db-only', action='store_true', help='Only update the database allocation record.')
     setup_parser.add_argument('--clonefrom', type=int, metavar='SOURCE_POD',
                             help='Source pod number to clone VMs from (primarily for Checkpoint).')
+    # --- NEW OPTIONAL ARGUMENTS FOR SETUP ---
+    setup_parser.add_argument('--start-date', help='Course start date (YYYY-MM-DD).')
+    setup_parser.add_argument('--end-date', help='Course end date (YYYY-MM-DD).')
+    setup_parser.add_argument('--trainer-name', help='Name of the trainer.')
+    setup_parser.add_argument('--username', help='APM username for the allocation.')
+    setup_parser.add_argument('--password', help='APM password for the allocation.')
+    # --- END NEW ARGUMENTS ---
     setup_parser.set_defaults(func=setup_environment)
 
     manage_parser = subparsers.add_parser('manage', help='Manage VM power states.',

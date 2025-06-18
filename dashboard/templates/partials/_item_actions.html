@@ -1,0 +1,47 @@
+{# dashboard/templates/partials/_item_actions.html #}
+{% macro item_actions(item) %}
+  {% if item.prtg_url %}
+    <a href="{{ item.prtg_url }}" target="_blank" class="action-btn" title="View in PRTG"><i class="fas fa-chart-line text-info"></i></a>
+  {% endif %}
+  <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline">
+      {# --- Hidden inputs to carry all necessary context for the action --- #}
+      <input type="hidden" name="scope" value="item">
+      <input type="hidden" name="tag" value="{{ item.tag }}">
+      <input type="hidden" name="item_type" value="{{ item.type }}">
+      <input type="hidden" name="item_number" value="{{ item.number }}">
+      <input type="hidden" name="host" value="{{ item.host }}">
+      <input type="hidden" name="vendor" value="{{ item.vendor }}">
+      <input type="hidden" name="course" value="{{ item.course_name }}">
+      <input type="hidden" name="current_state" value="{{ 'on' if item.poweron|string|lower == 'true' else 'off' }}">
+      {# Special case for F5 pods to pass their class context #}
+      {% if item.type == 'pod' and item.vendor|lower == 'f5' and item.class_number is not none %}
+          <input type="hidden" name="item_class_number" value="{{ item.class_number }}">
+      {% endif %}
+      {# --- Button to submit the form --- #}
+      <button type="submit" class="action-btn {{ 'text-danger' if item.poweron|string|lower == 'true' else 'text-secondary' }}" title="Toggle Power">
+          <i class="fas fa-power-off"></i>
+      </button>
+  </form>
+  <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown INFRASTRUCTURE for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'?')">
+     <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
+     <input type="hidden" name="tag" value="{{ item.tag }}">
+     <input type="hidden" name="host" value="{{ item.host }}">
+     <input type="hidden" name="vendor" value="{{ item.vendor }}">
+     <input type="hidden" name="course" value="{{ item.course_name }}">
+     {% if item.pod_number is not none %}<input type="hidden" name="pod_number" value="{{ item.pod_number }}">{% endif %}
+     {% if item.class_number is not none %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
+     <button type="submit" class="action-btn text-danger" title="Teardown Infrastructure">
+         <i class="fas fa-fire-alt"></i>
+     </button>
+  </form>
+  <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE Database Entry ONLY for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'?')">
+     <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
+     <input type="hidden" name="tag" value="{{ item.tag }}">
+     <input type="hidden" name="course" value="{{ item.course_name }}">
+     {% if item.pod_number is not none %}<input type="hidden" name="pod_number" value="{{ item.pod_number }}">{% endif %}
+     {% if item.class_number is not none %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
+     <button type="submit" class="action-btn text-warning" title="Delete DB Entry">
+         <i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i>
+     </button>
+  </form>
+{% endmacro %}

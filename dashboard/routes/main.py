@@ -19,6 +19,7 @@ from ..extensions import (
     build_rules_collection # NEED RULES COLLECTION AGAIN
 )
 from ..utils import build_log_filter_query, format_datetime
+from collections import defaultdict
 
 # Import the Salesforce util that APPLIES RULES
 from ..salesforce_utils import get_upcoming_courses_data # USE THIS ONE
@@ -148,6 +149,147 @@ def inject_notifications():
         g.past_due_notifications = get_past_due_allocations()
     return dict(past_due_notifications=g.past_due_notifications)
 
+@bp.route('/allocations')
+def view_allocations():
+    """
+    Displays current allocations in a collapsible group view,
+    paginated by a fixed number of groups.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+
+    filter_tag_input = request.args.get('filter_tag', '').strip()
+    filter_vendor = request.args.get('filter_vendor', '').strip()
+    filter_course = request.args.get('filter_course', '').strip()
+    filter_host_str = request.args.get('filter_host', '').strip().lower()
+    filter_number_str = request.args.get('filter_number', '').strip()
+    try:
+        page = int(request.args.get('page', 1))
+        page = max(1, page)
+    except ValueError:
+        page = 1
+    groups_per_page = 10
+
+    mongo_query: Dict[str, Any] = {}
+    if filter_tag_input: 
+        mongo_query['tag'] = {'$regex': re.escape(filter_tag_input), '$options': 'i'}
+
+    current_filter_params = {
+        'filter_tag': filter_tag_input, 'filter_vendor': filter_vendor, 'filter_course': filter_course,
+        'filter_host': filter_host_str, 'filter_number': filter_number_str
+    }
+    pagination_link_args = current_filter_params.copy()
+
+    all_items_matching_filters: List[Dict] = []
+    if alloc_collection is None:
+        flash("Database allocation collection is unavailable.", "danger")
+    else:
+        try:
+            alloc_cursor = alloc_collection.find(mongo_query) 
+            number_filter_int = int(filter_number_str) if filter_number_str else None
+
+            for tag_doc in alloc_cursor:
+                tag_name = tag_doc.get("tag", "Unknown Tag")
+                is_extended_tag = str(tag_doc.get("extend", "false")).lower() == "true"
+                for course_alloc in tag_doc.get("courses", []):
+                    vendor = course_alloc.get("vendor", "")
+                    if filter_vendor and not re.match(f'^{re.escape(filter_vendor)}$', vendor, re.I): continue
+                    if filter_course and not re.search(re.escape(filter_course), course_alloc.get("course_name", ""), re.I): continue
+                    
+                    # --- THIS IS THE FIX: Define group_key and base_item HERE ---
+                    group_key = (tag_name, str(course_alloc.get("start_date", "N/A")), str(course_alloc.get("end_date", "N/A")), str(course_alloc.get("trainer_name", "N/A")), str(course_alloc.get("apm_username", "N/A")))
+                    base_item = {
+                        "group_key": group_key, "tag": tag_name, "is_extended": is_extended_tag,
+                        "start_date": course_alloc.get("start_date", "N/A"), "end_date": course_alloc.get("end_date", "N/A"),
+                        "trainer_name": course_alloc.get("trainer_name", "N/A"), "apm_username": course_alloc.get("apm_username", "N/A"),
+                        "apm_password": course_alloc.get("apm_password", "N/A"), "vendor": vendor,
+                        "course_name": course_alloc.get("course_name")
+                    }
+
+                    for pod_detail in course_alloc.get("pod_details", []):
+                        if filter_host_str and filter_host_str not in pod_detail.get("host", "").lower(): continue
+                        
+                        is_f5_class_entry = vendor.lower() == 'f5' and "class_number" in pod_detail
+                        
+                        item_data = base_item.copy()
+                        item_data["host"] = pod_detail.get("host", "Unknown Host")
+                        item_data["poweron"] = str(pod_detail.get("poweron", "false")).lower() == 'true'
+                        item_data["prtg_url"] = pod_detail.get("prtg_url")
+
+                        if is_f5_class_entry:
+                            class_num = pod_detail.get("class_number")
+                            nested_pods = pod_detail.get("pods", [])
+                            nested_pod_numbers = {p.get("pod_number") for p in nested_pods if p.get("pod_number") is not None}
+                            
+                            if number_filter_int is not None and class_num != number_filter_int and not nested_pod_numbers.intersection({number_filter_int}):
+                                continue
+                            
+                            item_data.update({"type": "f5_class", "number": class_num, "class_number": class_num})
+                            item_data['nested_pods'] = sorted(nested_pods, key=lambda p: p.get('pod_number', 999))
+                            all_items_matching_filters.append(item_data)
+                        else:
+                            pod_num = pod_detail.get("pod_number")
+                            if number_filter_int is not None and pod_num != number_filter_int: continue
+                            item_data.update({"type": "pod", "number": pod_num, "pod_number": pod_num})
+                            all_items_matching_filters.append(item_data)
+        except PyMongoError as e_mongo:
+            flash("Error fetching data from database.", "danger")
+
+    # Group the flat list into a nested structure for rendering
+    grouped_allocations = defaultdict(lambda: {"summary": {}, "details": []})
+    for item in all_items_matching_filters:
+        key = item['group_key'] # This will now work correctly
+        if not grouped_allocations[key]['summary']:
+            grouped_allocations[key]['summary'] = {
+                "tag": item['tag'], "is_extended": item['is_extended'], "start_date": item['start_date'],
+                "end_date": item['end_date'], "trainer_name": item['trainer_name'],
+                "apm_username": item['apm_username'], "apm_password": item['apm_password'],
+                "course_names": {item['course_name']}
+            }
+        else:
+            grouped_allocations[key]['summary']['course_names'].add(item['course_name'])
+        
+        grouped_allocations[key]['details'].append(item)
+
+    final_groups = []
+    for group_key, group_data in grouped_allocations.items():
+        group_data['summary']['course_names'] = sorted(list(group_data['summary']['course_names']))
+        
+        pod_numbers = {item['pod_number'] for item in group_data['details'] if item.get('pod_number') is not None}
+        class_numbers = {item['class_number'] for item in group_data['details'] if item.get('class_number') is not None}
+        pod_range_str = ""
+        if pod_numbers:
+            min_pod, max_pod = min(pod_numbers), max(pod_numbers)
+            pod_range_str = f"Pods: {min_pod}-{max_pod}" if min_pod != max_pod else f"Pod: {min_pod}"
+        class_range_str = ""
+        if class_numbers:
+            min_class, max_class = min(class_numbers), max(class_numbers)
+            class_range_str = f"Classes: {min_class}-{max_class}" if min_class != max_class else f"Class: {min_class}"
+        group_data['summary']['pod_range_display'] = " | ".join(filter(None, [class_range_str, pod_range_str]))
+        
+        final_groups.append(group_data)
+
+    final_groups.sort(key=lambda g: (g['summary']['tag'].lower(), g['summary']['start_date'] or '9999-12-31'))
+    for group in final_groups:
+        group['details'].sort(key=lambda item: (item.get('class_number') or 9999, -1 if item.get('type') == 'f5_class' else (item.get('pod_number') or 9999)))
+        
+    total_groups_matching_filters = len(final_groups)
+    total_pages = math.ceil(total_groups_matching_filters / groups_per_page) if groups_per_page > 0 else 1
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * groups_per_page
+    end_idx = start_idx + groups_per_page
+    paginated_groups = final_groups[start_idx:end_idx]
+
+    return render_template(
+        'allocations.html',
+        grouped_allocations=paginated_groups,
+        total_display_count=total_groups_matching_filters, 
+        current_page=page,
+        total_pages=total_pages, 
+        pagination_args=pagination_link_args,
+        current_filters=current_filter_params,
+        current_theme=current_theme
+    )
+
 @bp.route('/')
 def index():
     """Main dashboard page."""
@@ -241,256 +383,6 @@ def index():
     return render_template(
         'index.html', recent_runs=recent_runs, jobs=jobs_display,
         vendors=vendors, hosts=hosts, current_theme=current_theme
-    )
-
-
-@bp.route('/allocations')
-def view_allocations():
-    """
-    Displays current allocations, paginated by a fixed number of unique tags,
-    with cells merged for items under the same tag.
-    Items are sorted by Tag, then by Course Start Date, then by Pod/Class Number.
-    """
-    current_theme = request.cookies.get('theme', 'light')
-
-    # --- 1. Get Filter & Pagination Parameters ---
-    filter_tag_input = request.args.get('filter_tag', '').strip()
-    filter_vendor = request.args.get('filter_vendor', '').strip()
-    filter_course = request.args.get('filter_course', '').strip()
-    filter_host_str = request.args.get('filter_host', '').strip().lower()
-    filter_number_str = request.args.get('filter_number', '').strip()
-
-    try:
-        page = int(request.args.get('page', 1))
-        page = max(1, page)
-    except ValueError:
-        page = 1
-    
-    tags_per_page = 5  # Configurable: Number of unique tags to display per page
-
-    # --- 2. Build Initial MongoDB Query ---
-    mongo_query: Dict[str, Any] = {}
-    if filter_tag_input: 
-        mongo_query['tag'] = {'$regex': re.escape(filter_tag_input), '$options': 'i'}
-
-    current_filter_params = {
-        'filter_tag': filter_tag_input,
-        'filter_vendor': filter_vendor,
-        'filter_course': filter_course,
-        'filter_host': filter_host_str,
-        'filter_number': filter_number_str
-    }
-    pagination_link_args = current_filter_params.copy()
-
-    # --- 3. Fetch Data & Build Intermediate Flat List with Python-side Filters ---
-    all_items_matching_filters: List[Dict] = []
-    db_error = False
-
-    if alloc_collection is None:
-        flash("Database allocation collection is unavailable.", "danger")
-        logger.error("view_allocations: alloc_collection is None.")
-        db_error = True
-    else:
-        try:
-            logger.debug(f"Fetching allocations with initial DB query: {mongo_query}")
-            alloc_cursor = alloc_collection.find(mongo_query) 
-
-            number_filter_int: Optional[int] = None
-            if filter_number_str:
-                try: number_filter_int = int(filter_number_str)
-                except ValueError: logger.debug(f"Invalid number filter: '{filter_number_str}'")
-
-            for tag_doc in alloc_cursor:
-                tag_name = tag_doc.get("tag", "Unknown Tag")
-                is_extended_tag = str(tag_doc.get("extend", "false")).lower() == "true"
-                course_start_date_str = str(tag_doc.get("start_date", "N/A"))
-                course_end_date_str = str(tag_doc.get("end_date", "N/A"))
-                
-                for course_alloc in tag_doc.get("courses", []):
-                    if not isinstance(course_alloc, dict): continue
-                    vendor = course_alloc.get("vendor")
-                    course_name = course_alloc.get("course_name")
-                    
-
-                    course_start_date_iso = _prepare_date_for_display_iso(course_start_date_str, f"Tag: {tag_name}, Course: {course_name}, Field: start_date")
-                    course_end_date_iso = _prepare_date_for_display_iso(course_end_date_str, f"Tag: {tag_name}, Course: {course_name}, Field: end_date")
-                    
-                    if not vendor or not course_name: continue
-
-                    if filter_vendor and not re.match(f'^{re.escape(filter_vendor)}$', vendor, re.I):
-                        continue
-                    if filter_course and not re.search(re.escape(filter_course), course_name, re.I):
-                        continue
-
-                    for pod_detail in course_alloc.get("pod_details", []):
-                        if not isinstance(pod_detail, dict): continue
-                        host = pod_detail.get("host", pod_detail.get("pod_host", "Unknown Host"))
-                        pod_num = pod_detail.get("pod_number"); class_num = pod_detail.get("class_number")
-                        is_f5 = vendor.lower() == 'f5'
-
-                        if filter_host_str and filter_host_str not in host.lower():
-                            continue
-
-                        item_type = "unknown"; item_number_display: Any = None; nested_pods_f5: List[Any] = []
-
-                        if is_f5 and class_num is not None:
-                            item_type = "f5_class"; item_number_display = class_num
-                            raw_n = pod_detail.get("pods", [])
-                            if isinstance(raw_n, list):
-                                nested_pods_f5 = [p.get("pod_number") for p in raw_n if isinstance(p, dict) and p.get("pod_number") is not None]
-                        elif pod_num is not None:
-                            item_type = "pod"; item_number_display = pod_num
-                        
-                        if number_filter_int is not None:
-                            passes_num_filter = False
-                            if item_type == "f5_class":
-                                if item_number_display == number_filter_int or number_filter_int in nested_pods_f5:
-                                    passes_num_filter = True
-                            elif item_type == "pod" and item_number_display == number_filter_int:
-                                    passes_num_filter = True
-                            if not passes_num_filter and item_type != "unknown": continue
-                            elif item_type == "unknown": continue 
-                        
-                        if item_type != 'unknown':
-                            all_items_matching_filters.append({
-                                "tag": tag_name, "is_extended": is_extended_tag,
-                                "vendor": vendor, "course_name": course_name,
-                                "course_start_date": course_start_date_str,
-                                "course_end_date": course_end_date_str,
-                                "course_start_date_iso": course_start_date_iso,
-                                "course_end_date_iso": course_end_date_iso,
-                                "host": host, "type": item_type,
-                                "number": item_number_display,
-                                "pod_number": pod_num, "class_number": class_num,
-                                "nested_pods_str": ", ".join(map(str, sorted(list(set(nested_pods_f5))))) if nested_pods_f5 else "-",
-                                "prtg_url": pod_detail.get("prtg_url"),
-                                "poweron": str(pod_detail.get("poweron", "false")).lower() == 'true'
-                            })
-        except PyMongoError as e_mongo:
-            logger.error(f"DB error fetching allocations: {e_mongo}", exc_info=True)
-            flash("Error fetching data from database.", "danger")
-            db_error = True
-        except Exception as e_proc_alloc:
-            logger.error(f"Error processing allocation data: {e_proc_alloc}", exc_info=True)
-            flash("Server error while processing allocation data.", "danger")
-            db_error = True
-
-    # --- 4. Multi-level Python Sort on the fully filtered list ---
-    if not db_error and all_items_matching_filters:
-        def get_sort_keys_for_item(item: Dict) -> Tuple[str, datetime.date, int]:
-            tag_key = item.get('tag', '').lower()
-            
-            date_iso_str_sort = item.get('course_start_date_iso') 
-            sort_date_obj = datetime.date.max 
-            
-            if date_iso_str_sort:
-                try:
-                    dt_temp = datetime.datetime.fromisoformat(date_iso_str_sort.replace('Z', '+00:00'))
-                    sort_date_obj = dt_temp.date() 
-                except ValueError:
-                    logger.warning(f"SortKey: Failed to parse pre-processed ISO date '{date_iso_str_sort}' for tag '{tag_key}'. Falling back to original string.")
-                    date_str_orig_sort = item.get('course_start_date', '') 
-                    if date_str_orig_sort and date_str_orig_sort != "N/A":
-                        for fmt_sort in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y"):
-                            try: sort_date_obj = datetime.datetime.strptime(date_str_orig_sort, fmt_sort).date(); break
-                            except ValueError: continue
-            else: 
-                date_str_orig_sort = item.get('course_start_date', '') 
-                if date_str_orig_sort and date_str_orig_sort != "N/A":
-                    for fmt_sort in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%B-%Y"):
-                        try: sort_date_obj = datetime.datetime.strptime(date_str_orig_sort, fmt_sort).date(); break
-                        except ValueError: continue
-            
-            if sort_date_obj == datetime.date.max and item.get('course_start_date_iso') is not None : # Log if ISO was present but still resulted in max_date
-                logger.debug(f"SortKey: Date for tag '{tag_key}' remains at max_date despite ISO value. Original: '{item.get('course_start_date', '')}', ISO: '{item.get('course_start_date_iso')}'")
-            elif sort_date_obj == datetime.date.max: # Log if no ISO and original string parse also failed
-                 logger.debug(f"SortKey: Date for tag '{tag_key}' remains at max_date after all parsing attempts. Original: '{item.get('course_start_date', '')}'")
-
-
-            number_key_val_sort = item.get('number')
-            number_key_sort = 999999 
-            if number_key_val_sort is not None:
-                try: number_key_sort = int(number_key_val_sort)
-                except (ValueError, TypeError): pass 
-            
-            return (tag_key, sort_date_obj, number_key_sort)
-
-        try:
-            all_items_matching_filters.sort(key=get_sort_keys_for_item)
-            logger.info("All filtered items sorted by tag, course_start_date, then item number.")
-        except Exception as e_sort:
-            logger.error(f"Error during multi-level sort: {e_sort}", exc_info=True)
-            flash("Error organizing items. Display may be unsorted.", "warning")
-
-    # --- 5. Paginate by Unique Tags & Calculate Rowspans (after multi-level sort) ---
-    paginated_allocation_list: List[Dict] = []
-    total_unique_tags_matching_filters = 0
-    total_pages = 1
-
-    if not db_error and all_items_matching_filters:
-        unique_tags_ordered = list(OrderedDict.fromkeys(
-            [item['tag'] for item in all_items_matching_filters]
-        ))
-        total_unique_tags_matching_filters = len(unique_tags_ordered)
-        
-        if total_unique_tags_matching_filters > 0:
-            total_pages = math.ceil(total_unique_tags_matching_filters / tags_per_page) \
-                          if tags_per_page > 0 else 1
-            page = max(1, min(page, total_pages))
-
-            start_tag_idx = (page - 1) * tags_per_page
-            end_tag_idx = start_tag_idx + tags_per_page
-            tags_to_display_on_page = set(unique_tags_ordered[start_tag_idx:end_tag_idx]) 
-            
-            logger.debug(f"Page {page}: Displaying tags {tags_to_display_on_page}")
-
-            current_tag_for_rowspan_calc: Optional[str] = None
-            tag_item_counter_for_rowspan = 0
-            
-            for item_data in all_items_matching_filters:
-                if item_data.get('tag') in tags_to_display_on_page:
-                    item_data_copy = item_data.copy()
-                    
-                    if item_data_copy.get('tag') != current_tag_for_rowspan_calc:
-                        if current_tag_for_rowspan_calc is not None and paginated_allocation_list:
-                            for prev_item_idx in range(len(paginated_allocation_list) - 1, -1, -1):
-                                if paginated_allocation_list[prev_item_idx].get('_is_first_in_tag_group') and \
-                                   paginated_allocation_list[prev_item_idx].get('tag') == current_tag_for_rowspan_calc:
-                                    paginated_allocation_list[prev_item_idx]['tag_rowspan'] = tag_item_counter_for_rowspan
-                                    break
-                        
-                        current_tag_for_rowspan_calc = item_data_copy.get('tag')
-                        tag_item_counter_for_rowspan = 1
-                        item_data_copy['_is_first_in_tag_group'] = True
-                    else:
-                        tag_item_counter_for_rowspan += 1
-                        item_data_copy['_is_first_in_tag_group'] = False
-                    paginated_allocation_list.append(item_data_copy)
-            
-            if current_tag_for_rowspan_calc is not None and paginated_allocation_list:
-                for last_grp_item_idx in range(len(paginated_allocation_list) - 1, -1, -1):
-                    if paginated_allocation_list[last_grp_item_idx].get('_is_first_in_tag_group') and \
-                       paginated_allocation_list[last_grp_item_idx].get('tag') == current_tag_for_rowspan_calc:
-                        paginated_allocation_list[last_grp_item_idx]['tag_rowspan'] = tag_item_counter_for_rowspan
-                        break
-    
-    total_items_in_filtered_tags = len(all_items_matching_filters)
-
-    logger.debug(f"Allocations: Total Matching Tags={total_unique_tags_matching_filters}, Page={page}, "
-                 f"TotalPages={total_pages}, TagsPerPage={tags_per_page}, "
-                 f"Items on this page (for render)={len(paginated_allocation_list)}")
-
-    return render_template(
-        'allocations.html',
-        allocation_list=paginated_allocation_list,
-        total_display_count=total_unique_tags_matching_filters, 
-        total_items_overall=total_items_in_filtered_tags,    
-        current_page=page,
-        total_pages=total_pages, 
-        pagination_args=pagination_link_args,
-        current_filters=current_filter_params,
-        current_theme=current_theme,
-        pagination_by_tags=True 
     )
 
 @bp.route('/logs/<run_id>')

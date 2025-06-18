@@ -57,36 +57,117 @@ def mongo_client() -> Generator[Optional[pymongo.MongoClient], None, None]:
             logger.debug("Closed MongoDB connection.")
 
 def update_database(data: Dict[str, Any]):
-    """Update or insert an entry in the allocation collection."""
+    """
+    Update or insert allocation data using targeted upserts to avoid overwriting.
+    """
     try:
         with mongo_client() as client:
-            if not client: logger.error("DB Update: Connection failed."); return False
+            if not client:
+                logger.error("DB Update: Connection failed.")
+                return False
 
-            db = client[DB_NAME]; collection = db[ALLOCATION_COLLECTION]
-            tag = data["tag"]; course_name = data["course_name"]; vendor = data.get("vendor"); pod_details_list = data["pod_details"]
-            logger.debug(f"Updating DB: tag='{tag}', course='{course_name}'.")
-            tag_entry = collection.find_one({"tag": tag})
+            db = client[DB_NAME]
+            collection = db[ALLOCATION_COLLECTION]
+            
+            tag = data.get("tag")
+            course_name = data.get("course_name")
+            if not tag or not course_name:
+                logger.error("DB Update failed: Missing tag or course_name in data.")
+                return False
+            
+            # --- 1. Prepare the course-level update payload ---
+            # Include only fields that are present in the input data
+            course_update_payload = {}
+            optional_fields = ["vendor", "start_date", "end_date", "trainer_name", "apm_username", "apm_password"]
+            for field in optional_fields:
+                if data.get(field) is not None:
+                    course_update_payload[f"courses.$.{field}"] = data[field]
 
-            if tag_entry:
-                course_index = next((i for i, c in enumerate(tag_entry.get("courses", [])) if isinstance(c, dict) and c.get("course_name") == course_name), -1)
-                if course_index != -1: # Course exists
-                    existing_course = tag_entry["courses"][course_index]; existing_course["vendor"] = vendor or existing_course.get("vendor")
-                    existing_pods = {str(pod.get("pod_number", pod.get("class_number", "None"))): pod for pod in existing_course.get("pod_details", []) if isinstance(pod, dict)}
-                    for new_pod_detail in pod_details_list:
-                         if not isinstance(new_pod_detail, dict): continue # Skip malformed
-                         pod_key = str(new_pod_detail.get("pod_number", new_pod_detail.get("class_number", "None")))
-                         if pod_key in existing_pods: existing_pods[pod_key].update(new_pod_detail); logger.debug(f"Updated pod/class {pod_key}")
-                         else: existing_course.setdefault("pod_details", []).append(new_pod_detail); logger.debug(f"Added pod/class {pod_key}"); existing_pods[pod_key] = new_pod_detail
-                    existing_course["pod_details"] = list(existing_pods.values())
-                else: # Course doesn't exist
-                    tag_entry.setdefault("courses", []).append({"course_name": course_name, "vendor": vendor, "pod_details": pod_details_list}); logger.debug(f"Added new course '{course_name}'.")
-                collection.update_one({"tag": tag}, {"$set": {"courses": tag_entry["courses"]}})
-            else: # Tag doesn't exist
-                new_entry = {"tag": tag, "courses": [{"course_name": course_name, "vendor": vendor, "pod_details": pod_details_list}]}; collection.insert_one(new_entry); logger.debug(f"Inserted new tag '{tag}'.")
-            logger.info(f"DB updated for tag '{tag}', course '{course_name}'.")
+            # --- 2. Attempt to update an existing course document ---
+            # This operation will only succeed if the tag exists AND the course exists within that tag's 'courses' array.
+            if course_update_payload:
+                result = collection.update_one(
+                    {"tag": tag, "courses.course_name": course_name},
+                    {"$set": course_update_payload}
+                )
+                if result.modified_count > 0:
+                    logger.info(f"Updated metadata for course '{course_name}' in tag '{tag}'.")
+
+            # --- 3. Upsert pod details for the course ---
+            # This loop will update existing pods or add new ones to the course's 'pod_details' array.
+            for pod_detail in data.get("pod_details", []):
+                pod_key_field = "class_number" if "class_number" in pod_detail else "pod_number"
+                pod_key_value = pod_detail.get(pod_key_field)
+                if pod_key_value is None:
+                    continue
+
+                # First, try to update an existing pod in the pod_details array
+                pod_update_result = collection.update_one(
+                    {"tag": tag, "courses.course_name": course_name, f"courses.pod_details.{pod_key_field}": pod_key_value},
+                    {"$set": {f"courses.$[course].pod_details.$[pod]": pod_detail}},
+                    array_filters=[
+                        {"course.course_name": course_name},
+                        {f"pod.{pod_key_field}": pod_key_value}
+                    ]
+                )
+
+                # If the pod didn't exist, push it into the array
+                if pod_update_result.matched_count == 0:
+                    collection.update_one(
+                        {"tag": tag, "courses.course_name": course_name},
+                        {"$addToSet": {"courses.$.pod_details": pod_detail}}
+                    )
+
+            # --- 4. Handle cases where the course or tag itself does not exist ---
+            # Check if the tag exists at all. If not, insert it completely.
+            tag_exists = collection.count_documents({"tag": tag}) > 0
+            if not tag_exists:
+                logger.info(f"Tag '{tag}' not found. Creating new tag document.")
+                new_tag_entry = {
+                    "tag": tag,
+                    "courses": [{
+                        "course_name": course_name,
+                        "vendor": data.get("vendor"),
+                        "start_date": data.get("start_date"),
+                        "end_date": data.get("end_date"),
+                        "trainer_name": data.get("trainer_name"),
+                        "apm_username": data.get("apm_username"),
+                        "apm_password": data.get("apm_password"),
+                        "pod_details": data.get("pod_details", [])
+                    }]
+                }
+                collection.insert_one(new_tag_entry)
+                logger.info(f"DB updated: Created new tag '{tag}' with course '{course_name}'.")
+                return True
+
+            # If the tag exists, check if the course exists within it. If not, push the course.
+            course_exists = collection.count_documents({"tag": tag, "courses.course_name": course_name}) > 0
+            if not course_exists:
+                logger.info(f"Course '{course_name}' not found in tag '{tag}'. Adding new course entry.")
+                new_course_entry = {
+                    "course_name": course_name,
+                    "vendor": data.get("vendor"),
+                    "start_date": data.get("start_date"),
+                    "end_date": data.get("end_date"),
+                    "trainer_name": data.get("trainer_name"),
+                    "apm_username": data.get("apm_username"),
+                    "apm_password": data.get("apm_password"),
+                    "pod_details": data.get("pod_details", [])
+                }
+                collection.update_one(
+                    {"tag": tag},
+                    {"$push": {"courses": new_course_entry}}
+                )
+
+            logger.info(f"DB update process complete for tag '{tag}', course '{course_name}'.")
             return True
-    except PyMongoError as e: logger.error(f"DB update error (PyMongoError): {e}", exc_info=True); return False
-    except Exception as e: logger.error(f"DB update error: {e}", exc_info=True); return False
+
+    except PyMongoError as e:
+        logger.error(f"DB update error (PyMongoError): {e}", exc_info=True)
+        return False
+    except Exception as e:
+        logger.error(f"DB update error: {e}", exc_info=True)
+        return False
 
 def delete_from_database(tag: str, course_name: Optional[str] = None, pod_number: Optional[int] = None, class_number: Optional[int] = None):
     """Delete an entry, course, or pod from the allocation collection."""

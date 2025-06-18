@@ -1,134 +1,39 @@
 {# dashboard/templates/allocations.html #}
 {% extends 'base.html' %}
+{% from 'partials/_item_actions.html' import item_actions %}
 
 {% block title %}Current Allocations{% endblock %}
 
 {% block head %}
     {{ super() }}
     <style>
-        .allocation-table th,
-        .allocation-table td {
-            font-size: 0.85rem;        
-            vertical-align: middle;
-            padding: 0.4rem 0.5rem;    
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .allocation-table th {
-            white-space: nowrap;        
-        }
-        .allocation-table td {
-            white-space: normal;        
-            word-break: break-word;     
-        }
-        .allocation-table td.tag-cell-merged {
-            vertical-align: middle !important; 
-            padding-top: 0.6rem; 
-        }
-
-        /* Custom Striping Classes */
-        .tag-group-shade-0 { /* Corresponds to row_class_idx = 0 */
-            background-color: var(--bs-table-bg); /* Transparent or base table bg */
-        }
-        /* Odd groups */
-        .tag-group-shade-1 { /* Corresponds to row_class_idx = 1 */
-            background-color: var(--bs-table-striped-bg); /* Bootstrap's striped color */
-        }
-
-        /* Dark Mode overrides for custom striping */
-        body.dark-mode .tag-group-shade-0 {
-            background-color: var(--bs-table-bg); /* Dark mode table bg */
-        }
-        body.dark-mode .tag-group-shade-1 {
-            background-color: var(--bs-table-striped-bg); /* Dark mode striped bg */
-        }
-
-        .action-forms form {
-            margin-bottom: 0;
-            display: inline-block;
-            margin-left: 1px; 
-            margin-right: 1px;
-        }
-        .action-btn {
-            background: none; border: none; padding: 0.1rem 0.3rem; 
-            line-height: 1; font-size: 0.9rem; 
-            opacity: 0.7; 
-            transition: opacity 0.2s ease, color 0.2s ease;
-            vertical-align: middle; cursor: pointer;
-        }
+        .allocation-table th, .allocation-table td { font-size: 0.85rem; vertical-align: middle; padding: 0.4rem 0.5rem; }
+        .allocation-table th { white-space: nowrap; }
+        .allocation-table td { white-space: normal; word-break: break-word; }
+        .summary-row.is-editing { background-color: var(--bs-warning-bg-subtle) !important; }
+        .detail-row, .f5-pod-detail-row { background-color: var(--bs-tertiary-bg); }
+        body.dark-mode .detail-row, body.dark-mode .f5-pod-detail-row { background-color: #22272e; }
+        .detail-row .table { margin-bottom: 0; }
+        .action-forms form { margin-bottom: 0; display: inline-block; margin-left: 2px; }
+        .action-btn { background: none; border: none; padding: 0.1rem 0.3rem; line-height: 1; font-size: 0.9rem; opacity: 0.7; transition: opacity 0.2s ease; cursor: pointer; }
         .action-btn:hover { opacity: 1; }
-        .action-btn.text-danger { color: var(--bs-danger); }
-        .action-btn.text-warning { color: var(--bs-warning); }
-        .action-btn.text-secondary { color: #6c757d; }
-        .action-btn.text-info { color: var(--bs-info); }
-        html.dark-mode .action-btn.text-danger { color: #ff8a80; }
-        html.dark-mode .action-btn.text-warning { color: #ffd76d; }
-        html.dark-mode .action-btn.text-secondary { color: #adb5bd; }
-        html.dark-mode .action-btn.text-info { color: #66d9ef; }
-
-        .prtg-link { vertical-align: middle; padding: 0 0.2rem !important; }
-        .col-status i { margin: 0 0.2rem; }
+        .expander-icon { transition: transform 0.2s ease-in-out; }
+        .summary-row[aria-expanded="true"] .expander-icon, .f5-class-row[aria-expanded="true"] .expander-icon { transform: rotate(90deg); }
+        .col-expander, .col-summary-expander { width: 40px; text-align: center; }
+        .col-tag { width: 14%; }
+        .col-dates { width: 180px; }
+        .col-trainer { width: 11%; }
+        .col-courses { min-width: 150px; }
+        .col-pod-range { width: 12%; }
+        .col-apm { width: 12%; }
+        .col-group-actions { width: 180px; text-align: right; white-space: nowrap; }
         
-        .pagination-controls { 
-            margin-top: 1.5rem;
-            margin-bottom: 1rem;
-            padding: 0.5rem 0;
-        }
-
-        .power-toggle-btn.text-danger { color: var(--bs-danger); } 
-        .power-toggle-btn.text-secondary { color: #6c757d; }       
-        html.dark-mode .power-toggle-btn.text-danger { color: #ff8a80; }
-        html.dark-mode .power-toggle-btn.text-secondary { color: #adb5bd; }
-
-        .extend-toggle-btn.text-success { color: var(--bs-success); } 
-        .extend-toggle-btn.text-danger { color: var(--bs-danger); }   
-        html.dark-mode .extend-toggle-btn.text-success { color: var(--status-success-dark-text); }
-        html.dark-mode .extend-toggle-btn.text-danger { color: var(--status-failed-dark-text); }
-
-        .allocation-table .text-center { text-align: center; }
-        .allocation-table .text-end { text-align: right; }
-        .col-checkbox { width: 45px; text-align: center; } 
-        .col-tag { min-width: 130px; max-width: 180px;} /* Adjusted width */
-        .col-vendor { width: 60px; }
-        .col-course { min-width: 150px; max-width: 220px;} /* Adjusted width */
-        .col-date { width: 100px; } /* New class for date columns */
-        .col-type { width: 80px; }
-        .col-number { 
-            width: 100px; 
-            text-align: center; 
-            white-space: normal; 
-        }
-        .col-host { min-width: 120px; max-width: 160px;} /* Adjusted width */
-        .col-status { width: 85px; text-align: center; white-space: nowrap;}
-        .col-actions { min-width: 160px; white-space: nowrap; }
-
-        .bulk-actions-bar {
-            padding: 0.75rem 1rem;
-            background-color: var(--bs-card-cap-bg);
-            border: 1px solid var(--bs-card-border-color);
-            border-radius: 0.375rem;
-            margin-bottom: 1rem;
-            display: none; 
-            flex-wrap: wrap; 
-            gap: 0.75rem; 
-        }
-        body.dark-mode .bulk-actions-bar {
-            background-color: var(--card-header-bg-dark);
-            border-color: var(--card-border-dark);
-        }
-        .bulk-actions-bar .form-select-sm { max-width: 200px; flex-shrink: 0;}
-        .bulk-actions-bar .btn-sm { flex-shrink: 0; }
-        .bulk-actions-bar > span { vertical-align: middle; font-weight: bold; }
-        .pod-list-inline {
-            font-size: 0.9em; 
-            color: #555;
-        }
-        body.dark-mode .pod-list-inline {
-            color: #bbb;
-        }
+        .summary-row .edit-mode { display: none; }
+        .summary-row.is-editing .edit-mode { display: block; }
+        .summary-row.is-editing .view-mode { display: none; }
+        .summary-row .form-control-sm { font-size: 0.8rem; padding: 0.2rem 0.4rem; }
     </style>
 {% endblock %}
-
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -136,9 +41,7 @@
   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
 </div>
 <div class="mb-3 text-end">
-    <a href="{{ url_for('actions.export_allocations_excel') }}" class="btn btn-success btn-sm">
-        <i class="fas fa-file-excel"></i> Export to Excel
-    </a>
+    <a href="{{ url_for('actions.export_allocations_excel') }}" class="btn btn-success btn-sm"><i class="fas fa-file-excel"></i> Export to Excel</a>
 </div>
 <div class="card mb-4">
   <div class="card-header">Filter Allocations</div>
@@ -149,381 +52,399 @@
       <div class="col-md-3 col-lg-3"><label for="filter_course" class="form-label">Course</label><input type="text" class="form-control form-control-sm" id="filter_course" name="filter_course" value="{{ current_filters.get('filter_course', '') }}"></div>
       <div class="col-md-3 col-lg-2"><label for="filter_host" class="form-label">Host</label><input type="text" class="form-control form-control-sm" id="filter_host" name="filter_host" value="{{ current_filters.get('filter_host', '') }}"></div>
       <div class="col-md-3 col-lg-1"><label for="filter_number" class="form-label">Pod/Class #</label><input type="number" class="form-control form-control-sm" id="filter_number" name="filter_number" value="{{ current_filters.get('filter_number', '') }}"></div>
-      <div class="col-md-6 col-lg-2">
-            <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
-            <a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm w-100 mt-1">Clear Filters</a>
-      </div>
+      <div class="col-md-6 col-lg-2"><button type="submit" class="btn btn-primary btn-sm w-100">Filter</button><a href="{{ url_for('main.view_allocations') }}" class="btn btn-secondary btn-sm w-100 mt-1">Clear Filters</a></div>
     </form>
   </div>
 </div>
 
-<div class="bulk-actions-bar" id="bulkActionsBar">
-    <span id="selectedItemsCount" class="me-3">0 items selected</span>
-    <div class="d-inline-flex align-items-center" style="gap: 0.5rem;">
-        <div class="btn-group" role="group">
-            <button type="button" class="btn btn-sm btn-outline-success bulk-action-trigger" data-action="power_on" title="Power ON selected"><i class="fas fa-play"></i> On</button>
-            <button type="button" class="btn btn-sm btn-outline-danger bulk-action-trigger" data-action="power_off" title="Power OFF selected"><i class="fas fa-stop"></i> Off</button>
-        </div>
-        <div class="btn-group ms-2" role="group">
-            <button type="button" class="btn btn-sm btn-danger bulk-action-trigger" data-action="teardown_infra" title="Teardown Infrastructure"><i class="fas fa-fire-alt"></i> Infra</button>
-            <button type="button" class="btn btn-sm btn-warning bulk-action-trigger" data-action="delete_db" title="Delete DB Entries"><i class="fas fa-database"></i><i class="fas fa-times fa-xs"></i> DB</button>
-        </div>
-    </div>
-</div>
-
 <div class="card">
-  <div class="card-header">
-      Allocation List
-      {% if pagination_by_tags %}
-          (Page {{ current_page }} of {{ total_pages }} Tags
-          {%- if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number -%}
-              , Total Matching Tags: {{ total_display_count }}, Total Matching Items: {{ total_items_overall }}
-          {%- else -%}
-              , Total Tags: {{ total_display_count }}, Total Items: {{ total_items_overall }}
-          {%- endif -%})
-      {% else %} 
-          {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
-              (Filtered - Page {{ current_page }} of {{ total_pages }}, Total Matching Items: {{ total_data_items }}) 
-          {% else %}
-              (Page {{ current_page }} of {{ total_pages }} - Total Items: {{ total_data_items }}) 
-          {% endif %}
-      {% endif %}
-  </div>
+  <div class="card-header">Allocation Groups (Page {{ current_page }} of {{ total_pages }}, Total Groups: {{ total_display_count }})</div>
   <div class="card-body p-0">
-    {% if allocation_list %}
+    {% if grouped_allocations %}
       <div class="table-responsive">
-        <table class="table table-sm table-hover mb-0 allocation-table" id="allocationsTable"> 
+        <table class="table table-hover mb-0 allocation-table" id="allocationsTable">
           <thead class="table-light">
             <tr>
-              <th class="col-checkbox"><input type="checkbox" class="form-check-input" id="selectAllAllocationsCheckbox" title="Select/Deselect All Visible"></th>
-              <th class="col-tag">Tag</th>
-              <th class="col-vendor">Vendor</th>
-              <th class="col-course">Course Name</th>
-              <th class="col-date">Start Date</th>
-              <th class="col-date">End Date</th>
-              <th class="col-type">Type</th>
-              <th class="col-number">Number / Contained Pods</th>
-              <th class="col-host">Host</th>
-              <th class="col-status">Status</th>
-              <th class="col-actions text-end">Actions</th>
+              <th class="col-summary-expander"></th><th class="col-tag">Tag</th><th class="col-dates">Dates</th>
+              <th class="col-trainer">Trainer</th><th class="col-courses">Course(s)</th>
+              <th class="col-pod-range">Pod Range</th><th class="col-apm">APM Credentials</th>
+              <th class="col-group-actions">Actions</th>
             </tr>
           </thead>
-          <tbody>
-            {% set current_tag_for_shade = '' %}
-            {% set shade_index = 0 %} 
-            {% for item in allocation_list %}
-              {% if item.tag != current_tag_for_shade %}
-                {% set current_tag_for_shade = item.tag %}
-                {% set shade_index = 1 - shade_index %} 
-              {% endif %}
-              {% set row_shade_class = 'tag-group-shade-' ~ shade_index %}
+          <tbody id="allocationsTableBody">
+            {% for group in grouped_allocations %}
+              <tr class="summary-row" data-group-key='{{ group.summary|tojson|e }}'>
+                <td class="col-summary-expander" data-bs-toggle="collapse" data-bs-target="#collapse-{{ loop.index }}"><i class="fas fa-plus-square expander-icon"></i></td>
+                <td class="col-tag editable-cell">{{ group.summary.tag }}</td>
+                <td class="col-dates editable-cell">
+                    <span class="view-mode">{{ group.summary.start_date }} to {{ group.summary.end_date }}</span>
+                    <div class="edit-mode">
+                        <input type="date" class="form-control form-control-sm" name="start_date" value="{{ group.summary.start_date }}">
+                        <input type="date" class="form-control form-control-sm mt-1" name="end_date" value="{{ group.summary.end_date }}">
+                    </div>
+                </td>
+                <td class="col-trainer editable-cell">
+                    <span class="view-mode">{{ group.summary.trainer_name }}</span>
+                    <div class="edit-mode"><input type="text" class="form-control form-control-sm" name="trainer_name" value="{{ group.summary.trainer_name }}"></div>
+                </td>
+                <td class="col-courses">{{ group.summary.course_names|join(', ') }}</td>
+                <td class="col-pod-range">{{ group.summary.pod_range_display }}</td>
+                <td class="col-apm editable-cell">
+                    <span class="view-mode">User: {{ group.summary.apm_username or 'N/A' }}<br>Pass: {{ group.summary.apm_password or 'N/A' }}</span>
+                    <div class="edit-mode">
+                        <input type="text" class="form-control form-control-sm" name="apm_username" value="{{ group.summary.apm_username }}" placeholder="Username">
+                        <input type="text" class="form-control form-control-sm mt-1" name="apm_password" value="{{ group.summary.apm_password }}" placeholder="Password">
+                    </div>
+                </td>
+                <td class="col-group-actions action-forms">
+    <!-- View Mode Actions -->
+    <button type="button" class="action-btn text-primary edit-btn view-mode" title="Edit Allocation Details">
+        <i class="fas fa-edit"></i>
+    </button>
+    <form action="{{ url_for('actions.toggle_tag_extend') }}" method="POST" class="d-inline view-mode" title="Toggle Pod Reuse">
+        <input type="hidden" name="tag_name" value="{{ group.summary.tag }}">
+        <input type="hidden" name="current_extend_status" value="{{ 'true' if group.summary.is_extended else 'false' }}">
+        <button type="submit" class="action-btn {{ 'text-danger' if group.summary.is_extended else 'text-success' }}">
+            <i class="fas {{ 'fa-lock' if group.summary.is_extended else 'fa-lock-open' }}"></i>
+        </button>
+    </form>
+    <form action="{{ url_for('actions.teardown_tag') }}" method="POST" class="d-inline view-mode" onsubmit="return confirm('TEARDOWN ALL infrastructure for tag \'{{ group.summary.tag }}\'?')">
+        <input type="hidden" name="tag" value="{{ group.summary.tag }}">
+        <button type="submit" class="action-btn text-danger" title="Teardown Tag">
+            <i class="fas fa-fire-alt"></i>
+        </button>
+    </form>
 
-              <tr class="data-row {{ row_shade_class }}" 
-                  data-tag="{{ item.tag }}" 
-                  data-vendor="{{ item.vendor }}" 
-                  data-course="{{ item.course_name }}"
-                  data-host="{{ item.host }}"
-                  data-item-type="{{ item.type }}"
-                  data-item-number="{{ item.number }}"
-                  data-class-number="{{ item.class_number if item.class_number is not none else '' }}"
-                  data-pod-number="{{ item.pod_number if item.pod_number is not none else '' }}"
-                  data-power-state="{{ 'on' if item.poweron else 'off' }}"
-                  data-extend-state="{{ 'true' if item.is_extended else 'false' }}">
-                <td class="col-checkbox"><input type="checkbox" class="row-checkbox form-check-input"></td>
-                
-                {% if item._is_first_in_tag_group %}
-                <td class="col-tag tag-cell-merged" title="{{ item.tag }}" rowspan="{{ item.tag_rowspan if item.tag_rowspan > 0 else 1 }}">
-                    {{ item.tag }}
-                </td>
-                {% endif %}
-                
-                <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A' }}</td>
-                <td class="col-course" title="{{ item.course_name }}">{{ item.course_name }}</td>
-                <td class="col-date">
-                    <span class="local-datetime" data-timestamp="{{ item.course_start_date_iso }}">
-                        {{ item.course_start_date }}
-                    </span>
-                </td>
-                <td class="col-date">
-                    <span class="local-datetime" data-timestamp="{{ item.course_end_date_iso }}">
-                        {{ item.course_end_date }}
-                    </span>
-                </td>
-                <td class="col-type">
-                    {% if item.type == 'f5_class' %}<span class="badge bg-info text-dark" title="F5 Class">F5 Cls</span>
-                    {% elif item.type == 'pod' %}<span class="badge bg-secondary" title="Pod">Pod</span>
-                    {% else %}<span class="text-muted">?</span>{% endif %}
-                </td>
-                <td class="col-number">
-                    {{ item.number }}
-                    {% if item.type == 'f5_class' and item.nested_pods_str and item.nested_pods_str != '-' %}
-                        <br><small class="pod-list-inline">(Pods: {{ item.nested_pods_str }})</small>
-                    {% endif %}
-                </td>
-                <td class="col-host" title="{{ item.host }}">{{ item.host }}</td>
-                <td class="col-status text-center">
-                     <i class="fas fa-power-off mx-1 {{ 'text-danger' if item.poweron else 'text-secondary' }}"
-                        title="Power: {{ 'On' if item.poweron else 'Off' }}"></i>
-                     <i class="fas {{ 'fa-lock' if item.is_extended else 'fa-lock-open' }} mx-1 {{ 'text-danger' if item.is_extended else 'text-success' }}"
-                        title="Tag Pod Reuse: {{ 'Prevented (Locked)' if item.is_extended else 'Allowed (Unlocked)' }}"></i>
-                </td>
-                <td class="col-actions text-end action-forms">
-                    {% if item.prtg_url %}
-                        <a href="{{ item.prtg_url }}" target="_blank" class="action-btn prtg-link" title="View PRTG for {{ item.type }} {{ item.number }}"><i class="fas fa-chart-line text-info"></i></a>
-                    {% endif %}
-                    <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline power-toggle-form">
-                        <input type="hidden" name="scope" value="item">
-                        <input type="hidden" name="tag" value="{{ item.tag }}">
-                        <input type="hidden" name="item_type" value="{{ item.type }}">
-                        <input type="hidden" name="item_number" value="{{ item.number }}">
-                        <input type="hidden" name="host" value="{{ item.host }}">
-                        <input type="hidden" name="vendor" value="{{ item.vendor }}">
-                        <input type="hidden" name="course" value="{{ item.course_name }}">
-                        <input type="hidden" name="current_state" value="{{ 'on' if item.poweron else 'off' }}">
-                        {% if item.type == 'pod' and item.vendor and item.vendor.lower() == 'f5' and item.class_number is not none %}
-                            <input type="hidden" name="item_class_number" value="{{ item.class_number }}">
-                        {% endif %}
-                        {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
-                        <input type="hidden" name="page" value="{{ current_page }}">
-                        <button type="submit" class="action-btn power-toggle-btn {{ 'text-danger' if item.poweron else 'text-secondary' }}" title="{{ 'Stop' if item.poweron else 'Start' }} Item {{ item.number }}">
-                            <i class="fas fa-power-off"></i>
-                        </button>
-                    </form>
-                    <form action="{{ url_for('actions.toggle_tag_extend') }}" method="POST" class="d-inline"
-                             title="Toggle Pod Reuse for ENTIRE TAG '{{ item.tag }}' (Currently: {{ 'Locked - No Reuse' if item.is_extended else 'Unlocked - Allow Reuse' }})">
-                        <input type="hidden" name="tag_name" value="{{ item.tag }}">
-                        <input type="hidden" name="current_extend_status" value="{{ 'true' if item.is_extended else 'false' }}">
-                        {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
-                        <input type="hidden" name="page" value="{{ current_page }}">
-                        <button type="submit" class="action-btn extend-toggle-btn {{ 'text-danger' if item.is_extended else 'text-success' }}">
-                            <i class="fas {{ 'fa-lock' if item.is_extended else 'fa-lock-open' }}"></i>
-                        </button>
-                   </form>
-                    <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" 
-                          onsubmit="return confirm('Teardown INFRASTRUCTURE for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'? This deletes VMs and related network resources.')">
-                       <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
-                       <input type="hidden" name="tag" value="{{ item.tag }}">
-                       <input type="hidden" name="host" value="{{ item.host }}">
-                       <input type="hidden" name="vendor" value="{{ item.vendor }}">
-                       <input type="hidden" name="course" value="{{ item.course_name }}">
-                       {% if item.pod_number is not none %}<input type="hidden" name="pod_number" value="{{ item.pod_number }}">{% endif %}
-                       {% if item.class_number is not none %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
-                       {% if item.type == 'pod' and item.vendor and item.vendor.lower() == 'f5' and item.class_number is not none %}
-                           <input type="hidden" name="class_number" value="{{ item.class_number }}">
-                       {% endif %}
-                       {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
-                       <input type="hidden" name="page" value="{{ current_page }}">
-                       <button type="submit" class="action-btn delete-btn text-danger" title="Teardown {{ item.type }} {{ item.number }} Infrastructure">
-                           <i class="fas fa-fire-alt"></i>
-                       </button>
-                    </form>
-                    <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" 
-                          onsubmit="return confirm('DELETE Database Entry ONLY for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'? VMs will NOT be affected.')">
-                       <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
-                       <input type="hidden" name="tag" value="{{ item.tag }}">
-                       <input type="hidden" name="course" value="{{ item.course_name }}">
-                       {% if item.pod_number is not none %}<input type="hidden" name="pod_number" value="{{ item.pod_number }}">{% endif %}
-                       {% if item.class_number is not none %}<input type="hidden" name="class_number" value="{{ item.class_number }}">{% endif %}
-                       {% for key, value_param in current_filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value_param }}">{% endfor %}
-                       <input type="hidden" name="page" value="{{ current_page }}">
-                       <button type="submit" class="action-btn delete-btn text-warning" title="Delete DB Entry Only for {{ item.type }} {{ item.number }}">
-                           <i class="fas fa-database"></i><i class="fas fa-times" style="font-size:0.6em; vertical-align: super;"></i>
-                       </button>
-                    </form>
+    <!-- Edit Mode Actions (These remain as bordered buttons) -->
+    <button type="button" class="btn btn-sm btn-success save-btn edit-mode" title="Save Changes">
+        <i class="fas fa-save"></i>
+    </button>
+    <button type="button" class="btn btn-sm btn-secondary cancel-btn edit-mode" title="Cancel Edit">
+        <i class="fas fa-times"></i>
+    </button>
+</td>
+              </tr>
+              <tr id="collapse-{{ loop.index }}" class="collapse detail-row">
+                <td colspan="8" class="p-0">
+                  <div class="p-3">
+                    {# ... (The nested detail table remains the same) ... #}
+                    <table class="table table-sm table-bordered detail-table">
+                        <thead class="table-secondary"><tr><th class="col-detail-expander"></th><th class="col-detail-type">Type</th><th class="col-detail-number">Number</th><th class="col-detail-host">Host</th><th class="col-detail-status">Status</th><th class="col-detail-actions">Actions</th></tr></thead>
+                        <tbody>
+                        {% for item in group.details %}<tr class="{{ 'f5-class-row' if item.type == 'f5_class' else '' }}" {% if item.type == 'f5_class' and item.nested_pods %}data-bs-toggle="collapse" data-bs-target="#f5-pods-{{ group.summary.tag|replace(' ','-')|replace('.','-')}}-{{ item.number }}" aria-expanded="false"{% endif %}><td class="col-detail-expander">{% if item.type == 'f5_class' and item.nested_pods %}<i class="fas fa-plus-square expander-icon"></i>{% endif %}</td><td class="col-detail-type">{% if item.type == 'f5_class' %}<span class="badge bg-info text-dark">F5 Class</span>{% elif item.type == 'pod' %}<span class="badge bg-secondary">Pod</span>{% endif %}</td><td class="col-detail-number">{{ item.number }}</td><td>{{ item.host }}</td><td class="col-detail-status"><i class="fas fa-power-off {{ 'text-danger' if item.poweron else 'text-secondary' }}" title="Power: {{ 'On' if item.poweron else 'Off' }}"></i></td><td class="col-detail-actions action-forms">{{ item_actions(item) }}</td></tr>{% if item.type == 'f5_class' and item.nested_pods %}<tr id="f5-pods-{{ group.summary.tag|replace(' ','-')|replace('.','-')}}-{{ item.number }}" class="collapse f5-pod-detail-row"><td colspan="6" class="p-0"><table class="table table-sm f5-pod-detail-table mb-0"><tbody>{% for nested_pod in item.nested_pods %}{% set item_context = {'type': 'pod', 'number': nested_pod.pod_number, 'tag': group.summary.tag, 'host': item.host, 'vendor': item.vendor, 'course_name': item.course_name, 'pod_number': nested_pod.pod_number, 'class_number': item.class_number, 'poweron': nested_pod.poweron, 'prtg_url': nested_pod.prtg_url} %}<tr><td class="col-detail-expander"></td><td class="col-detail-type"><span class="badge bg-secondary">F5 Pod</span></td><td class="col-detail-number">{{ item_context.number }}</td><td>{{ item_context.host }}</td><td class="col-detail-status"><i class="fas fa-power-off {{ 'text-danger' if item_context.poweron|string|lower == 'true' else 'text-secondary' }}" title="Power: {{ 'On' if item_context.poweron|string|lower == 'true' else 'Off' }}"></i></td><td class="col-detail-actions action-forms">{{ item_actions(item_context) }}</td></tr>{% endfor %}</tbody></table></td></tr>{% endif %}{% endfor %}
+                        </tbody>
+                    </table>
+                  </div>
                 </td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
-
-      {# --- PAGINATION CONTROLS --- #}
-      {% if total_pages > 1 %}
-        <nav aria-label="Allocation pagination" class="p-3 pagination-controls">
-          <ul class="pagination pagination-sm justify-content-center mb-0">
-            <li class="page-item {% if current_page == 1 %}disabled{% endif %}">
-              <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page-1, **pagination_args) }}">Previous</a>
-            </li>
-            {% set page_window = 2 %} 
-            {% set show_first_ellipsis = false %}
-            {% set show_last_ellipsis = false %}
-            {% for page_num in range(1, total_pages + 1) %}
-                {% if page_num == 1 or page_num == total_pages or 
-                      (page_num >= current_page - page_window and page_num <= current_page + page_window) %}
-                    <li class="page-item {% if page_num == current_page %}active{% endif %}">
-                        <a class="page-link" href="{{ url_for('main.view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a>
-                    </li>
-                {% elif page_num < current_page and not show_first_ellipsis and page_num > 1 %}
-                    {% if page_num == 2 and current_page - page_window > 2 %}
-                        {% set show_first_ellipsis = true %}
-                        <li class="page-item disabled"><span class="page-link">...</span></li>
-                    {% endif %}
-                {% elif page_num > current_page and not show_last_ellipsis and page_num < total_pages %}
-                     {% if page_num == total_pages - 1 and current_page + page_window < total_pages - 1 %}
-                        {% set show_last_ellipsis = true %}
-                        <li class="page-item disabled"><span class="page-link">...</span></li>
-                    {% endif %}
-                {% endif %}
-            {% endfor %}
-            <li class="page-item {% if current_page == total_pages %}disabled{% endif %}">
-              <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page+1, **pagination_args) }}">Next</a>
-            </li>
-          </ul>
-        </nav>
-      {% endif %}
-      {# --- END PAGINATION CONTROLS --- #}
-
+      {% if total_pages > 1 %}<nav aria-label="Allocation pagination" class="p-3 pagination-controls"><ul class="pagination pagination-sm justify-content-center mb-0"><li class="page-item {% if current_page == 1 %}disabled{% endif %}"><a class="page-link" href="{{ url_for('main.view_allocations', page=current_page-1, **pagination_args) }}">Previous</a></li>{% set page_window = 2 %}{% for page_num in range(1, total_pages + 1) %}{% if page_num == 1 or page_num == total_pages or (page_num >= current_page - page_window and page_num <= current_page + page_window) %}<li class="page-item {% if page_num == current_page %}active{% endif %}"><a class="page-link" href="{{ url_for('main.view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a></li>{% elif page_num == 2 and current_page > page_window + 2 or page_num == total_pages - 1 and current_page < total_pages - page_window - 1 %}<li class="page-item disabled"><span class="page-link">...</span></li>{% endif %}{% endfor %}<li class="page-item {% if current_page == total_pages %}disabled{% endif %}"><a class="page-link" href="{{ url_for('main.view_allocations', page=current_page+1, **pagination_args) }}">Next</a></li></ul></nav>{% endif %}
     {% else %}
-      <p class="p-3 text-muted">
-          No allocations found
-          {% if current_filters.filter_tag or current_filters.filter_vendor or current_filters.filter_course or current_filters.filter_host or current_filters.filter_number %}
-               matching your filter criteria. <a href="{{ url_for('main.view_allocations') }}">Clear filters</a>?
-          {% else %}
-               in the database.
-          {% endif %}
-       </p>
+      <p class="p-3 text-muted">No allocations found {% if current_filters.values()|select|list %} matching your filter criteria. <a href="{{ url_for('main.view_allocations') }}">Clear filters</a>? {% else %} in the database.{% endif %}</p>
     {% endif %}
   </div> 
 </div>
-
-{# --- THIS IS THE CORRECTED FORM FOR BULK ACTIONS --- #}
-<form id="bulkActionSubmitForm" method="POST" style="display: none;">
-    <input type="hidden" name="selected_items_json" id="selectedItemsJsonInput">
-    {% for key, value_param in current_filters.items() %}
-        <input type="hidden" name="{{ key }}" value="{{ value_param }}">
-    {% endfor %}
-    <input type="hidden" name="page" value="{{ current_page }}">
-</form>
 
 {% endblock %}
 
 {% block scripts %}
   {{ super() }}
-  <script>
+<script>
     document.addEventListener('DOMContentLoaded', function () {
-      const selectAllCheckbox = document.getElementById('selectAllAllocationsCheckbox');
-      const rowCheckboxes = document.querySelectorAll('#allocationsTable .row-checkbox');
-      const bulkActionsBar = document.getElementById('bulkActionsBar');
-      const selectedItemsCountSpan = document.getElementById('selectedItemsCount');
+        // --- Get references to all key elements ---
+        const allocationTable = document.getElementById('allocationsTable');
+        const selectAllGroupsCheckbox = document.getElementById('selectAllGroupsCheckbox');
+        const bulkActionsBar = document.getElementById('bulkActionsBar');
+        const selectedItemsCountSpan = document.getElementById('selectedItemsCount');
+        const bulkActionSubmitForm = document.getElementById('bulkActionSubmitForm');
+        const selectedItemsJsonInput = document.getElementById('selectedItemsJsonInput');
+        const bulkActionTriggerButtons = document.querySelectorAll('.bulk-action-trigger');
+        const allocationTableBody = document.getElementById('allocationsTableBody');
       
-      const bulkActionSubmitForm = document.getElementById('bulkActionSubmitForm');
-      const selectedItemsJsonInput = document.getElementById('selectedItemsJsonInput');
-      const bulkActionTriggerButtons = document.querySelectorAll('.bulk-action-trigger');
-
-      function updateBulkActionsBarVisibility() {
-          if (!bulkActionsBar || !selectedItemsCountSpan) return;
-          const selectedCount = document.querySelectorAll('#allocationsTable .row-checkbox:checked').length;
-          selectedItemsCountSpan.textContent = `${selectedCount} item${selectedCount !== 1 ? 's' : ''} selected`;
-          bulkActionsBar.style.display = (selectedCount > 0) ? 'flex' : 'none'; 
-      }
-
-      if (selectAllCheckbox) {
-          selectAllCheckbox.addEventListener('change', function() {
-              rowCheckboxes.forEach(checkbox => { checkbox.checked = this.checked; });
-              updateBulkActionsBarVisibility();
+      function toggleEditMode(summaryRow, isEditing) {
+          summaryRow.classList.toggle('is-editing', isEditing);
+          summaryRow.querySelectorAll('.editable-cell').forEach(cell => {
+              const viewMode = cell.querySelector('.view-mode');
+              const editMode = cell.querySelector('.edit-mode');
+              if (viewMode) viewMode.style.display = isEditing ? 'none' : '';
+              if (editMode) editMode.style.display = isEditing ? 'block' : 'none';
+          });
+          summaryRow.querySelectorAll('.view-mode.edit-btn, .view-mode.action-forms').forEach(el => {
+              el.style.display = isEditing ? 'none' : '';
+          });
+          summaryRow.querySelectorAll('.edit-mode.save-btn, .edit-mode.cancel-btn').forEach(el => {
+              el.style.display = isEditing ? 'inline-block' : 'none';
           });
       }
 
-      rowCheckboxes.forEach(checkbox => {
-          checkbox.addEventListener('change', function() {
-              if (selectAllCheckbox) {
-                if (!this.checked) {
-                    selectAllCheckbox.checked = false;
-                } else {
-                    const allChecked = Array.from(rowCheckboxes).every(cb => cb.checked);
-                    selectAllCheckbox.checked = allChecked;
+      if (allocationTableBody) {
+        allocationTableBody.addEventListener('click', async function (e) {
+            const editBtn = e.target.closest('.edit-btn');
+            const cancelBtn = e.target.closest('.cancel-btn');
+            const saveBtn = e.target.closest('.save-btn');
+            
+            if (editBtn) {
+                const summaryRow = editBtn.closest('.summary-row');
+                // Copy current view text to input values before showing them
+                summaryRow.querySelectorAll('.editable-cell').forEach(cell => {
+                    const viewSpan = cell.querySelector('.view-mode');
+                    const inputs = cell.querySelectorAll('input');
+                    if (viewSpan && inputs.length > 0) {
+                        // This part is a bit manual based on field type
+                        if (cell.classList.contains('col-dates')) {
+                            const dates = viewSpan.textContent.split(' to ');
+                            inputs[0].value = dates[0] ? dates[0].trim() : '';
+                            inputs[1].value = dates[1] ? dates[1].trim() : '';
+                        } else if (cell.classList.contains('col-apm')) {
+                            const userText = viewSpan.innerHTML.match(/User: (.*?)<br>/)?.[1] || '';
+                            const passText = viewSpan.innerHTML.match(/Pass: (.*)/)?.[1] || '';
+                            inputs[0].value = userText.trim() === 'N/A' ? '' : userText.trim();
+                            inputs[1].value = passText.trim() === 'N/A' ? '' : passText.trim();
+                        } else {
+                            inputs[0].value = viewSpan.textContent.trim();
+                        }
+                    }
+                });
+                toggleEditMode(summaryRow, true);
+            }
+            
+            if (cancelBtn) {
+                toggleEditMode(cancelBtn.closest('.summary-row'), false);
+            }
+
+            if (saveBtn) {
+                    const summaryRow = saveBtn.closest('.summary-row');
+                    // This is where the error occurs
+                    const groupData = JSON.parse(summaryRow.dataset.groupKey); 
+                    const courseIdentifier = (Array.isArray(groupData.course_names) && groupData.course_names.length > 0)
+                                         ? groupData.course_names[0]
+                                         : null;
+                    console.log(groupData)
+
+                if (!courseIdentifier) {
+                    alert('Error: Could not identify the course for this group.');
+                    return;
                 }
-              }
-              updateBulkActionsBarVisibility();
-          });
-      });
+                
+                const payload = {
+                    tag: groupData.tag,
+                    course_name: courseIdentifier,
+                    start_date: summaryRow.querySelector('input[name="start_date"]').value,
+                    end_date: summaryRow.querySelector('input[name="end_date"]').value,
+                    trainer_name: summaryRow.querySelector('input[name="trainer_name"]').value,
+                    apm_username: summaryRow.querySelector('input[name="apm_username"]').value,
+                    apm_password: summaryRow.querySelector('input[name="apm_password"]').value,
+                };
 
-      function getSelectedItemsDataForBulk() {
-          const selectedData = [];
-          document.querySelectorAll('#allocationsTable .row-checkbox:checked').forEach(checkbox => {
-              const row = checkbox.closest('tr.data-row');
-              if (row) {
-                  selectedData.push({
-                      tag: row.dataset.tag,
-                      vendor: row.dataset.vendor,
-                      course: row.dataset.course,
-                      host: row.dataset.host,
-                      item_type: row.dataset.itemType,
-                      item_number: row.dataset.itemNumber,
-                      pod_number: row.dataset.podNumber || null, 
-                      class_number: row.dataset.classNumber || null,
-                      current_power_state: row.dataset.powerState,
-                      current_extend_state: row.dataset.extendState 
-                  });
-              }
-          });
-          return selectedData;
+                saveBtn.disabled = true;
+                saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+                try {
+                    const response = await fetch("{{ url_for('actions.update_allocation_summary') }}", {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                    const result = await response.json();
+
+                    if (result.success) {
+                        // Update the view-mode spans with new values
+                        summaryRow.querySelector('.col-dates .view-mode').textContent = `${payload.start_date} to ${payload.end_date}`;
+                        summaryRow.querySelector('.col-trainer .view-mode').textContent = payload.trainer_name;
+                        summaryRow.querySelector('.col-apm .view-mode').innerHTML = `User: ${payload.apm_username || 'N/A'}<br>Pass: ${payload.apm_password || 'N/A'}`;
+                        
+                        // Update the data-group-key attribute for future edits
+                        groupData[1] = payload.start_date;
+                        groupData[2] = payload.end_date;
+                        groupData[3] = payload.trainer_name;
+                        groupData[4] = payload.apm_username;
+                        summaryRow.dataset.groupKey = JSON.stringify(groupData);
+                        
+                        toggleEditMode(summaryRow, false);
+                    } else {
+                        alert(`Error saving changes: ${result.error}`);
+                    }
+                } catch (error) {
+                    alert('A network error occurred. Please try again.');
+                    console.error("Save error:", error);
+                } finally {
+                    saveBtn.disabled = false;
+                    saveBtn.innerHTML = '<i class="fas fa-save"></i> Save';
+                }
+            }
+        });
       }
 
-      bulkActionTriggerButtons.forEach(button => {
-          button.addEventListener('click', function() {
-              const action = this.dataset.action; 
-              const selectedItems = getSelectedItemsDataForBulk();
+        // --- 1. Expander Icon Toggling ---
+        if (allocationTable) {
+            allocationTable.addEventListener('show.bs.collapse', function (event) {
+                const triggerRow = event.target.previousElementSibling;
+                const icon = triggerRow.querySelector('.expander-icon');
+                if (icon) {
+                    icon.classList.remove('fa-plus-square');
+                    icon.classList.add('fa-minus-square');
+                }
+            });
 
-              if (selectedItems.length === 0) {
-                  alert("Please select at least one item.");
-                  return;
-              }
+            allocationTable.addEventListener('hide.bs.collapse', function (event) {
+                const triggerRow = event.target.previousElementSibling;
+                const icon = triggerRow.querySelector('.expander-icon');
+                if (icon) {
+                    icon.classList.remove('fa-minus-square');
+                    icon.classList.add('fa-plus-square');
+                }
+            });
+        }
 
-              let confirmMsg = `Are you sure you want to perform '${action.replace(/_/g, ' ')}' on ${selectedItems.length} item(s)?`;
-              if (action === 'teardown_infra') {
-                  confirmMsg += " This is IRREVERSIBLE and deletes VMs/networks.";
-              } else if (action === 'delete_db') {
-                  confirmMsg += " This only deletes database entries, not VMs.";
-              }
-              
-              if (!confirm(confirmMsg)) {
-                  return;
-              }
+        // --- 2. Hierarchical Bulk Selection Logic ---
 
-              if (bulkActionSubmitForm && selectedItemsJsonInput) {
-                  selectedItemsJsonInput.value = JSON.stringify(selectedItems);
-                  let actionUrl = "";
-                  if (action === 'power_on') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='start') }}";
-                  else if (action === 'power_off') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='stop') }}";
-                  else if (action === 'teardown_infra') actionUrl = "{{ url_for('actions.bulk_teardown_items') }}";
-                  else if (action === 'delete_db') actionUrl = "{{ url_for('actions.bulk_db_delete_items') }}";
-                  
-                  if (actionUrl) {
-                      bulkActionSubmitForm.action = actionUrl;
-                      bulkActionSubmitForm.submit();
-                  } else {
-                      alert("Selected bulk action ('" + action + "') is not configured.");
-                  }
-              } else {
-                  alert("Error: Bulk action form components not found.");
-              }
-          });
-      });
+        // Helper to update the state of the main "select all" checkbox
+        function updateSelectAllGroupsState() {
+            if (!selectAllGroupsCheckbox) return;
+            const allGroupCheckboxes = document.querySelectorAll('.group-summary-checkbox');
+            const checkedGroupCheckboxes = document.querySelectorAll('.group-summary-checkbox:checked');
+            if (allGroupCheckboxes.length > 0) {
+                selectAllGroupsCheckbox.checked = allGroupCheckboxes.length === checkedGroupCheckboxes.length;
+                selectAllGroupsCheckbox.indeterminate = checkedGroupCheckboxes.length > 0 && checkedGroupCheckboxes.length < allGroupCheckboxes.length;
+            } else {
+                selectAllGroupsCheckbox.checked = false;
+                selectAllGroupsCheckbox.indeterminate = false;
+            }
+        }
 
-      const individualActionForms = document.querySelectorAll('.action-forms form');
-      individualActionForms.forEach(form => {
-          form.addEventListener('submit', function(event) {
-              const onsubmitAttr = form.getAttribute('onsubmit');
-              if (onsubmitAttr && onsubmitAttr.includes('confirm(')) {
-                // Native confirm is handled by the browser based on its return value
-              }
-              const filterParams = new URLSearchParams(window.location.search);
-              filterParams.forEach((value_param, key_param) => {
-                  if ((key_param.startsWith('filter_') || key_param === 'page') && 
-                      !form.querySelector(`input[name="${key_param}"]`)) {
-                      const hiddenInput = document.createElement('input');
-                      hiddenInput.type = 'hidden'; hiddenInput.name = key_param; hiddenInput.value = value_param;
-                      form.appendChild(hiddenInput);
-                  }
-              });
-          });
-      });
+        // Helper to update the visibility and count of the bulk actions bar
+        function updateBulkActionsBarVisibility() {
+            if (!bulkActionsBar || !selectedItemsCountSpan) return;
+            const selectedCount = document.querySelectorAll('.detail-row-checkbox:checked').length;
+            selectedItemsCountSpan.textContent = `${selectedCount} item${selectedCount !== 1 ? 's' : ''} selected`;
+            bulkActionsBar.style.display = (selectedCount > 0) ? 'flex' : 'none';
+        }
 
-      updateBulkActionsBarVisibility(); 
-      if (typeof updateLocalTimes === "function") { 
-          updateLocalTimes(); 
-      }
+        // Main "Select All" Checkbox functionality
+        if (selectAllGroupsCheckbox) {
+            selectAllGroupsCheckbox.addEventListener('change', function() {
+                document.querySelectorAll('.group-summary-checkbox').forEach(groupCheckbox => {
+                    if (groupCheckbox.checked !== this.checked) {
+                        groupCheckbox.checked = this.checked;
+                        groupCheckbox.dispatchEvent(new Event('change')); // Cascade the change
+                    }
+                });
+            });
+        }
+
+        // Group Summary Checkbox functionality
+        document.querySelectorAll('.group-summary-checkbox').forEach(groupCheckbox => {
+            groupCheckbox.addEventListener('change', function() {
+                const collapseId = this.closest('tr.summary-row').getAttribute('data-bs-target');
+                const detailContainer = document.querySelector(collapseId);
+                if (detailContainer) {
+                    detailContainer.querySelectorAll('.detail-row-checkbox').forEach(detailCheckbox => {
+                        detailCheckbox.checked = this.checked;
+                    });
+                }
+                updateSelectAllGroupsState();
+                updateBulkActionsBarVisibility();
+            });
+        });
+
+        // Detail Row Checkbox functionality
+        document.querySelectorAll('.detail-row-checkbox').forEach(detailCheckbox => {
+            detailCheckbox.addEventListener('change', function() {
+                const detailContainer = this.closest('.collapse');
+                const groupCheckbox = detailContainer.previousElementSibling.querySelector('.group-summary-checkbox');
+                
+                const allInGroup = detailContainer.querySelectorAll('.detail-row-checkbox');
+                const checkedInGroup = detailContainer.querySelectorAll('.detail-row-checkbox:checked');
+
+                if (groupCheckbox && allInGroup.length > 0) {
+                    groupCheckbox.checked = allInGroup.length === checkedInGroup.length;
+                    groupCheckbox.indeterminate = checkedInGroup.length > 0 && checkedInGroup.length < allInGroup.length;
+                }
+                
+                updateSelectAllGroupsState();
+                updateBulkActionsBarVisibility();
+            });
+        });
+
+        // --- 3. Bulk Action Submission Logic ---
+
+        function getSelectedItemsDataForBulk() {
+            const selectedData = [];
+            document.querySelectorAll('.detail-row-checkbox:checked').forEach(checkbox => {
+                const row = checkbox.closest('tr.detail-data-row');
+                if (row) {
+                    selectedData.push({
+                        tag: row.dataset.tag, vendor: row.dataset.vendor, course: row.dataset.course, host: row.dataset.host,
+                        item_type: row.dataset.itemType, item_number: row.dataset.itemNumber,
+                        pod_number: row.dataset.podNumber || null, class_number: row.dataset.classNumber || null
+                    });
+                }
+            });
+            return selectedData;
+        }
+
+        bulkActionTriggerButtons.forEach(button => {
+            button.addEventListener('click', function() {
+                const action = this.dataset.action;
+                const selectedItems = getSelectedItemsDataForBulk();
+
+                if (selectedItems.length === 0) {
+                    alert("Please select at least one individual pod/class from the details.");
+                    return;
+                }
+
+                let confirmMsg = `Are you sure you want to perform '${action.replace(/_/g, ' ')}' on ${selectedItems.length} item(s)?`;
+                if (action === 'teardown_infra') { confirmMsg += " This is IRREVERSIBLE and deletes VMs/networks."; }
+                else if (action === 'delete_db') { confirmMsg += " This only deletes database entries, not VMs."; }
+                if (!confirm(confirmMsg)) return;
+
+                if (bulkActionSubmitForm && selectedItemsJsonInput) {
+                    selectedItemsJsonInput.value = JSON.stringify(selectedItems);
+                    let actionUrl = "";
+                    if (action === 'power_on') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='start') }}";
+                    else if (action === 'power_off') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='stop') }}";
+                    else if (action === 'teardown_infra') actionUrl = "{{ url_for('actions.bulk_teardown_items') }}";
+                    else if (action === 'delete_db') actionUrl = "{{ url_for('actions.bulk_db_delete_items') }}";
+                    
+                    if (actionUrl) {
+                        bulkActionSubmitForm.action = actionUrl;
+                        bulkActionSubmitForm.submit();
+                    } else {
+                        alert(`Selected bulk action ('${action}') is not configured.`);
+                    }
+                } else {
+                    alert("Error: Bulk action form components not found.");
+                }
+            });
+        });
+
+        // --- 4. Individual Action Form Logic ---
+        // Ensures filter/page state is preserved on individual actions
+        document.querySelectorAll('.action-forms form').forEach(form => {
+            form.addEventListener('submit', function() {
+                const filterParams = new URLSearchParams(window.location.search);
+                filterParams.forEach((value, key) => {
+                    if ((key.startsWith('filter_') || key === 'page') && !form.querySelector(`input[name="${key}"]`)) {
+                        const hiddenInput = document.createElement('input');
+                        hiddenInput.type = 'hidden';
+                        hiddenInput.name = key;
+                        hiddenInput.value = value;
+                        form.appendChild(hiddenInput);
+                    }
+                });
+            });
+        });
+
+        // --- 5. Date/Time Formatting ---
+        if (typeof updateLocalTimes === "function") {
+            updateLocalTimes();
+        }
+
+        // --- Initial State Check ---
+        updateBulkActionsBarVisibility();
     });
-  </script>
+</script>
 {% endblock %}

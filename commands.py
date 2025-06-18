@@ -104,6 +104,13 @@ def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogg
     prtg_server_arg = args_dict.get('prtg_server')
     # verbose_arg is handled when setting up the logger in the calling function (labbuild.py)
     # --- End Argument Extraction ---
+    # --- NEW: Extract optional metadata arguments ---
+    start_date_arg = args_dict.get('start_date')
+    end_date_arg = args_dict.get('end_date')
+    trainer_name_arg = args_dict.get('trainer_name')
+    username_arg = args_dict.get('username')
+    password_arg = args_dict.get('password')
+    # --- END NEW EXTRACTION ---
 
     all_results = []
     course_config = None
@@ -205,26 +212,39 @@ def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogg
     # --- DB Only Mode ---
     if db_only_arg:
         logger.info("DB-only mode activated: Updating database entries.")
-        # Requires range even for DB only to know *which* pods to add/update
         if start_pod_arg is None or end_pod_arg is None:
              err_msg="DB-only mode requires --start-pod and --end-pod."
              logger.error(err_msg)
              operation_logger.log_pod_status(pod_id="db_only", status="failed", step="missing_pod_range", error=err_msg)
              return [{"identifier": "db_only", "status": "failed", "error_message": err_msg}]
-        # Host is also needed to associate the pods with a host in the DB
         if not host_arg:
              err_msg="DB-only mode requires --host."
              logger.error(err_msg); operation_logger.log_pod_status(pod_id="db_only", status="failed", error=err_msg); return [{"identifier": "db_only", "status": "failed", "error_message": err_msg}]
 
-        data_for_db = {"tag": tag_arg, "course_name": course_arg, "vendor": vendor_arg, "pod_details": []}
+        # --- THIS IS THE CORRECTED LOGIC ---
+        # Construct the data dictionary with all optional metadata.
+        data_for_db = {
+            "tag": tag_arg,
+            "course_name": course_arg,
+            "vendor": vendor_arg,
+            "pod_details": [],
+            "start_date": start_date_arg,
+            "end_date": end_date_arg,
+            "trainer_name": trainer_name_arg,
+            "apm_username": username_arg,
+            "apm_password": password_arg,
+        }
+
         for pod_num in range(start_pod_arg, end_pod_arg + 1):
-            pod_db_entry = {"pod_number": pod_num, "host": host_arg, "poweron": "False", "prtg_url": None} # Default values
+            # Create a MINIMAL pod entry. Do NOT include prtg_url or poweron.
+            # This prevents the update operation from overwriting existing values with defaults.
+            pod_db_entry = {"pod_number": pod_num, "host": host_arg}
             data_for_db["pod_details"].append(pod_db_entry)
+        
         try:
             update_database(data_for_db)
             logger.info("DB-only setup complete: Database updated.")
             operation_logger.log_pod_status(pod_id="db_only", status="skipped", step="db_only_mode")
-            # Return skipped status for each pod entry potentially created/updated
             results = [{"identifier": str(pd["pod_number"]), "status": "skipped", "message": "DB Only"} for pd in data_for_db["pod_details"]]
             return results
         except Exception as db_err:

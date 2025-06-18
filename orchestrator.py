@@ -217,7 +217,20 @@ def vendor_setup(
     clonefrom_pod_number = args_dict.get('clonefrom') 
 
     logger.info(f"Dispatching setup for vendor '{vendor_shortcode}'. RunID: {operation_logger.run_id}")
-    data_accumulator = {"tag": tag, "course_name": course_name, "vendor": vendor_shortcode, "pod_details": []}
+    # --- MODIFICATION: Add new optional fields to the data accumulator ---
+    data_accumulator = {
+        "tag": tag,
+        "course_name": course_name,
+        "vendor": vendor_shortcode,
+        "pod_details": [],
+        # New optional fields from args_dict
+        "start_date": args_dict.get("start_date"),
+        "end_date": args_dict.get("end_date"),
+        "trainer_name": args_dict.get("trainer_name"),
+        "apm_username": args_dict.get("username"), # Using consistent key names
+        "apm_password": args_dict.get("password")
+    }
+    # --- END MODIFICATION ---
     all_results = []
 
     if vendor_shortcode == "f5": # F5 Synchronous Build
