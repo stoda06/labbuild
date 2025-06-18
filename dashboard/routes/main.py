@@ -167,7 +167,7 @@ def view_allocations():
         page = max(1, page)
     except ValueError:
         page = 1
-    groups_per_page = 10
+    groups_per_page = 20
 
     mongo_query: Dict[str, Any] = {}
     if filter_tag_input: 
