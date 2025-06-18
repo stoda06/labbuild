@@ -76,11 +76,11 @@ def get_past_due_allocations(ignore_session_cleared=False):
     """
     Fetches allocations where the course end date is in the past
     and the tag is not marked with extend: "true".
+    Now uses 'Australia/Sydney' for consistent date comparison.
 
     Args:
         ignore_session_cleared (bool): If True, returns all past-due items
                                        regardless of the session's cleared list.
-                                       Defaults to False.
     """
     past_due_items = []
     if alloc_collection is None:
@@ -90,11 +90,16 @@ def get_past_due_allocations(ignore_session_cleared=False):
     cleared_in_session = set()
     if not ignore_session_cleared:
         cleared_in_session = session.get('cleared_notifications', set())
-        logger.debug(f"Notifications cleared in this session: {cleared_in_session}")
 
     try:
-        today_naive = datetime.datetime.now().date()
-        # Find all tags that are NOT marked for extension
+        # --- THIS IS THE FIX ---
+        # Define the target timezone
+        sydney_tz = pytz.timezone('Australia/Sydney')
+        # Get the current date in the specified timezone
+        today_sydney = datetime.datetime.now(sydney_tz).date()
+        logger.debug(f"Running past-due check against Australia/Sydney date: {today_sydney}")
+        # --- END OF FIX ---
+
         relevant_tags_cursor = alloc_collection.find(
             {"extend": {"$ne": "true"}}
         )
@@ -103,7 +108,6 @@ def get_past_due_allocations(ignore_session_cleared=False):
             tag_name = tag_doc.get("tag")
             if not tag_name: continue
 
-            # Consolidate course names and find the latest end date for the tag
             latest_end_date_str = None
             latest_end_date_obj = None
             course_names_in_tag = set()
@@ -128,12 +132,11 @@ def get_past_due_allocations(ignore_session_cleared=False):
                 except ValueError:
                     logger.warning(f"Could not parse end_date '{end_date_str}' in tag '{tag_name}'.")
 
-            if latest_end_date_obj and latest_end_date_obj < today_naive:
-                # Use the tag name itself for the notification ID
+            # Compare the course's end date with today's Sydney date
+            if latest_end_date_obj and latest_end_date_obj < today_sydney:
                 notification_id = f"past_due_{tag_name}".replace(" ", "_").replace("/", "_")
                 
                 if not ignore_session_cleared and notification_id in cleared_in_session:
-                    logger.debug(f"Skipping already cleared notification for tag: {tag_name}")
                     continue
 
                 past_due_items.append({
@@ -141,7 +144,7 @@ def get_past_due_allocations(ignore_session_cleared=False):
                     "tag": tag_name,
                     "course_names": ", ".join(sorted(list(course_names_in_tag))),
                     "end_date": latest_end_date_str, 
-                    "days_past": (today_naive - latest_end_date_obj).days
+                    "days_past": (today_sydney - latest_end_date_obj).days
                 })
 
     except PyMongoError as e:

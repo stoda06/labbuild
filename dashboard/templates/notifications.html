@@ -72,10 +72,14 @@
                 <div class="mt-4 bulk-actions-form">
                     <h5 class="mb-3">Bulk Actions</h5>
                     <p>Actions will apply to all selected tags.</p>
-                    <button type="submit" class="btn btn-danger" name="action" value="teardown_selected" onclick="return confirm('Are you sure you want to TEARDOWN ALL selected tags? This is irreversible.');">
-                        <i class="fas fa-fire-alt"></i> Teardown Selected ({{ past_due_tags|length }})
+                    {# --- MODIFICATION START --- #}
+                    <button type="submit" class="btn btn-danger" name="action" value="teardown_selected" id="teardownSelectedBtn"
+                            onclick="return confirm('Are you sure you want to TEARDOWN ALL selected tags? This is irreversible.');">
+                        <i class="fas fa-fire-alt"></i> Teardown Selected <span id="selectedCount">(0)</span>
                     </button>
-                    <button type="submit" class="btn btn-danger ms-2" name="action" value="teardown_all" onclick="return confirm('Are you sure you want to TEARDOWN ALL listed tags? This is irreversible.');">
+                    {# --- MODIFICATION END --- #}
+                    <button type="submit" class="btn btn-danger ms-2" name="action" value="teardown_all" 
+                            onclick="return confirm('Are you sure you want to TEARDOWN ALL {{ past_due_tags|length }} listed tags? This is irreversible.');">
                         <i class="fas fa-exclamation-triangle"></i> Teardown ALL on this Page
                     </button>
                 </div>
@@ -97,12 +101,25 @@
         const selectAllCheckbox = document.getElementById('selectAllTagsCheckbox');
         const tagCheckboxes = document.querySelectorAll('.tag-checkbox');
         const bulkForm = document.getElementById('bulkTeardownForm');
+        const teardownSelectedBtn = document.getElementById('teardownSelectedBtn');
+        const selectedCountSpan = document.getElementById('selectedCount');
+
+        function updateSelectedCount() {
+            if (!selectedCountSpan || !teardownSelectedBtn) return;
+            
+            const selectedCount = document.querySelectorAll('.tag-checkbox:checked').length;
+            selectedCountSpan.textContent = `(${selectedCount})`;
+            
+            // Disable the button if nothing is selected
+            teardownSelectedBtn.disabled = (selectedCount === 0);
+        }
 
         if (selectAllCheckbox) {
             selectAllCheckbox.addEventListener('change', function() {
                 tagCheckboxes.forEach(checkbox => {
                     checkbox.checked = this.checked;
                 });
+                updateSelectedCount();
             });
         }
 
@@ -113,6 +130,7 @@
                 } else if (Array.from(tagCheckboxes).every(cb => cb.checked)) {
                     selectAllCheckbox.checked = true;
                 }
+                updateSelectedCount();
             });
         });
 
@@ -120,13 +138,15 @@
             bulkForm.addEventListener('submit', function(event) {
                 const actionButton = event.submitter;
                 if (actionButton && actionButton.name === 'action' && actionButton.value === 'teardown_all') {
-                    // If "Teardown ALL" was clicked, check all boxes before submitting
                     tagCheckboxes.forEach(checkbox => {
                         checkbox.checked = true;
                     });
                 }
             });
         }
+
+        // Initial count on page load
+        updateSelectedCount();
     });
 </script>
 {% endblock %}
