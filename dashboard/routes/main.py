@@ -157,6 +157,7 @@ def view_allocations():
     """
     current_theme = request.cookies.get('theme', 'light')
 
+    # ... (Filter and Pagination parameter logic is unchanged) ...
     filter_tag_input = request.args.get('filter_tag', '').strip()
     filter_vendor = request.args.get('filter_vendor', '').strip()
     filter_course = request.args.get('filter_course', '').strip()
@@ -190,88 +191,88 @@ def view_allocations():
             for tag_doc in alloc_cursor:
                 tag_name = tag_doc.get("tag", "Unknown Tag")
                 is_extended_tag = str(tag_doc.get("extend", "false")).lower() == "true"
+                
+                # --- THIS IS THE CORRECTED LOGIC ---
+                # Iterate through all courses and pods, adding them to a flat list.
+                # The grouping will happen later, based only on the tag.
                 for course_alloc in tag_doc.get("courses", []):
                     vendor = course_alloc.get("vendor", "")
                     if filter_vendor and not re.match(f'^{re.escape(filter_vendor)}$', vendor, re.I): continue
                     if filter_course and not re.search(re.escape(filter_course), course_alloc.get("course_name", ""), re.I): continue
                     
-                    # --- THIS IS THE FIX: Define group_key and base_item HERE ---
-                    group_key = (tag_name, str(course_alloc.get("start_date", "N/A")), str(course_alloc.get("end_date", "N/A")), str(course_alloc.get("trainer_name", "N/A")), str(course_alloc.get("apm_username", "N/A")))
-                    base_item = {
-                        "group_key": group_key, "tag": tag_name, "is_extended": is_extended_tag,
-                        "start_date": course_alloc.get("start_date", "N/A"), "end_date": course_alloc.get("end_date", "N/A"),
-                        "trainer_name": course_alloc.get("trainer_name", "N/A"), "apm_username": course_alloc.get("apm_username", "N/A"),
-                        "apm_password": course_alloc.get("apm_password", "N/A"), "vendor": vendor,
-                        "course_name": course_alloc.get("course_name")
-                    }
-
                     for pod_detail in course_alloc.get("pod_details", []):
                         if filter_host_str and filter_host_str not in pod_detail.get("host", "").lower(): continue
                         
-                        is_f5_class_entry = vendor.lower() == 'f5' and "class_number" in pod_detail
+                        item = {
+                            "tag": tag_name, "is_extended": is_extended_tag,
+                            "start_date": course_alloc.get("start_date"), "end_date": course_alloc.get("end_date"),
+                            "trainer_name": course_alloc.get("trainer_name"), "apm_username": course_alloc.get("apm_username"),
+                            "apm_password": course_alloc.get("apm_password"), "vendor": vendor,
+                            "course_name": course_alloc.get("course_name"), "host": pod_detail.get("host", "Unknown Host"),
+                            "poweron": str(pod_detail.get("poweron", "false")).lower() == 'true', "prtg_url": pod_detail.get("prtg_url")
+                        }
                         
-                        item_data = base_item.copy()
-                        item_data["host"] = pod_detail.get("host", "Unknown Host")
-                        item_data["poweron"] = str(pod_detail.get("poweron", "false")).lower() == 'true'
-                        item_data["prtg_url"] = pod_detail.get("prtg_url")
-
+                        is_f5_class_entry = vendor.lower() == 'f5' and "class_number" in pod_detail
                         if is_f5_class_entry:
-                            class_num = pod_detail.get("class_number")
-                            nested_pods = pod_detail.get("pods", [])
-                            nested_pod_numbers = {p.get("pod_number") for p in nested_pods if p.get("pod_number") is not None}
-                            
-                            if number_filter_int is not None and class_num != number_filter_int and not nested_pod_numbers.intersection({number_filter_int}):
-                                continue
-                            
-                            item_data.update({"type": "f5_class", "number": class_num, "class_number": class_num})
-                            item_data['nested_pods'] = sorted(nested_pods, key=lambda p: p.get('pod_number', 999))
-                            all_items_matching_filters.append(item_data)
+                            item.update({"type": "f5_class", "number": pod_detail.get("class_number"), "class_number": pod_detail.get("class_number"), "nested_pods": pod_detail.get("pods", [])})
                         else:
-                            pod_num = pod_detail.get("pod_number")
-                            if number_filter_int is not None and pod_num != number_filter_int: continue
-                            item_data.update({"type": "pod", "number": pod_num, "pod_number": pod_num})
-                            all_items_matching_filters.append(item_data)
+                            item.update({"type": "pod", "number": pod_detail.get("pod_number"), "pod_number": pod_detail.get("pod_number")})
+                        
+                        # Apply number filter
+                        if number_filter_int is not None:
+                            nested_pod_numbers = {p.get("pod_number") for p in item.get("nested_pods", []) if p.get("pod_number") is not None}
+                            if item.get("number") != number_filter_int and not (is_f5_class_entry and number_filter_int in nested_pod_numbers):
+                                continue # Skip if number doesn't match
+                        
+                        all_items_matching_filters.append(item)
         except PyMongoError as e_mongo:
             flash("Error fetching data from database.", "danger")
 
-    # Group the flat list into a nested structure for rendering
-    grouped_allocations = defaultdict(lambda: {"summary": {}, "details": []})
+    # --- Group the flat list into a nested structure for rendering ---
+    grouped_by_tag = defaultdict(list)
     for item in all_items_matching_filters:
-        key = item['group_key'] # This will now work correctly
-        if not grouped_allocations[key]['summary']:
-            grouped_allocations[key]['summary'] = {
-                "tag": item['tag'], "is_extended": item['is_extended'], "start_date": item['start_date'],
-                "end_date": item['end_date'], "trainer_name": item['trainer_name'],
-                "apm_username": item['apm_username'], "apm_password": item['apm_password'],
-                "course_names": {item['course_name']}
-            }
-        else:
-            grouped_allocations[key]['summary']['course_names'].add(item['course_name'])
-        
-        grouped_allocations[key]['details'].append(item)
+        grouped_by_tag[item['tag']].append(item)
 
     final_groups = []
-    for group_key, group_data in grouped_allocations.items():
-        group_data['summary']['course_names'] = sorted(list(group_data['summary']['course_names']))
+    for tag, items in grouped_by_tag.items():
+        # Use the metadata from the VERY FIRST item in the list for the summary display
+        first_item = items[0]
+        summary = {
+            "tag": tag,
+            "is_extended": first_item['is_extended'],
+            "start_date": first_item.get('start_date', 'N/A'),
+            "end_date": first_item.get('end_date', 'N/A'),
+            "trainer_name": first_item.get('trainer_name', 'N/A'),
+            "apm_username": first_item.get('apm_username', 'N/A'),
+            "apm_password": first_item.get('apm_password', 'N/A'),
+            "course_names": sorted(list({item['course_name'] for item in items})) # Get all unique course names
+        }
         
-        pod_numbers = {item['pod_number'] for item in group_data['details'] if item.get('pod_number') is not None}
-        class_numbers = {item['class_number'] for item in group_data['details'] if item.get('class_number') is not None}
+        # Calculate Pod Range for Summary
+        all_pod_numbers = {item['pod_number'] for item in items if item.get('pod_number') is not None}
+        all_class_numbers = {item['class_number'] for item in items if item.get('class_number') is not None}
+        
         pod_range_str = ""
-        if pod_numbers:
-            min_pod, max_pod = min(pod_numbers), max(pod_numbers)
+        if all_pod_numbers:
+            min_pod, max_pod = min(all_pod_numbers), max(all_pod_numbers)
             pod_range_str = f"Pods: {min_pod}-{max_pod}" if min_pod != max_pod else f"Pod: {min_pod}"
+        
         class_range_str = ""
-        if class_numbers:
-            min_class, max_class = min(class_numbers), max(class_numbers)
+        if all_class_numbers:
+            min_class, max_class = min(all_class_numbers), max(all_class_numbers)
             class_range_str = f"Classes: {min_class}-{max_class}" if min_class != max_class else f"Class: {min_class}"
-        group_data['summary']['pod_range_display'] = " | ".join(filter(None, [class_range_str, pod_range_str]))
         
-        final_groups.append(group_data)
+        summary['pod_range_display'] = " | ".join(filter(None, [class_range_str, pod_range_str]))
+        
+        # Sort details within the group
+        items.sort(key=lambda item: (item.get('class_number') or 9999, -1 if item.get('type') == 'f5_class' else (item.get('pod_number') or 9999)))
 
-    final_groups.sort(key=lambda g: (g['summary']['tag'].lower(), g['summary']['start_date'] or '9999-12-31'))
-    for group in final_groups:
-        group['details'].sort(key=lambda item: (item.get('class_number') or 9999, -1 if item.get('type') == 'f5_class' else (item.get('pod_number') or 9999)))
+        final_groups.append({"summary": summary, "details": items})
+
+    # Sort final groups by tag name
+    final_groups.sort(key=lambda g: g['summary']['tag'].lower())
         
+    # Paginate the final list of groups
     total_groups_matching_filters = len(final_groups)
     total_pages = math.ceil(total_groups_matching_filters / groups_per_page) if groups_per_page > 0 else 1
     page = max(1, min(page, total_pages))
