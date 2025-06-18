@@ -118,46 +118,58 @@ def purge_old_mongodb_logs(retention_days: int = DEFAULT_LOG_RETENTION_DAYS):
 
 # --- Core Task Execution Function ---
 def run_labbuild_task(args_list):
-    """Runs labbuild.py as a subprocess with the given arguments."""
+    """
+    Runs labbuild.py as a subprocess with the given arguments,
+    with enhanced logging for production debugging.
+    """
     labbuild_script_path = os.path.join(project_root, 'labbuild.py')
-    python_executable = sys.executable # Use the same python that runs Flask
+    # Ensure we use the same Python interpreter that is running the Flask app
+    python_executable = sys.executable 
     command = [python_executable, labbuild_script_path] + args_list
-    command_str = ' '.join(shlex.quote(arg) for arg in command)
-    logger.info(f"Executing background task: {command_str}")
+    
+    # Use shlex.quote for safe logging of the command
+    command_str_for_log = ' '.join(shlex.quote(arg) for arg in command)
+    logger.info(f"EXECUTING TASK: {command_str_for_log}")
+    logger.info(f"Subprocess CWD: {project_root}")
+    logger.info(f"Python Executable: {python_executable}")
+
     try:
-        # Increased timeout
+        # Execute the command from the project root directory.
+        # This is CRITICAL for ensuring it can find the .env file.
         process = subprocess.run(
             command,
-            capture_output=True,
-            text=True,
-            check=False, # Don't raise exception on non-zero exit
-            cwd=project_root, # Run from project root
-            timeout=7200  # 2 hour timeout
+            capture_output=True, # Capture stdout and stderr
+            text=True,           # Decode output as text
+            check=False,         # Do not raise exception on non-zero exit code
+            cwd=project_root,    # Set the current working directory
+            timeout=7200         # 2-hour timeout
         )
-        logger.info(
-            f"labbuild task '{' '.join(args_list)}' finished. "
-            f"RC: {process.returncode}"
-        )
-        # Log output, especially on error
-        if process.stdout:
-             logger.debug(f"labbuild task stdout:\n{process.stdout}")
-        if process.returncode != 0 and process.stderr:
-            logger.error(f"labbuild task stderr:\n{process.stderr}")
-        elif process.returncode != 0:
-             logger.error(f"labbuild task failed with RC {process.returncode}, no stderr captured.")
 
-    except subprocess.TimeoutExpired:
-        logger.error(
-            f"labbuild task timed out after 7200s: {command_str}"
-        )
+        # --- Enhanced Logging ---
+        # Always log the return code.
+        logger.info(f"TASK FINISHED: '{command_str_for_log}' | RC: {process.returncode}")
+
+        # Log stdout if it's not empty.
+        if process.stdout:
+             logger.info(f"[TASK STDOUT - RC:{process.returncode}]\n--- STDOUT START ---\n{process.stdout.strip()}\n--- STDOUT END ---")
+        
+        # CRITICAL: Log stderr if it's not empty, regardless of return code.
+        # This will capture import errors, connection errors, etc.
+        if process.stderr:
+            logger.error(f"[TASK STDERR - RC:{process.returncode}]\n--- STDERR START ---\n{process.stderr.strip()}\n--- STDERR END ---")
+
     except FileNotFoundError:
          logger.error(
-             f"Error: Python executable '{python_executable}' or script "
-             f"'{labbuild_script_path}' not found."
+             f"Error starting task: The Python executable '{python_executable}' or "
+             f"the script '{labbuild_script_path}' was not found."
          )
+    except subprocess.TimeoutExpired:
+        logger.error(
+            f"Task timed out after 2 hours: {command_str_for_log}"
+        )
     except Exception as e:
         logger.error(
-            f"Failed run labbuild subprocess command '{command_str}': {e}",
+            f"An unexpected exception occurred while running labbuild subprocess command '{command_str_for_log}': {e}",
             exc_info=True
         )
 
