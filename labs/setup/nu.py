@@ -26,10 +26,7 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
     snapshot_name = 'base'
 
     # Determine parent resource pool based on host_fqdn.
-    if "hotshot" not in pod_config["host_fqdn"]:
-        parent_resource_pool = f'{pod_config["vendor_shortcode"]}-{pod_config["host_fqdn"][0:2]}'
-    else:
-        parent_resource_pool = f'{pod_config["vendor_shortcode"]}-ho'
+    parent_resource_pool = f'{pod_config["vendor_shortcode"]}-{pod_config["host_fqdn"][0:2]}'
     resource_pool = f'nu-pod{pod}-{pod_config["host_fqdn"][0:2]}'
 
     # STEP 1: Create resource pool.
