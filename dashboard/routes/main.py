@@ -72,74 +72,98 @@ def _prepare_date_for_display_iso(date_str: Optional[str], context_info: str = "
     logger.warning(f"Date Prep ({context_info}): Could not parse date string '{date_str}' into any known format. Returning None.")
     return None
 
-def get_past_due_allocations():
+def get_past_due_allocations(ignore_session_cleared=False):
     """
     Fetches allocations where the course end date is in the past
     and the tag is not marked with extend: "true".
-    Filters out notifications that have been "cleared" in the current session.
+
+    Args:
+        ignore_session_cleared (bool): If True, returns all past-due items
+                                       regardless of the session's cleared list.
+                                       Defaults to False.
     """
     past_due_items = []
     if alloc_collection is None:
         logger.warning("get_past_due_allocations: alloc_collection is None.")
         return past_due_items
 
-    # Get the set of notification IDs cleared in this session
-    cleared_in_session = session.get('cleared_notifications', set())
-    logger.debug(f"Notifications cleared in this session: {cleared_in_session}")
+    cleared_in_session = set()
+    if not ignore_session_cleared:
+        cleared_in_session = session.get('cleared_notifications', set())
+        logger.debug(f"Notifications cleared in this session: {cleared_in_session}")
 
     try:
         today_naive = datetime.datetime.now().date()
+        # Find all tags that are NOT marked for extension
         relevant_tags_cursor = alloc_collection.find(
-            {"extend": {"$not": re.compile("^true$", re.IGNORECASE)}}
+            {"extend": {"$ne": "true"}}
         )
 
         for tag_doc in relevant_tags_cursor:
             tag_name = tag_doc.get("tag")
-            if not tag_name:
-                continue
+            if not tag_name: continue
+
+            # Consolidate course names and find the latest end date for the tag
+            latest_end_date_str = None
+            latest_end_date_obj = None
+            course_names_in_tag = set()
 
             for course_data in tag_doc.get("courses", []):
-                course_name = course_data.get("course_name")
+                course_names_in_tag.add(course_data.get("course_name", "Unknown Course"))
                 end_date_str = str(course_data.get("end_date", ""))
-
-                if not course_name or not end_date_str or end_date_str == "N/A":
-                    continue
+                if not end_date_str or end_date_str == "N/A": continue
                 
-                # Generate a consistent ID for this potential notification
-                notification_id = f"past_due_{tag_name}_{course_name}".replace(" ", "_").replace("/", "_")
-
-                # If this notification ID is in the session's cleared set, skip it
-                if notification_id in cleared_in_session:
-                    logger.debug(f"Skipping already cleared notification: {notification_id}")
-                    continue
-
                 try:
-                    course_end_date_obj = None
+                    current_end_date_obj = None
                     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
                         try:
-                            course_end_date_obj = datetime.datetime.strptime(end_date_str, fmt).date()
+                            current_end_date_obj = datetime.datetime.strptime(end_date_str, fmt).date()
                             break
-                        except ValueError:
-                            continue
+                        except ValueError: continue
                     
-                    if course_end_date_obj and course_end_date_obj < today_naive:
-                        past_due_items.append({
-                            "id": notification_id,
-                            "tag": tag_name,
-                            "course_name": course_name,
-                            "end_date": end_date_str, 
-                            "days_past": (today_naive - course_end_date_obj).days
-                        })
+                    if current_end_date_obj:
+                        if latest_end_date_obj is None or current_end_date_obj > latest_end_date_obj:
+                            latest_end_date_obj = current_end_date_obj
+                            latest_end_date_str = end_date_str
                 except ValueError:
-                    logger.warning(f"Could not parse end_date '{end_date_str}' for tag '{tag_name}', course '{course_name}'.")
+                    logger.warning(f"Could not parse end_date '{end_date_str}' in tag '{tag_name}'.")
+
+            if latest_end_date_obj and latest_end_date_obj < today_naive:
+                # Use the tag name itself for the notification ID
+                notification_id = f"past_due_{tag_name}".replace(" ", "_").replace("/", "_")
+                
+                if not ignore_session_cleared and notification_id in cleared_in_session:
+                    logger.debug(f"Skipping already cleared notification for tag: {tag_name}")
                     continue
+
+                past_due_items.append({
+                    "id": notification_id,
+                    "tag": tag_name,
+                    "course_names": ", ".join(sorted(list(course_names_in_tag))),
+                    "end_date": latest_end_date_str, 
+                    "days_past": (today_naive - latest_end_date_obj).days
+                })
+
     except PyMongoError as e:
         logger.error(f"Error fetching past due allocations: {e}", exc_info=True)
-    except Exception as e_gen:
-        logger.error(f"Unexpected error in get_past_due_allocations: {e_gen}", exc_info=True)
-
+    
     past_due_items.sort(key=lambda x: x.get("days_past", 0), reverse=True)
     return past_due_items
+
+# --- NEW: Route for the "All Notifications" page ---
+@bp.route('/notifications/all')
+def all_notifications():
+    """Renders the page showing all past-due allocations."""
+    current_theme = request.cookies.get('theme', 'light')
+    
+    # Fetch all past-due allocations, ignoring the session cleared list
+    all_past_due_tags = get_past_due_allocations(ignore_session_cleared=True)
+    
+    return render_template(
+        'notifications.html',
+        past_due_tags=all_past_due_tags,
+        current_theme=current_theme
+    )
 
 # --- NEW: App Context Processor to make notifications available globally ---
 @bp.app_context_processor

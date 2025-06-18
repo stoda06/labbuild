@@ -3286,3 +3286,65 @@ def update_allocation_summary():
     except Exception as e:
         logger.error(f"Unexpected error updating allocation summary for tag '{tag}': {e}", exc_info=True)
         return jsonify({"success": False, "error": "An unexpected server error occurred."}), 500
+    
+@bp.route('/bulk-teardown-tags', methods=['POST'])
+def bulk_teardown_tags():
+    """
+    Handles bulk teardown requests for multiple tags from the notifications page.
+    """
+    tags_to_teardown = request.form.getlist('tags_to_teardown')
+    if not tags_to_teardown:
+        flash("No tags were selected for teardown.", "warning")
+        return redirect(url_for('main.all_notifications'))
+
+    logger.info(f"Initiating BULK teardown for {len(tags_to_teardown)} tags: {', '.join(tags_to_teardown)}")
+    
+    tasks_to_run = []
+    
+    if alloc_collection is None:
+        flash("Database unavailable. Cannot process teardown.", "danger")
+        return redirect(url_for('main.all_notifications'))
+        
+    try:
+        # Fetch all details for the selected tags in a single query
+        tag_docs_cursor = alloc_collection.find({"tag": {"$in": tags_to_teardown}})
+        
+        for tag_doc in tag_docs_cursor:
+            tag = tag_doc.get("tag")
+            for course in tag_doc.get("courses", []):
+                course_name = course.get("course_name")
+                vendor = course.get("vendor")
+                if not all([course_name, vendor]): continue
+
+                # Group pod details by host to create efficient teardown commands
+                items_by_host = defaultdict(lambda: {"pods": set(), "classes": set()})
+                for pd in course.get("pod_details", []):
+                    host = pd.get("host")
+                    if not host: continue
+                    if vendor.lower() == 'f5' and pd.get("class_number") is not None:
+                        items_by_host[host]["classes"].add(pd.get("class_number"))
+                    elif pd.get("pod_number") is not None:
+                        items_by_host[host]["pods"].add(pd.get("pod_number"))
+                
+                # Create teardown tasks
+                for host, items in items_by_host.items():
+                    for class_num in sorted(list(items["classes"])):
+                        args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-cn', str(class_num)]
+                        tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Class {class_num}"})
+                    if items["pods"]:
+                        # This could be further optimized to merge ranges, but individual calls are safer
+                        for pod_num in sorted(list(items["pods"])):
+                            args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
+                            tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Pod {pod_num}"})
+
+    except Exception as e:
+        logger.error(f"Error preparing bulk teardown tasks: {e}", exc_info=True)
+        flash("An error occurred while preparing the teardown jobs.", "danger")
+        return redirect(url_for('main.all_notifications'))
+
+    if tasks_to_run:
+        _dispatch_bulk_labbuild_tasks(tasks_to_run, "bulk tag teardown")
+    else:
+        flash("No valid items found within the selected tags to tear down.", "info")
+
+    return redirect(url_for('main.all_notifications'))

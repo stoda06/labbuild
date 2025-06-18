@@ -1,13 +1,11 @@
 {# dashboard/templates/_notifications_dropdown.html #}
 <div class="notifications-header px-3 py-2">
-    <h6 class="dropdown-header mb-0 fs-sm">Past-Due Courses</h6>
+    <h6 class="dropdown-header mb-0 fs-sm">Past-Due Allocations</h6>
     {% if past_due_notifications %}
-        {# "Clear All" becomes a form POSTing to a backend route #}
         <form action="{{ url_for('main.clear_all_notifications') }}" method="POST" class="d-inline">
-            {# Add CSRF token if your app uses them #}
             <button type="submit" class="btn btn-sm btn-link p-0 text-decoration-none clear-all-btn-server" 
-                    onclick="return confirm('Are you sure you want to clear ALL notifications? This action might reload the page.');"
-                    title="Clear all notifications">Clear All</button>
+                    onclick="return confirm('Are you sure you want to clear ALL notifications from the dropdown? This action might reload the page.');"
+                    title="Clear all notifications from dropdown">Clear All</button>
         </form>
     {% endif %}
 </div>
@@ -19,16 +17,13 @@
                 <div class="d-flex w-100 justify-content-between">
                     <a href="{{ url_for('main.view_allocations', filter_tag=notification.tag) }}" class="text-decoration-none text-body me-2 flex-grow-1">
                         <h6 class="mb-0 fs-sm notification-tag">{{ notification.tag }}</h6>
-                        <small class="d-block notification-course">{{ notification.course_name }}</small>
                         <small class="d-block text-danger notification-end-date">
                             Ended: {{ notification.end_date }} ({{ notification.days_past }} days ago)
                         </small>
                     </a>
-                    {# "Clear Single" becomes a form POSTing to a backend route #}
                     <form action="{{ url_for('main.clear_notification', notification_id=notification.id) }}" method="POST" class="d-inline clear-single-form-server">
-                         {# Add CSRF token if your app uses them #}
                         <button type="submit" class="btn btn-sm text-muted clear-notification-btn-server" 
-                                onclick="return confirm('Clear notification for {{ notification.tag }} - {{ notification.course_name }}? This will reload.');"
+                                onclick="return confirm('Clear notification for {{ notification.tag }}? This will reload.');"
                                 title="Clear this notification">
                             <i class="fas fa-times"></i>
                         </button>
@@ -42,7 +37,7 @@
 </div>
 {% if past_due_notifications %}
 <div class="dropdown-divider"></div>
-<a class="dropdown-item text-center py-2 fs-sm" href="#!"> {# Link to a future "all notifications" page #}
+<a class="dropdown-item text-center py-2 fs-sm" href="{{ url_for('main.all_notifications') }}">
     View all notifications
 </a>
 {% endif %}
