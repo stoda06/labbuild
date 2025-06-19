@@ -1211,6 +1211,8 @@ def intermediate_build_review():
                                     if nested.get("pod_number") is not None: initial_data["db_locked_pods"]['f5'].add(int(nested["pod_number"]))
                             elif pd.get("pod_number") is not None: initial_data["db_locked_pods"][vendor].add(int(pd["pod_number"]))
                         except (ValueError, TypeError): continue
+            initial_data["db_locked_pods"]['f5'].add(17)
+            logger.info("Reserved pod number 17 for vendor 'f5'. It will not be allocated.")
             raw_caps_gb = get_hosts_available_memory_parallel(hosts_docs) if hosts_docs else {}
             for h_doc in hosts_docs:
                 h_name = h_doc.get("host_name")
