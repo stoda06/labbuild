@@ -254,8 +254,7 @@ def vendor_setup(
             build_result = f5.build_class(
                 service_instance, class_config, 
                 rebuild=rebuild, full=full_clone, 
-                selected_components=selected_components,
-                start_pod=start_pod, end_pod=end_pod  # Pass the pod range
+                selected_components=selected_components
             )
             class_success, class_step, class_error = build_result
             status_msg = "success" if class_success else "failed"
