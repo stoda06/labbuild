@@ -2107,8 +2107,10 @@ def finalize_and_display_build_plan():
                     "status_note": doc.get("trainer_assignment_warning"),
                     "sf_trainer_name": doc.get("sf_trainer_name"),
                     "f5_class_number": doc.get("f5_class_number"),
-                    "apm_username": doc.get("trainer_apm_username"),
-                    "apm_password": doc.get("trainer_apm_password"),
+                    "apm_username": doc.get("student_apm_username"), # Still needed for context
+                    "apm_password": doc.get("student_apm_password"), # Still needed for context
+                    "trainer_apm_username": doc.get("trainer_apm_username"), # The crucial field
+                    "trainer_apm_password": doc.get("trainer_apm_password")  # The crucial field
                 }
                 processed_items.append(trainer_item)
                 logger.debug(f"[_process_plan_for_display] Added trainer item: {trainer_item}")
@@ -2184,98 +2186,78 @@ def execute_scheduled_builds():
     """
     confirmed_plan_json = request.form.get('confirmed_build_plan_data')
     schedule_option = request.form.get('schedule_option', 'now')
-    batch_review_id = request.form.get('batch_review_id') # For updating interim docs
-
+    batch_review_id = request.form.get('batch_review_id')
     perform_teardown_first = request.form.get('perform_teardown_first') == 'yes'
+
     logger.info(f"Execute Scheduled Builds for Batch ID '{batch_review_id}': "
                 f"Teardown before setup = {perform_teardown_first}, "
                 f"Schedule Option = {schedule_option}")
 
     schedule_start_time_str: Optional[str] = None
-    stagger_minutes: int = 30 # Default stagger
+    stagger_minutes: int = 30
 
     if schedule_option == 'specific_time_all':
         schedule_start_time_str = request.form.get('schedule_start_time')
     elif schedule_option == 'staggered':
         schedule_start_time_str = request.form.get('schedule_start_time_staggered')
-        stagger_minutes_str = request.form.get('schedule_stagger_minutes', '30')
         try:
-            stagger_minutes = int(stagger_minutes_str)
+            stagger_minutes = int(request.form.get('schedule_stagger_minutes', '30'))
             if stagger_minutes < 1:
-                logger.warning("Stagger minutes less than 1, defaulting to 1.")
                 stagger_minutes = 1
         except (ValueError, TypeError):
-            logger.warning(f"Invalid stagger_minutes value '{stagger_minutes_str}', "
-                           "defaulting to 30.")
             stagger_minutes = 30
 
     if not confirmed_plan_json:
         flash("No confirmed build plan received to schedule.", "danger")
-        return redirect(url_for('actions.finalize_and_display_build_plan',
-                                batch_review_id=batch_review_id))
+        return redirect(url_for('actions.finalize_and_display_build_plan', batch_review_id=batch_review_id))
+
     try:
         buildable_items_from_form = json.loads(confirmed_plan_json)
         if not isinstance(buildable_items_from_form, list):
-            raise ValueError("Invalid confirmed build plan format: not a list.")
+            raise ValueError("Invalid confirmed build plan format.")
     except (json.JSONDecodeError, ValueError) as e:
         flash(f"Error processing confirmed build plan: {e}", "danger")
-        logger.error("Error parsing confirmed_build_plan_data: %s", e, exc_info=True)
-        return redirect(url_for('actions.finalize_and_display_build_plan',
-                                batch_review_id=batch_review_id))
+        return redirect(url_for('actions.finalize_and_display_build_plan', batch_review_id=batch_review_id))
 
     if scheduler is None or not scheduler.running:
         flash("Scheduler not running. Cannot schedule builds.", "danger")
-        logger.error("Attempted to schedule builds, but scheduler is not running.")
         return redirect(url_for('main.index'))
 
     logger.info(f"Received {len(buildable_items_from_form)} buildable items to schedule for "
                 f"batch '{batch_review_id}' with option: '{schedule_option}'.")
     
-    from apscheduler.triggers.date import DateTrigger # Import here to keep it local
+    from apscheduler.triggers.date import DateTrigger
     scheduler_tz_obj = scheduler.timezone
     
-    # Determine the base_run_time_utc for the very first operation
     base_run_time_utc: datetime.datetime = datetime.datetime.now(pytz.utc)
     if schedule_option != 'now' and schedule_start_time_str:
         try:
             naive_dt_form = datetime.datetime.fromisoformat(schedule_start_time_str)
-            if hasattr(scheduler_tz_obj, 'localize'): # For pytz
-                localized_dt = scheduler_tz_obj.localize(naive_dt_form, is_dst=None) # type: ignore
-            else: # For zoneinfo or other standard tzinfo
-                localized_dt = naive_dt_form.replace(tzinfo=scheduler_tz_obj)
+            localized_dt = scheduler_tz_obj.localize(naive_dt_form, is_dst=None) if hasattr(scheduler_tz_obj, 'localize') else naive_dt_form.replace(tzinfo=scheduler_tz_obj)
             base_run_time_utc = localized_dt.astimezone(pytz.utc)
-            logger.info(f"Base run time for scheduling (UTC): {base_run_time_utc}, "
-                        f"from form input '{schedule_start_time_str}' in tz '{scheduler_tz_obj}'.")
         except ValueError as e_date_sched:
-            logger.error(f"Invalid datetime format '{schedule_start_time_str}': {e_date_sched}. "
-                         "Defaulting to 'now'.")
-            flash("Invalid start time format provided. Scheduling jobs for 'now' instead.", "warning")
-            base_run_time_utc = datetime.datetime.now(pytz.utc) # Fallback
+            flash(f"Invalid start time format provided. Scheduling jobs for 'now'. Error: {e_date_sched}", "warning")
+            base_run_time_utc = datetime.datetime.now(pytz.utc)
 
-    # This will be the actual run time for the current operation block (teardown then setup)
     current_operation_block_start_time_utc = base_run_time_utc
     stagger_delta = datetime.timedelta(minutes=stagger_minutes)
-    setup_delay_after_teardown = datetime.timedelta(minutes=2) # Time between teardown and setup
+    setup_delay_after_teardown = datetime.timedelta(minutes=2)
     
     scheduled_ops_count = 0
     failed_ops_count = 0
-    # Store details of scheduled operations for logging/DB update
     scheduled_op_details_for_interim: List[Dict[str, Any]] = []
 
-
     for item_idx, item_to_build in enumerate(buildable_items_from_form):
-        item_sf_code = item_to_build.get('sf_course_code', f'UNKNOWN_SF_{item_idx}')
+        item_sf_code = item_to_build.get('original_sf_course_code', item_to_build.get('sf_course_code', f'UNKNOWN_SF_{item_idx}'))
         item_vendor = item_to_build.get('vendor')
         item_lb_course = item_to_build.get('labbuild_course')
 
         if not item_vendor or not item_lb_course:
-            logger.error(f"Skipping item '{item_sf_code}' due to missing vendor or LabBuild course.")
-            failed_ops_count += 1 # Count this as a failed scheduling attempt
+            failed_ops_count += 1
             continue
             
         assignments = item_to_build.get("assignments", [])
         if not assignments:
-            logger.warning(f"No host/pod assignments for '{item_sf_code}'. Skipping scheduling for this item.")
             failed_ops_count += 1
             continue
 
@@ -2285,130 +2267,80 @@ def execute_scheduled_builds():
             end_pod = assignment_block.get('end_pod')
 
             if not host or start_pod is None or end_pod is None:
-                logger.error(f"Skipping assignment for '{item_sf_code}' due to missing "
-                             f"host/pod range: {assignment_block}")
                 failed_ops_count +=1
                 continue
 
-            # Calculate the start time for this specific block of operations
-            # (teardown + setup for one assignment segment)
-            if schedule_option == 'staggered':
-                # Only add stagger_delta if it's not the very first assignment block overall
-                if item_idx > 0 or assignment_idx > 0:
-                    current_operation_block_start_time_utc += stagger_delta
+            if schedule_option == 'staggered' and (item_idx > 0 or assignment_idx > 0):
+                current_operation_block_start_time_utc += stagger_delta
             elif schedule_option == 'now':
                 current_operation_block_start_time_utc = datetime.datetime.now(pytz.utc)
-            # For 'specific_time_all', current_operation_block_start_time_utc remains base_run_time_utc
             
-            # --- Construct base arguments for this item assignment ---
-            base_args_for_item_assignment = [
-                '-v', item_vendor,
-                '-g', item_lb_course,
-                '--host', host, 
-                '-s', str(start_pod),
-                '-e', str(end_pod)
-            ]
-            # Create a descriptive tag
-            tag_type_suffix = item_to_build.get('type','item').split(' ')[0].lower()
-            tag = f"{item_sf_code.replace('/', '_').replace(' ', '_')}_{tag_type_suffix}"
-            # if len(assignments) > 1:
-            #     tag += f"_part{assignment_idx+1}"
-            base_args_for_item_assignment.extend(['-t', tag[:45]]) # Keep tag reasonably short
+            is_student_build = item_to_build.get('type') == 'Student Build'
+            tag = f"{item_sf_code.replace('/', '_').replace(' ', '_')}"
+            if not is_student_build:
+                tag += "_TP"
+            
+            base_args = ['-v', item_vendor, '-g', item_lb_course, '--host', host, '-s', str(start_pod), '-e', str(end_pod), '-t', tag[:45]]
+            
+            if item_vendor.lower() == 'f5' and item_to_build.get('f5_class_number'):
+                 base_args.extend(['-cn', str(item_to_build['f5_class_number'])])
 
-            # Add F5 class number if applicable (ensure key exists in item_to_build)
-            f5_class_num = item_to_build.get('f5_class_number') # Assuming this key exists if it's F5
-            if item_vendor.lower() == 'f5' and f5_class_num is not None:
-                 base_args_for_item_assignment.extend(['-cn', str(f5_class_num)])
-
-            # --- Schedule Teardown Job (if requested) ---
             teardown_job_id = None
             actual_teardown_run_time_utc = current_operation_block_start_time_utc
             if perform_teardown_first:
-                args_list_teardown = ['teardown'] + base_args_for_item_assignment
+                args_list_teardown = ['teardown'] + base_args
                 job_name_td = f"Teardown_{tag}"
                 try:
                     trigger_td = DateTrigger(run_date=actual_teardown_run_time_utc, timezone=pytz.utc)
-                    job_td = scheduler.add_job(
-                        run_labbuild_task, trigger=trigger_td, args=[args_list_teardown],
-                        name=job_name_td, misfire_grace_time=1800, # Shorter grace for teardown
-                        replace_existing=False 
-                    )
+                    job_td = scheduler.add_job(run_labbuild_task, trigger=trigger_td, args=[args_list_teardown], name=job_name_td, misfire_grace_time=1800, replace_existing=False)
                     teardown_job_id = job_td.id
-                    scheduled_op_details_for_interim.append({
-                        "operation": "teardown", "job_id": job_td.id, "name": job_name_td, 
-                        "run_time_utc": actual_teardown_run_time_utc.isoformat(), "args": args_list_teardown
-                    })
-                    logger.info(f"Scheduled Teardown Job '{job_td.id}': {job_name_td} at "
-                                f"{actual_teardown_run_time_utc.astimezone(scheduler_tz_obj).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                    scheduled_op_details_for_interim.append({"operation": "teardown", "job_id": job_td.id, "name": job_name_td, "run_time_utc": actual_teardown_run_time_utc.isoformat(), "args": args_list_teardown})
                     scheduled_ops_count += 1
                 except Exception as e_sched_td:
                     logger.error(f"Failed to schedule TEARDOWN job {job_name_td}: {e_sched_td}", exc_info=True)
                     failed_ops_count += 1
             
-            # --- Schedule Setup Job ---
-            args_list_setup = ['setup'] + base_args_for_item_assignment
-            # Potentially add --re-build if teardown was just scheduled (optional, teardown should handle clean state)
-            # if perform_teardown_first:
-            #     args_list_setup.append('--re-build') 
-            job_name_setup = f"Setup_{tag}"
+            args_list_setup = ['setup'] + base_args
             
-            actual_setup_run_time_utc = current_operation_block_start_time_utc
-            if perform_teardown_first: # If teardown was scheduled, setup runs after it
-                actual_setup_run_time_utc = actual_teardown_run_time_utc + setup_delay_after_teardown
+            if item_to_build.get('start_date'): args_list_setup.extend(['--start-date', item_to_build['start_date']])
+            if item_to_build.get('end_date'): args_list_setup.extend(['--end-date', item_to_build['end_date']])
+            if item_to_build.get('sf_trainer_name'): args_list_setup.extend(['--trainer-name', item_to_build['sf_trainer_name']])
+            
+            apm_user = item_to_build.get('apm_username') if is_student_build else item_to_build.get('trainer_apm_username')
+            apm_pass = item_to_build.get('apm_password') if is_student_build else item_to_build.get('trainer_apm_password')
+
+            if apm_user: args_list_setup.extend(['--username', apm_user])
+            if apm_pass: args_list_setup.extend(['--password', apm_pass])
+            
+            job_name_setup = f"Setup_{tag}"
+            actual_setup_run_time_utc = actual_teardown_run_time_utc + setup_delay_after_teardown if perform_teardown_first else current_operation_block_start_time_utc
 
             try:
                 trigger_setup = DateTrigger(run_date=actual_setup_run_time_utc, timezone=pytz.utc)
-                job_setup = scheduler.add_job(
-                    run_labbuild_task, trigger=trigger_setup, args=[args_list_setup],
-                    name=job_name_setup, misfire_grace_time=7200, # Longer grace for setup
-                    replace_existing=False
-                )
-                scheduled_op_details_for_interim.append({
-                    "operation": "setup", "job_id": job_setup.id, "name": job_name_setup,
-                    "run_time_utc": actual_setup_run_time_utc.isoformat(), "args": args_list_setup,
-                    "depends_on_job_id": teardown_job_id if perform_teardown_first else None
-                })
-                logger.info(f"Scheduled Setup Job '{job_setup.id}': {job_name_setup} at "
-                            f"{actual_setup_run_time_utc.astimezone(scheduler_tz_obj).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                job_setup = scheduler.add_job(run_labbuild_task, trigger=trigger_setup, args=[args_list_setup], name=job_name_setup, misfire_grace_time=7200, replace_existing=False)
+                scheduled_op_details_for_interim.append({"operation": "setup", "job_id": job_setup.id, "name": job_name_setup, "run_time_utc": actual_setup_run_time_utc.isoformat(), "args": args_list_setup, "depends_on_job_id": teardown_job_id})
                 scheduled_ops_count += 1
             except Exception as e_sched_setup:
                 logger.error(f"Failed to schedule SETUP job {job_name_setup}: {e_sched_setup}", exc_info=True)
                 failed_ops_count += 1
-        # End loop for assignment_blocks
-    # End loop for item_to_build
 
-    # --- Update interimallocation status for the entire batch ---
-    if interim_alloc_collection is not None and batch_review_id:
-        final_batch_status = "builds_scheduled_with_errors" # Default if any failures
-        if scheduled_ops_count > 0 and failed_ops_count == 0:
-            final_batch_status = "builds_fully_scheduled"
-        elif scheduled_ops_count == 0 and failed_ops_count > 0:
-            final_batch_status = "build_scheduling_all_failed"
-        elif scheduled_ops_count == 0 and failed_ops_count == 0: # No buildable items
-             final_batch_status = "no_builds_to_schedule"
-        
+    final_batch_status = "builds_scheduled_with_errors"
+    if scheduled_ops_count > 0 and failed_ops_count == 0:
+        final_batch_status = "builds_fully_scheduled"
+    elif scheduled_ops_count == 0 and failed_ops_count > 0:
+        final_batch_status = "build_scheduling_all_failed"
+    elif scheduled_ops_count == 0 and failed_ops_count == 0:
+         final_batch_status = "no_builds_to_schedule"
+    
+    if interim_alloc_collection and batch_review_id:
         try:
-            # Update all documents in this batch that were confirmed for student/trainer
-            update_filter = {
-                "batch_review_id": batch_review_id,
-                "status": {"$in": ["student_confirmed", "trainer_confirmed", 
-                                    "trainer_disabled_by_rule", "trainer_skipped_by_user"]}
-            }
-            update_doc = {
-                "$set": {
-                    "status": final_batch_status,
-                    "scheduled_operations": scheduled_op_details_for_interim, 
-                    "scheduled_at_utc": datetime.datetime.now(pytz.utc)
-                }
-            }
-            update_result = interim_alloc_collection.update_many(update_filter, update_doc)
-            logger.info(f"Updated status to '{final_batch_status}' for {update_result.modified_count} items in batch '{batch_review_id}'.")
-        except (PyMongoError, NotImplementedError) as e_upd_interim: # Catch general PyMongoError
+            update_filter = {"batch_review_id": batch_review_id, "status": {"$in": ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]}}
+            update_doc = {"$set": {"status": final_batch_status, "scheduled_operations": scheduled_op_details_for_interim, "scheduled_at_utc": datetime.datetime.now(pytz.utc)}}
+            interim_alloc_collection.update_many(update_filter, update_doc)
+        except PyMongoError as e_upd_interim:
             logger.error(f"Error updating final interim status for batch '{batch_review_id}': {e_upd_interim}", exc_info=True)
 
-    flash(f"Attempted to schedule operations. Scheduled: {scheduled_ops_count}. "
-          f"Failures: {failed_ops_count}.",
-          'success' if failed_ops_count == 0 and scheduled_ops_count > 0 else 'warning' if scheduled_ops_count > 0 else 'danger')
+    flash(f"Attempted to schedule operations. Scheduled: {scheduled_ops_count}. Failures: {failed_ops_count}.", 'success' if failed_ops_count == 0 and scheduled_ops_count > 0 else 'warning' if scheduled_ops_count > 0 else 'danger')
     return redirect(url_for('main.index'))
 
 def _dispatch_bulk_labbuild_tasks(

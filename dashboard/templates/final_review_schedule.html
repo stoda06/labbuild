@@ -1,7 +1,7 @@
 {# dashboard/templates/final_review_schedule.html #}
 {% extends 'base.html' %}
 
-{% block title %}Final Build Review & Schedule{% endblock %}
+{% block title %}Final Build Plan & Schedule{% endblock %}
 
 {% block head %}
     {{ super() }}
@@ -173,7 +173,6 @@
   </div>
 </div>
 
-{# --- Embed Data for JS --- #}
 <script id="allReviewItemsJsonData" type="application/json">
     {{ all_review_items_json | safe }}
 </script>
