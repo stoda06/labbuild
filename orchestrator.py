@@ -251,7 +251,12 @@ def vendor_setup(
             })
 
             logger.info(f"Building F5 class {class_number} infrastructure...")
-            build_result = f5.build_class(service_instance, class_config, rebuild=rebuild, full=full_clone, selected_components=selected_components)
+            build_result = f5.build_class(
+                service_instance, class_config, 
+                rebuild=rebuild, full=full_clone, 
+                selected_components=selected_components,
+                start_pod=start_pod, end_pod=end_pod  # Pass the pod range
+            )
             class_success, class_step, class_error = build_result
             status_msg = "success" if class_success else "failed"
             operation_logger.log_pod_status(pod_id=class_id_str, status=status_msg, step=class_step, error=class_error, class_id=class_number)
@@ -522,49 +527,58 @@ def vendor_teardown(
     logger.info(f"Dispatching teardown for vendor '{vendor_shortcode}'. RunID: {operation_logger.run_id}")
     all_results = []
 
-    if vendor_shortcode == "f5": # F5 Synchronous Teardown
+    if vendor_shortcode == "f5":
         if class_number is None:
             err_msg = "F5 teardown requires --class_number."; logger.error(err_msg)
             operation_logger.log_pod_status(pod_id=f"f5-validation", status="failed", error=err_msg)
             return [{"identifier": f"f5-validation", "status": "failed", "error_message": err_msg}]
 
+        # --- MODIFICATION START ---
+        # Determine teardown mode based on whether a pod range is provided.
+        if start_pod is not None and end_pod is not None:
+            log_target = f"pods {start_pod}-{end_pod} in class {class_number}"
+            # This will trigger the selective pod deletion logic in teardown_class
+        else:
+            log_target = f"entire class {class_number}"
+        # --- MODIFICATION END ---
+        
         class_id_str = f"class-{class_number}"
-        logger.info(f"Starting teardown for F5 class {class_number}...")
+        logger.info(f"Starting teardown for F5 {log_target}...")
         td_success = True; td_error = None; td_step = None
         try:
-            # Fetch config needed for teardown function
             class_config = fetch_and_prepare_course_config(course_name_arg, f5_class=class_number)
             class_config.update({
-                "host_fqdn": host_details["fqdn"], # Needed? Check f5.teardown_class
+                "host_fqdn": host_details["fqdn"],
                 "class_number": class_number,
-                "class_name": f"f5-class{class_number}" # Often used for RP name
+                "class_name": f"f5-class{class_number}"
             })
 
-            # Call F5 teardown function
-            f5.teardown_class(service_instance, class_config)
-            logger.info(f"F5 class {class_number} VM/RP teardown initiated/completed.")
+            # --- MODIFICATION START ---
+            # Pass start_pod and end_pod to the teardown function.
+            # They will be None if a full class teardown is intended.
+            f5.teardown_class(service_instance, class_config, start_pod=start_pod, end_pod=end_pod)
+            # --- MODIFICATION END ---
 
-            # Delete Monitor and DB entry
-            try:
-                with mongo_client() as client:
-                    if not client: logger.warning(f"Cannot delete PRTG monitor for F5 class {class_number}: DB connection failed.")
-                    else:
-                        prtg_url = get_prtg_url(tag, course_name, pod_number=None, class_number=class_number)
-                        if prtg_url:
-                            if PRTGManager.delete_monitor(prtg_url, client): logger.info(f"Deleted PRTG monitor for F5 class {class_number}.")
-                            else: logger.warning(f"Failed to delete PRTG monitor for F5 class {class_number} (URL: {prtg_url}).")
-                        else: logger.debug(f"No PRTG URL found for F5 class {class_number}, skipping monitor deletion.")
-                # Delete DB entry regardless of monitor deletion success
-                delete_from_database(tag, course_name=course_name, class_number=class_number)
-                logger.info(f"Database entry deleted for F5 class {class_number}.")
-            except Exception as db_mon_err:
-                 logger.error(f"Error deleting monitor/DB entry for F5 class {class_number}: {db_mon_err}", exc_info=True)
-                 # Log this as a failure for the teardown step
-                 td_success = False; td_step = "delete_monitor_db"; td_error = str(db_mon_err)
+            # Monitor/DB cleanup only happens for full class teardown
+            if start_pod is None and end_pod is None:
+                try:
+                    with mongo_client() as client:
+                        if not client: logger.warning(f"Cannot delete PRTG monitor for F5 class {class_number}: DB connection failed.")
+                        else:
+                            prtg_url = get_prtg_url(tag, course_name, pod_number=None, class_number=class_number)
+                            if prtg_url:
+                                if PRTGManager.delete_monitor(prtg_url, client): logger.info(f"Deleted PRTG monitor for F5 class {class_number}.")
+                                else: logger.warning(f"Failed to delete PRTG monitor for F5 class {class_number} (URL: {prtg_url}).")
+                            else: logger.debug(f"No PRTG URL found for F5 class {class_number}, skipping monitor deletion.")
+                    delete_from_database(tag, course_name=course_name, class_number=class_number)
+                    logger.info(f"Database entry deleted for F5 class {class_number}.")
+                except Exception as db_mon_err:
+                     logger.error(f"Error deleting monitor/DB entry for F5 class {class_number}: {db_mon_err}", exc_info=True)
+                     td_success = False; td_step = "delete_monitor_db"; td_error = str(db_mon_err)
 
         except Exception as e:
             td_success = False; td_error = str(e); td_step = "teardown_class_exception"
-            logger.error(f"Error during F5 class {class_number} teardown: {e}", exc_info=True)
+            logger.error(f"Error during F5 teardown for {log_target}: {e}", exc_info=True)
 
         final_status = "success" if td_success else "failed"
         operation_logger.log_pod_status(pod_id=class_id_str, status=final_status, step=td_step, error=td_error, class_id=class_number)

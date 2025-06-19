@@ -62,20 +62,14 @@ def main():
                                        help='Action command (setup, manage, teardown)')
 
     # --- Common Arguments for Subparsers ---
-    # These are inherited by setup, manage, teardown
     common_parser = argparse.ArgumentParser(add_help=False)
-    # Make course required directly here as it's needed by all commands
     common_parser.add_argument('-g', '--course', required=True, help='Course name or "?".')
-    # Host is not universally required (e.g., db_only), validated later
     common_parser.add_argument('--host', help='Target host.')
     common_parser.add_argument('-t', '--tag', default="untagged", help='Tag.')
-    # common_parser.add_argument('--verbose', action='store_true', help='Enable debug logging.') # Moved to main parser
     common_parser.add_argument('-th', '--thread', type=int, default=4, help='Concurrency thread count.')
-    # Add vendor here too, as it's required for all commands
     common_parser.add_argument('-v', '--vendor', required=True, help='Vendor code (e.g., pa, cp, f5). Required.')
 
     # --- Pod Range Arguments (Parent for Commands) ---
-    # Defines -s and -e specifically for commands (setup, manage, teardown)
     pod_range_parser = argparse.ArgumentParser(add_help=False)
     pod_range_parser.add_argument('-s', '--start-pod', type=int, help='Start pod # for action.')
     pod_range_parser.add_argument('-e', '--end-pod', type=int, help='End pod # for action.')
@@ -249,16 +243,30 @@ def main():
         has_pod_range = cmd_start_pod is not None and cmd_end_pod is not None
         has_class_number = cmd_class_number is not None
 
+        # --- THIS IS THE CORRECTED LOGIC ---
         # F5 validation
         if is_f5_vendor and not has_class_number:
             missing_args.append("--class_number (Required for F5 operations)")
+            
         # Non-F5 validation
+        # The pod range is required for non-F5 vendors for ALL commands.
+        # For F5, it's only strictly required for `setup` and `manage` if you are targeting pods.
+        # It is NOT required for F5 `teardown` of an entire class.
         elif not is_f5_vendor and not has_pod_range:
             missing_args.append("--start-pod / --end-pod (Required for non-F5 operations)")
+        
+        # Specific check for F5 pod operations in setup/manage that NEED a range
+        elif is_f5_vendor and args.command in ['setup', 'manage'] and has_class_number:
+             # If you are NOT in a special mode and you are doing F5 setup/manage,
+             # you might want to enforce a pod range if you expect pod-level actions.
+             # This part is optional but adds robustness. For now, we assume the new teardown logic is the main point.
+             # Example: if 'component' is not '?' and not db_only etc, then pod range might be needed.
+             # For simplicity, we'll let the command handler manage this specific case.
+             pass
 
         # Pod range sanity check
         if cmd_start_pod is not None and cmd_end_pod is not None:
-             try: # Ensure they are comparable (should be ints if parsing worked)
+             try:
                  if int(cmd_start_pod) > int(cmd_end_pod):
                      err_msg = "Error: start-pod cannot be greater than end-pod."
                      logger.critical(err_msg)
@@ -267,20 +275,20 @@ def main():
                           operation_logger.finalize("failed", 0, 0)
                      sys.exit(1)
              except ValueError:
-                  # Should not happen if type=int is used, but defensive check
                   logger.critical("Invalid non-integer value received for start/end pod.")
                   if operation_logger and not operation_logger._is_finalized:
                        operation_logger.finalize("failed", 0, 0)
                   sys.exit(1)
 
-
         if missing_args:
-            err_msg = f"Missing required args for '{args.command}': {', '.join(missing_args)}"; logger.critical(err_msg)
+            err_msg = f"Missing required args for '{args.command}': {', '.join(missing_args)}"
+            logger.critical(err_msg)
             operation_logger.log_pod_status(pod_id="arg_validation", status="failed", step="missing_arguments", error=err_msg)
             if operation_logger and not operation_logger._is_finalized:
                  operation_logger.finalize("failed", 0, 0)
             sys.exit(1)
         logger.debug("Core arguments validated successfully.")
+    # --- END OF CORRECTED LOGIC ---
 
 
     # --- Execute Command ---
