@@ -24,6 +24,7 @@ import pymongo
 from pymongo import ASCENDING, UpdateOne
 from collections import defaultdict
 from typing import List, Dict, Optional, Tuple, Any, Union, Set
+from apscheduler.triggers.date import DateTrigger
 # Import extensions, utils, tasks from dashboard package
 from ..extensions import (
     scheduler,
@@ -2228,18 +2229,30 @@ def execute_scheduled_builds():
     logger.info(f"Received {len(buildable_items_from_form)} buildable items to schedule for "
                 f"batch '{batch_review_id}' with option: '{schedule_option}'.")
     
-    from apscheduler.triggers.date import DateTrigger
     scheduler_tz_obj = scheduler.timezone
-    
-    base_run_time_utc: datetime.datetime = datetime.datetime.now(pytz.utc)
+    base_run_time_utc: datetime.datetime = datetime.datetime.now(pytz.utc) # Default to now in UTC
+
     if schedule_option != 'now' and schedule_start_time_str:
         try:
-            naive_dt_form = datetime.datetime.fromisoformat(schedule_start_time_str)
-            localized_dt = scheduler_tz_obj.localize(naive_dt_form, is_dst=None) if hasattr(scheduler_tz_obj, 'localize') else naive_dt_form.replace(tzinfo=scheduler_tz_obj)
+            # 1. Parse the naive datetime string from the form
+            naive_dt_from_form = datetime.datetime.fromisoformat(schedule_start_time_str)
+            
+            # 2. Localize the naive datetime using the scheduler's configured timezone.
+            #    This correctly handles DST and attaches the right timezone info.
+            localized_dt = scheduler_tz_obj.localize(naive_dt_from_form, is_dst=None)
+            
+            # 3. Convert the now-aware local time to UTC for scheduling. APScheduler works best with UTC.
             base_run_time_utc = localized_dt.astimezone(pytz.utc)
-        except ValueError as e_date_sched:
-            flash(f"Invalid start time format provided. Scheduling jobs for 'now'. Error: {e_date_sched}", "warning")
-            base_run_time_utc = datetime.datetime.now(pytz.utc)
+            
+            logger.info(f"Scheduling base time set. Input: '{schedule_start_time_str}', "
+                        f"Interpreted in '{scheduler_tz_obj}': {localized_dt.isoformat()}, "
+                        f"Scheduled for (UTC): {base_run_time_utc.isoformat()}")
+
+        except (ValueError, pytz.exceptions.NonExistentTimeError, pytz.exceptions.AmbiguousTimeError) as e_date_sched:
+            error_msg = f"Invalid or ambiguous schedule time '{schedule_start_time_str}'. Scheduling for 'now'. Error: {e_date_sched}"
+            logger.error(error_msg)
+            flash(error_msg, "warning")
+            base_run_time_utc = datetime.datetime.now(pytz.utc) # Fallback to now
 
     current_operation_block_start_time_utc = base_run_time_utc
     stagger_delta = datetime.timedelta(minutes=stagger_minutes)
@@ -2334,7 +2347,7 @@ def execute_scheduled_builds():
     elif scheduled_ops_count == 0 and failed_ops_count == 0:
          final_batch_status = "no_builds_to_schedule"
     
-    if interim_alloc_collection and batch_review_id:
+    if interim_alloc_collection is not None and batch_review_id:
         try:
             update_filter = {"batch_review_id": batch_review_id, "status": {"$in": ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]}}
             update_doc = {"$set": {"status": final_batch_status, "scheduled_operations": scheduled_op_details_for_interim, "scheduled_at_utc": datetime.datetime.now(pytz.utc)}}
