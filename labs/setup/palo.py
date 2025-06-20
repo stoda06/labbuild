@@ -257,7 +257,7 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     elif "ultramagnus" in pod_config["host_fqdn"]:
         parent_resource_pool = "pa-ul"
     elif "hotshot" in pod_config["host_fqdn"]:
-        parent_resource_pool = "pa"
+        parent_resource_pool = "pa-ho"
         
     group_name = f'pa-pod{pod_config["pod_number"]}'
     if not ResourcePoolManager(service_instance).create_resource_pool(parent_resource_pool, group_name, host_fqdn=pod_config["host_fqdn"]):
