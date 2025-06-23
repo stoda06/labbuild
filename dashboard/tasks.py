@@ -7,6 +7,7 @@ import shlex
 import logging
 import time
 import datetime
+import threading
 import pytz # For timezone-aware datetimes
 from pymongo.errors import PyMongoError
 
@@ -18,6 +19,9 @@ if project_root not in sys.path:
 logger = logging.getLogger('dashboard.tasks')
 
 DEFAULT_LOG_RETENTION_DAYS = 90 # Keep logs for 90 days by default
+MAX_CONCURRENT_BUILDS = int(os.getenv("MAX_CONCURRENT_BUILDS", "4"))
+_build_sem = threading.BoundedSemaphore(value=MAX_CONCURRENT_BUILDS)
+
 
 def purge_old_mongodb_logs(retention_days: int = DEFAULT_LOG_RETENTION_DAYS):
     """
@@ -136,14 +140,15 @@ def run_labbuild_task(args_list):
     try:
         # Execute the command from the project root directory.
         # This is CRITICAL for ensuring it can find the .env file.
-        process = subprocess.run(
-            command,
-            capture_output=True, # Capture stdout and stderr
-            text=True,           # Decode output as text
-            check=False,         # Do not raise exception on non-zero exit code
-            cwd=project_root,    # Set the current working directory
-            timeout=7200         # 2-hour timeout
-        )
+        with _build_sem:
+            process = subprocess.run(
+                command,
+                capture_output=True, # Capture stdout and stderr
+                text=True,           # Decode output as text
+                check=False,         # Do not raise exception on non-zero exit code
+                cwd=project_root,    # Set the current working directory
+                timeout=7200         # 2-hour timeout
+            )
 
         # --- Enhanced Logging ---
         # Always log the return code.

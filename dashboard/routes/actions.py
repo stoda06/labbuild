@@ -2199,6 +2199,12 @@ def execute_scheduled_builds():
     schedule_start_time_str: Optional[str] = None
     stagger_minutes: int = 30
 
+    if schedule_option in ['now', 'staggered']:
+        # Always apply a short auto-stagger when 'now' is chosen
+        if schedule_option == 'now':
+            stagger_minutes = int(os.getenv("AUTO_STAGGER_MINUTES", "5"))
+            schedule_option  = 'staggered'      # treat as staggered under the hood
+
     if schedule_option == 'specific_time_all':
         schedule_start_time_str = request.form.get('schedule_start_time')
     elif schedule_option == 'staggered':
