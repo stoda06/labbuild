@@ -4,7 +4,7 @@
 """Handles vendor-specific dispatch and common build/teardown orchestration steps."""
 
 import logging
-from typing import Optional, Dict, List, Any, Callable
+from typing import Optional, Dict, List, Any, Callable, Tuple
 from concurrent.futures import ThreadPoolExecutor
 # argparse no longer needed directly here
 # import argparse
@@ -49,13 +49,13 @@ VENDOR_MONITOR_MAP: Dict[str, Callable] = {
 # --- Monitor and DB Update Helper ---
 # Updated signature to accept args_dict
 def update_monitor_and_database(
-    config: Dict[str, Any], # This will be class_config or pod_config
+    config: Dict[str, Any],
     args_dict: Dict[str, Any],
-    data: Dict[str, Any], # The accumulator for DB update
+    data: Dict[str, Any],
     extra_details: Optional[Dict[str, Any]] = None,
     max_retries: int = 3,
     retry_delay_seconds: int = 10
-):
+) -> Tuple[bool, Optional[str], Optional[str]]:
     """Add PRTG monitor and update database allocation."""
     vendor_shortcode = config.get("vendor_shortcode", "ot")
     # Use the VENDOR_MONITOR_MAP to get the correct add_monitor function
@@ -111,8 +111,10 @@ def update_monitor_and_database(
             logger.info(f"Waiting {retry_delay_seconds}s before retrying PRTG monitor action...")
             time.sleep(retry_delay_seconds)
     
-    if not prtg_url:
-         logger.error(f"Failed to add/update PRTG monitor for {monitor_identifier} after {max_retries} attempts.")
+    if not monitor_success:
+        err_msg = f"Failed to add/update PRTG monitor for {monitor_identifier} after {max_retries} attempts."
+        logger.error(err_msg)
+        return False, None, err_msg
 
     # --- Update Data Accumulator (Database structure) ---
     host_value = args_dict.get('host', 'unknown_host') # From CLI args
@@ -184,8 +186,11 @@ def update_monitor_and_database(
         logger.info(f"Updating database allocation record for tag '{data.get('tag')}'...")
         update_database(data)
         logger.info(f"Database successfully updated for tag '{data.get('tag')}', course '{data.get('course_name')}'.")
+        return True, prtg_url, None
     except Exception as e:
-        logger.error(f"Failed during final database update: {e}", exc_info=True)
+        db_err_msg = f"Failed during final database update: {e}"
+        logger.error(db_err_msg, exc_info=True)
+        return False, prtg_url, db_err_msg # Return failure on DB error
 
 
 # --- Vendor Setup Orchestration ---
@@ -265,7 +270,13 @@ def vendor_setup(
                 logger.info(f"F5 class {class_number} built successfully. Updating monitor/DB.")
                 try:
                     # Pass args_dict here
-                    update_monitor_and_database(class_config, args_dict, data_accumulator, {"class_number": class_number})
+                    monitor_ok, _, monitor_err = update_monitor_and_database(class_config, args_dict, data_accumulator, {"class_number": class_number})
+                    if not monitor_ok:
+                        logger.error(f"Monitor/DB update failed for Class {class_number}: {monitor_err}")
+                        operation_logger.log_pod_status(pod_id=class_id_str, status="failed", step="update_monitor_db", error=monitor_err, class_id=class_number)
+                        class_result_entry.update({"status": "failed", "failed_step": "update_monitor_db", "error_message": monitor_err})
+                        # Set class_success to False to prevent pod builds if class monitor fails
+                        class_success = False
                 except Exception as e_upd:
                     logger.error(f"Error updating monitor/DB for Class {class_number}: {e_upd}", exc_info=True)
                     # Log failure for the class update step
@@ -308,7 +319,11 @@ def vendor_setup(
                         logger.info(f"F5 pod {pod} built successfully. Updating monitor/DB.")
                         try:
                             # Pass args_dict here
-                            update_monitor_and_database(pod_config_f5, args_dict, data_accumulator, {"class_number": class_number})
+                            monitor_ok, _, monitor_err = update_monitor_and_database(pod_config_f5, args_dict, data_accumulator, {"class_number": class_number})
+                            if not monitor_ok:
+                                logger.error(f"Monitor/DB update failed for F5 pod {pod}: {monitor_err}")
+                                operation_logger.log_pod_status(pod_id=str(pod), status="failed", step="update_monitor_db", error=monitor_err, class_id=class_number)
+                                pod_result_entry.update({"status": "failed", "failed_step": "update_monitor_db", "error_message": monitor_err})
                         except Exception as e_upd_pod:
                             logger.error(f"Error updating monitor/DB for F5 pod {pod}: {e_upd_pod}", exc_info=True)
                             operation_logger.log_pod_status(pod_id=pod_id_str, status="failed", step="update_monitor_db", error=str(e_upd_pod), class_id=class_number)
@@ -480,20 +495,42 @@ def vendor_setup(
                 if pod_conf_for_update:
                     try:
                         logger.info(f"Pod {pod_id} build successful. Updating monitor/DB.")
-                        # Pass args_dict here
-                        update_monitor_and_database(pod_conf_for_update, args_dict, data_accumulator)
+                        # Capture the new return values from the helper
+                        monitor_ok, _, monitor_err = update_monitor_and_database(pod_conf_for_update, args_dict, data_accumulator)
+                        
+                        # If the monitor/db update failed, override the pod's status
+                        if not monitor_ok:
+                            logger.error(f"Monitor/DB update failed for pod {pod_id}: {monitor_err}")
+                            operation_logger.log_pod_status(pod_id=pod_id, status="failed", step="update_monitor_db", error=monitor_err)
+                            # Update the result dictionary for this pod to reflect the failure
+                            res_data["status"] = "failed"
+                            res_data["failed_step"] = "update_monitor_db"
+                            res_data["error_message"] = monitor_err
+                        else:
+                             # If successful, log the initial success status for the build step.
+                             # The OperationLogger gets updated implicitly here by the loop's end.
+                             operation_logger.log_pod_status(pod_id=res_data["identifier"], status=res_data["status"], step=res_data["failed_step"], error=res_data["error_message"])
+                             
                     except Exception as upd_err:
-                        logger.error(f"Error updating monitor/DB for pod {pod_id}: {upd_err}", exc_info=True)
-                        operation_logger.log_pod_status(pod_id=pod_id, status="failed", step="update_monitor_db", error=str(upd_err), class_id=class_id)
-                        # Mark the original result as failed at the update step
-                        res_data["status"] = "failed"; res_data["failed_step"] = "update_monitor_db"; res_data["error_message"] = str(upd_err)
+                        # This block handles exceptions *during* the call, which is also important.
+                        logger.error(f"Exception during monitor/DB update for pod {pod_id}: {upd_err}", exc_info=True)
+                        operation_logger.log_pod_status(pod_id=pod_id, status="failed", step="update_monitor_db_exception", error=str(upd_err))
+                        res_data["status"] = "failed"
+                        res_data["failed_step"] = "update_monitor_db_exception"
+                        res_data["error_message"] = str(upd_err)
                 else:
-                    # This shouldn't happen if config was prepared correctly
+                    # Config not found, this is an internal error
+                    err_msg = "Internal: Config not found for update"
                     logger.warning(f"Configuration for successfully built pod {pod_id} not found. Cannot update monitor/DB.")
-                    operation_logger.log_pod_status(pod_id=pod_id, status="failed", step="update_monitor_db", error="Internal: Config not found", class_id=class_id)
-                    res_data["status"] = "failed"; res_data["failed_step"] = "update_monitor_db"; res_data["error_message"] = "Internal: Config not found"
+                    operation_logger.log_pod_status(pod_id=pod_id, status="failed", step="update_monitor_db", error=err_msg)
+                    res_data["status"] = "failed"
+                    res_data["failed_step"] = "update_monitor_db"
+                    res_data["error_message"] = err_msg
+            else:
+                 # If build failed, just log that status from wait_for_tasks
+                 operation_logger.log_pod_status(pod_id=res_data["identifier"], status=res_data["status"], step=res_data["failed_step"], error=res_data["error_message"])
 
-        all_results.extend(task_results) # Add async task results to any sync results (like AEP common)
+        all_results.extend(task_results)
         logger.info(f"Finished asynchronous setup for pods {start_pod}-{end_pod}.")
 
     return all_results
