@@ -16,7 +16,8 @@ import pytz
 from ..extensions import (
     op_logs_collection, std_logs_collection, course_config_collection,
     host_collection, alloc_collection, scheduler, db, # Need db/collections
-    build_rules_collection # NEED RULES COLLECTION AGAIN
+    build_rules_collection,
+    interim_alloc_collection
 )
 from ..utils import build_log_filter_query, format_datetime
 from collections import defaultdict
@@ -596,6 +597,23 @@ def view_upcoming_courses():
             courses_with_preselects = []
             error_message = "Error retrieving data."
         # No need for elif not courses... here, empty list is handled by template
+        if courses_with_preselects and interim_alloc_collection is not None:
+            # Create a set of SF course codes from the upcoming courses for an efficient query
+            upcoming_sf_codes = {c.get('Course Code') for c in courses_with_preselects if c.get('Course Code')}
+            
+            # Find all interim docs that match these SF codes
+            interim_docs_cursor = interim_alloc_collection.find(
+                {"sf_course_code": {"$in": list(upcoming_sf_codes)}},
+                {"_id": 0, "sf_course_code": 1, "batch_review_id": 1}
+            )
+            
+            # Create a mapping from sf_course_code to its batch_review_id
+            sf_code_to_batch_id = {doc['sf_course_code']: doc['batch_review_id'] for doc in interim_docs_cursor}
+            
+            # Augment the course data with the batch_id if it exists
+            for course in courses_with_preselects:
+                sf_code = course.get('Course Code')
+                course['existing_batch_id'] = sf_code_to_batch_id.get(sf_code)
 
     except Exception as e:
         logger.error(f"Unexpected error in /upcoming-courses route: {e}", exc_info=True)

@@ -116,7 +116,7 @@
                                 <i class="fas fa-edit"></i>
                             </button>
                             {# Delete Button (Triggers Delete Form) #}
-                            <form action="{{ url_for('actions.delete_build_rule', rule_id=rule._id) }}" method="POST"
+                            <form action="{{ url_for('settings.delete_build_rule', rule_id=rule._id) }}" method="POST"
                                 class="d-inline"
                                 onsubmit="return confirm('Are you sure you want to delete rule \'{{ rule.rule_name }}\'?')">
                                 {# Add CSRF token if needed #}
@@ -140,7 +140,7 @@
 <div class="modal fade" id="addRuleModal" tabindex="-1" aria-labelledby="addRuleModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
-            <form action="{{ url_for('actions.add_build_rule') }}" method="POST">
+            <form action="{{ url_for('settings.add_build_rule') }}" method="POST">
                 {# Add CSRF token if needed #}
                 <div class="modal-header">
                     <h5 class="modal-title" id="addRuleModalLabel">Add New Build Rule</h5>
@@ -206,7 +206,7 @@
         <div class="modal-content">
             {# The action URL will be set dynamically by JS or you can use a generic one if your backend handles rule_id
             #}
-            <form id="editRuleForm" action="{{ url_for('actions.update_build_rule') }}" method="POST">
+            <form id="editRuleForm" action="{{ url_for('settings.update_build_rule') }}" method="POST">
                 <input type="hidden" id="edit_rule_id" name="rule_id"> {# Hidden input for ID #}
                 {# Add CSRF token if needed #}
                 <div class="modal-header">

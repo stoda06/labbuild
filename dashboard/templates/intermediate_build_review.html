@@ -107,7 +107,7 @@
             </div>
 
             <div class="mt-4">
-                <form action="{{ url_for('actions.prepare_trainer_pods') }}" method="POST" id="confirmStudentAssignmentsForm">
+                <form action="{{ url_for('build_planner_actions.prepare_trainer_pods') }}" method="POST" id="confirmStudentAssignmentsForm">
                      <input type="hidden" name="final_build_plan" id="finalStudentBuildPlanInput">
                      <input type="hidden" name="batch_review_id" value="{{ batch_review_id }}">
                      <button type="submit" class="btn btn-lg btn-success" 

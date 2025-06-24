@@ -109,7 +109,7 @@
             </div>
 
             <div class="mt-4">
-                <form action="{{ url_for('actions.finalize_and_display_build_plan') }}" method="POST" id="finalizeAndProceedForm">
+                <form action="{{ url_for('build_planner_actions.finalize_and_display_build_plan') }}" method="POST" id="finalizeAndProceedForm">
                      <input type="hidden" name="batch_review_id" value="{{ batch_review_id }}">
                      <input type="hidden" name="final_trainer_assignments_for_review" id="finalTrainerAssignmentsInput">
                      

@@ -42,10 +42,10 @@
 </div>
 {# --- MODIFIED BUTTONS AREA --- #}
 <div class="mb-3 d-flex justify-content-end gap-2">
-    <a href="{{ url_for('actions.export_current_lab_report') }}" class="btn btn-success btn-sm">
+    <a href="{{ url_for('allocation_actions.export_current_lab_report') }}" class="btn btn-success btn-sm">
         <i class="fas fa-file-excel"></i> Current Lab Report
     </a>
-    <a href="{{ url_for('actions.export_trainer_pod_allocation') }}" class="btn btn-info btn-sm">
+    <a href="{{ url_for('allocation_actions.export_trainer_pod_allocation') }}" class="btn btn-info btn-sm">
         <i class="fas fa-user-graduate"></i> Trainer Pod Allocation
     </a>
 </div>
@@ -108,14 +108,14 @@
     <button type="button" class="action-btn text-primary edit-btn view-mode" title="Edit Allocation Details">
         <i class="fas fa-edit"></i>
     </button>
-    <form action="{{ url_for('actions.toggle_tag_extend') }}" method="POST" class="d-inline view-mode" title="Toggle Pod Reuse">
+    <form action="{{ url_for('allocation_actions.toggle_tag_extend') }}" method="POST" class="d-inline view-mode" title="Toggle Pod Reuse">
         <input type="hidden" name="tag_name" value="{{ group.summary.tag }}">
         <input type="hidden" name="current_extend_status" value="{{ 'true' if group.summary.is_extended else 'false' }}">
         <button type="submit" class="action-btn {{ 'text-danger' if group.summary.is_extended else 'text-success' }}">
             <i class="fas {{ 'fa-lock' if group.summary.is_extended else 'fa-lock-open' }}"></i>
         </button>
     </form>
-    <form action="{{ url_for('actions.teardown_tag') }}" method="POST" class="d-inline view-mode" onsubmit="return confirm('TEARDOWN ALL infrastructure for tag \'{{ group.summary.tag }}\'?')">
+    <form action="{{ url_for('allocation_actions.teardown_tag') }}" method="POST" class="d-inline view-mode" onsubmit="return confirm('TEARDOWN ALL infrastructure for tag \'{{ group.summary.tag }}\'?')">
         <input type="hidden" name="tag" value="{{ group.summary.tag }}">
         <button type="submit" class="action-btn text-danger" title="Teardown Tag">
             <i class="fas fa-fire-alt"></i>
@@ -250,7 +250,7 @@
                 saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
 
                 try {
-                    const response = await fetch("{{ url_for('actions.update_allocation_summary') }}", {
+                    const response = await fetch("{{ url_for('allocation_actions.update_allocation_summary') }}", {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify(payload)
@@ -411,10 +411,10 @@
                 if (bulkActionSubmitForm && selectedItemsJsonInput) {
                     selectedItemsJsonInput.value = JSON.stringify(selectedItems);
                     let actionUrl = "";
-                    if (action === 'power_on') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='start') }}";
-                    else if (action === 'power_off') actionUrl = "{{ url_for('actions.bulk_toggle_power', operation='stop') }}";
-                    else if (action === 'teardown_infra') actionUrl = "{{ url_for('actions.bulk_teardown_items') }}";
-                    else if (action === 'delete_db') actionUrl = "{{ url_for('actions.bulk_db_delete_items') }}";
+                    if (action === 'power_on') actionUrl = "{{ url_for('allocation_actions.bulk_toggle_power', operation='start') }}";
+                    else if (action === 'power_off') actionUrl = "{{ url_for('allocation_actions.bulk_toggle_power', operation='stop') }}";
+                    else if (action === 'teardown_infra') actionUrl = "{{ url_for('allocation_actions.bulk_teardown_items') }}";
+                    else if (action === 'delete_db') actionUrl = "{{ url_for('allocation_actions.bulk_db_delete_items') }}";
                     
                     if (actionUrl) {
                         bulkActionSubmitForm.action = actionUrl;

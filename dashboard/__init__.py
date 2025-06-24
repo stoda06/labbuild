@@ -100,12 +100,18 @@ def create_app():
     except Exception as e:
         app.logger.error(f"Error starting scheduler or adding purge job in app factory: {e}", exc_info=True)
 
-    from .routes import main, actions, api, sse, settings
+    from .routes import main, api, sse, settings
+    from .routes import labbuild_actions, allocation_actions, build_planner_actions, email_actions, apm_actions
     app.register_blueprint(main.bp)
-    app.register_blueprint(actions.bp)
     app.register_blueprint(api.bp)
     app.register_blueprint(sse.bp)
     app.register_blueprint(settings.bp)
+
+    app.register_blueprint(labbuild_actions.bp, url_prefix='/labbuild-actions')
+    app.register_blueprint(allocation_actions.bp)
+    app.register_blueprint(build_planner_actions.bp)
+    app.register_blueprint(email_actions.bp, url_prefix='/email-actions')
+    app.register_blueprint(apm_actions.bp)
 
     atexit.register(shutdown_resources) 
     app.logger.info("Flask app created successfully.")

@@ -3,7 +3,7 @@
   {% if item.prtg_url %}
     <a href="{{ item.prtg_url }}" target="_blank" class="action-btn" title="View in PRTG"><i class="fas fa-chart-line text-info"></i></a>
   {% endif %}
-  <form action="{{ url_for('actions.toggle_power') }}" method="POST" class="d-inline">
+  <form action="{{ url_for('allocation_actions.toggle_power') }}" method="POST" class="d-inline">
       {# --- Hidden inputs to carry all necessary context for the action --- #}
       <input type="hidden" name="scope" value="item">
       <input type="hidden" name="tag" value="{{ item.tag }}">
@@ -22,7 +22,7 @@
           <i class="fas fa-power-off"></i>
       </button>
   </form>
-  <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown INFRASTRUCTURE for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'?')">
+  <form action="{{ url_for('allocation_actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('Teardown INFRASTRUCTURE for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'?')">
      <input type="hidden" name="delete_level" value="{{ 'class' if item.type == 'f5_class' else 'pod' }}">
      <input type="hidden" name="tag" value="{{ item.tag }}">
      <input type="hidden" name="host" value="{{ item.host }}">
@@ -34,7 +34,7 @@
          <i class="fas fa-fire-alt"></i>
      </button>
   </form>
-  <form action="{{ url_for('actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE Database Entry ONLY for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'?')">
+  <form action="{{ url_for('allocation_actions.teardown_item') }}" method="POST" class="d-inline" onsubmit="return confirm('DELETE Database Entry ONLY for {{ item.type }} {{ item.number }} in tag \'{{item.tag}}\'?')">
      <input type="hidden" name="delete_level" value="{{ 'class_db' if item.type == 'f5_class' else 'pod_db' }}">
      <input type="hidden" name="tag" value="{{ item.tag }}">
      <input type="hidden" name="course" value="{{ item.course_name }}">

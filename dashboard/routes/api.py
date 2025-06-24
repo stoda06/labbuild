@@ -20,7 +20,7 @@ from ..utils import build_args_from_dict # Helper to build args from JSON
 from ..tasks import run_labbuild_task # Task runner
 from ..utils import get_hosts_available_memory_parallel # For host capacity
 from ..salesforce_utils import get_upcoming_courses_data 
-from ..routes.actions import _find_all_matching_rules, _get_memory_for_course
+from .build_planner_actions import _find_all_matching_rules, _get_memory_for_course_local as _get_memory_for_course
 from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 from pymongo import ASCENDING
 from pymongo.errors import PyMongoError
