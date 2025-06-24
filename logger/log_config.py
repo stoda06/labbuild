@@ -389,5 +389,3 @@ def setup_logger(run_id=None):
             sub_logger.removeHandler(h)
 
     return logger
-
-# --- END OF FINAL REVISED logger/log_config.py ---

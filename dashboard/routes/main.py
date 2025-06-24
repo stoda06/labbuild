@@ -416,7 +416,7 @@ def index():
 @bp.route('/logs/<run_id>')
 def log_detail(run_id):
     """Display details and logs for a specific run."""
-    # Logic moved from original app.py
+    # --- HIGHLIGHTED MODIFICATION: Fetch historical logs and check SSE status ---
     redis_url_in_route = current_app.config.get("REDIS_URL")
     logger.info(f"--- DEBUG [/logs/{run_id}]: app.config['REDIS_URL'] = {redis_url_in_route} ---")
     current_theme = request.cookies.get('theme', 'light')
@@ -457,6 +457,56 @@ def log_detail(run_id):
     except Exception as e: logger.error(f"Unexpected error fetch detailed logs {run_id}: {e}", exc_info=True); flash("Server error.", "danger")
 
     return render_template( 'log_detail.html', log=op_log_data, historical_log_messages=historical_log_messages, std_log_count=std_log_count, run_id=run_id, current_theme=current_theme, sse_enabled=sse_available )
+
+
+@bp.route('/status/<run_id>')
+def run_status(run_id):
+    """API endpoint to get the current status of a run."""
+    if op_logs_collection is not None:
+        return jsonify({"error": "Database unavailable"}), 503
+
+    try:
+        log_data = op_logs_collection.find_one(
+            {'run_id': run_id},
+            { # Projection to get only needed fields
+                'overall_status': 1,
+                'end_time': 1,
+                'duration_seconds': 1,
+                'summary': 1,
+                'pod_statuses': {'$slice': -1} # Get only the last pod status update
+            }
+        )
+        if not log_data:
+            return jsonify({"error": "Run ID not found"}), 404
+
+        # Prepare response data
+        status_info = {
+            'run_id': run_id,
+            'overall_status': log_data.get('overall_status', 'unknown'),
+            'end_time_iso': format_datetime(log_data.get('end_time')),
+            'duration_seconds': log_data.get('duration_seconds'),
+            'success_count': log_data.get('summary', {}).get('success_count'),
+            'failure_count': log_data.get('summary', {}).get('failure_count'),
+            'last_pod_status': None
+        }
+        # Add last pod status if available
+        if log_data.get('pod_statuses'):
+            last_status = log_data['pod_statuses'][0]
+            status_info['last_pod_status'] = {
+                 'identifier': last_status.get('identifier'),
+                 'status': last_status.get('status'),
+                 'step': last_status.get('failed_step'),
+                 'timestamp_iso': format_datetime(last_status.get('timestamp'))
+            }
+
+        return jsonify(status_info)
+
+    except PyMongoError as e:
+        logger.error(f"DB error fetching status for {run_id}: {e}")
+        return jsonify({"error": "Database query error"}), 500
+    except Exception as e:
+         logger.error(f"Error fetching status for {run_id}: {e}", exc_info=True)
+         return jsonify({"error": "Internal server error"}), 500
 
 
 @bp.route('/logs/all')
@@ -561,56 +611,6 @@ def view_upcoming_courses():
         course_configs_list=course_configs_list, # Still needed for dropdown options
         current_theme=current_theme
     )
-
-# --- Add Status Endpoint ---
-@bp.route('/status/<run_id>')
-def run_status(run_id):
-    """API endpoint to get the current status of a run."""
-    if op_logs_collection is not None:
-        return jsonify({"error": "Database unavailable"}), 503
-
-    try:
-        log_data = op_logs_collection.find_one(
-            {'run_id': run_id},
-            { # Projection to get only needed fields
-                'overall_status': 1,
-                'end_time': 1,
-                'duration_seconds': 1,
-                'summary': 1,
-                'pod_statuses': {'$slice': -1} # Get only the last pod status update
-            }
-        )
-        if not log_data:
-            return jsonify({"error": "Run ID not found"}), 404
-
-        # Prepare response data
-        status_info = {
-            'run_id': run_id,
-            'overall_status': log_data.get('overall_status', 'unknown'),
-            'end_time_iso': format_datetime(log_data.get('end_time')),
-            'duration_seconds': log_data.get('duration_seconds'),
-            'success_count': log_data.get('summary', {}).get('success_count'),
-            'failure_count': log_data.get('summary', {}).get('failure_count'),
-            'last_pod_status': None
-        }
-        # Add last pod status if available
-        if log_data.get('pod_statuses'):
-            last_status = log_data['pod_statuses'][0]
-            status_info['last_pod_status'] = {
-                 'identifier': last_status.get('identifier'),
-                 'status': last_status.get('status'),
-                 'step': last_status.get('failed_step'),
-                 'timestamp_iso': format_datetime(last_status.get('timestamp'))
-            }
-
-        return jsonify(status_info)
-
-    except PyMongoError as e:
-        logger.error(f"DB error fetching status for {run_id}: {e}")
-        return jsonify({"error": "Database query error"}), 500
-    except Exception as e:
-         logger.error(f"Error fetching status for {run_id}: {e}", exc_info=True)
-         return jsonify({"error": "Internal server error"}), 500
     
 @bp.route('/notifications/clear/<notification_id>', methods=['POST'])
 def clear_notification(notification_id: str):

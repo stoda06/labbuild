@@ -88,6 +88,3 @@ def stream_command():
 
     # Return the streaming response using the task function
     return Response(stream_with_context(stream_labbuild_process(full_command_list)), mimetype='text/event-stream')
-
-
-# --- END OF dashboard/routes/sse.py ---

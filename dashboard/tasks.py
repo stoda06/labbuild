@@ -129,7 +129,7 @@ def run_labbuild_task(args_list):
     labbuild_script_path = os.path.join(project_root, 'labbuild.py')
     # Ensure we use the same Python interpreter that is running the Flask app
     python_executable = sys.executable 
-    command = [python_executable, labbuild_script_path] + args_list
+    command = [sys.executable, '-u', labbuild_script_path, *args_list]
     
     # Use shlex.quote for safe logging of the command
     command_str_for_log = ' '.join(shlex.quote(arg) for arg in command)
@@ -147,8 +147,16 @@ def run_labbuild_task(args_list):
                 text=True,           # Decode output as text
                 check=False,         # Do not raise exception on non-zero exit code
                 cwd=project_root,    # Set the current working directory
-                timeout=7200         # 2-hour timeout
+                timeout=7200,         # 2-hour timeout
+                bufsize=1
             )
+
+            for line in process.stdout:          # → UI in real time
+                logger.info(line.rstrip("\n"))
+
+            rc = process.wait()
+            logger.info(f"Process finished with exit code {rc}")
+            return rc
 
         # --- Enhanced Logging ---
         # Always log the return code.

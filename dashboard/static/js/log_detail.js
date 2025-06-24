@@ -153,5 +153,3 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('beforeunload', () => { closeSSE(); stopStatusChecks(); });
   
   }); // End DOMContentLoaded
-  
-  // --- END OF FILE dashboard/static/js/log_detail.js ---

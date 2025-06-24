@@ -207,7 +207,7 @@ class OperationLogger:
         Updates the operation log document with the final status, counts, duration,
         and pod statuses. Also triggers flushing of detailed logs.
         """
-        # Prevent double finalization
+        # --- HIGHLIGHTED MODIFICATION: Prevent double finalization ---
         # Use self._is_finalized flag check - CORRECTED
         if self._is_finalized:
             logger.warning(f"[OpLogger:{self.run_id}] Finalize called more than once. Ignoring subsequent call.")

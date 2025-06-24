@@ -137,5 +137,3 @@ class RedisStreamHandler(logging.Handler):
             finally:
                  self.redis_client = None
         super().close()
-
-# --- END OF FILE logger/redis_handler.py ---
