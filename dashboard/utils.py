@@ -8,7 +8,9 @@ import datetime
 import pytz
 from typing import Optional, List, Dict
 from flask import current_app
-
+import random
+import string
+from typing import Union
 from pyVmomi import vim # type: ignore
 from vcenter_utils import get_vcenter_instance # Import your vCenter connector
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -495,3 +497,54 @@ def get_hosts_available_memory_parallel(host_details_list: List[Dict]) -> Dict[s
 
     logger.info(f"Finished parallel memory fetch. Results for {len(host_memory_gb)} hosts.")
     return host_memory_gb
+
+def _generate_random_password(length=8) -> str:
+    """Generates a random numeric password of specified length."""
+    return "".join(random.choice(string.digits) for _ in range(length))
+
+def _create_contiguous_ranges(pod_numbers: List[Union[int,str]]) -> str:
+    """
+    Converts a list of pod numbers (can be int or string)
+    into a comma-separated string of contiguous ranges.
+    Example: [1, 2, 3, '5', 6, 8] -> "1-3,5-6,8"
+    """
+    if not pod_numbers:
+        return ""
+    
+    processed_pod_numbers: List[int] = []
+    for p in pod_numbers:
+        try:
+            processed_pod_numbers.append(int(p))
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert pod number '{p}' to int in _create_contiguous_ranges. Skipping.")
+            continue
+    
+    if not processed_pod_numbers:
+        return ""
+    
+    pod_numbers_sorted_unique = sorted(list(set(processed_pod_numbers)))
+    if not pod_numbers_sorted_unique:
+        return ""
+
+    ranges = []
+    start_range = pod_numbers_sorted_unique[0]
+    end_range = pod_numbers_sorted_unique[0]
+
+    for i in range(1, len(pod_numbers_sorted_unique)):
+        if pod_numbers_sorted_unique[i] == end_range + 1:
+            end_range = pod_numbers_sorted_unique[i]
+        else:
+            if start_range == end_range:
+                ranges.append(str(start_range))
+            else:
+                ranges.append(f"{start_range}-{end_range}")
+            start_range = pod_numbers_sorted_unique[i]
+            end_range = pod_numbers_sorted_unique[i]
+    
+    # Add the last range
+    if start_range == end_range:
+        ranges.append(str(start_range))
+    else:
+        ranges.append(f"{start_range}-{end_range}")
+        
+    return ",".join(ranges)

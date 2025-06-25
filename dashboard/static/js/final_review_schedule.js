@@ -142,8 +142,14 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!emailsContainer) return;
             emailsContainer.innerHTML = '<p class="text-center"><span class="spinner-border spinner-border-sm"></span> Loading email previews from server...</p>';
 
+            const prepareUrl = emailModal.dataset.preparePreviewsUrl;
+            if (!prepareUrl) {
+                emailsContainer.innerHTML = '<p class="text-danger">Error: The URL for preparing email previews is missing.</p>';
+                return;
+            }
+
             try {
-                const response = await fetch('/prepare-email-previews', {
+                const response = await fetch(prepareUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ all_review_items: allReviewData })

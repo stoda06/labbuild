@@ -43,17 +43,25 @@
       </div>
 
       {# --- Submit Button Area --- #}
-      <div class="mt-3 d-flex align-items-center"> {# Use flexbox for alignment #}
-        <button type="button" class="btn btn-success" id="bulkBuildBtn">
-          <i class="fas fa-cogs"></i> Build Selected Courses
-        </button>
-        {# --- ADD Loading Indicator (Initially Hidden) --- #}
-        <div id="buildLoadingIndicator" class="spinner-border spinner-border-sm text-primary ms-3" role="status" style="display: none;">
-            <span class="visually-hidden">Loading...</span>
+      <div class="card-footer d-flex align-items-center justify-content-between bg-light-subtle">
+        <div>
+          {# --- HIGHLIGHTED FIX: Add data-build-review-url attribute --- #}
+          <button type="button" class="btn btn-success" id="bulkBuildBtn"
+                  data-build-review-url="{{ url_for('build_planner_actions.intermediate_build_review') }}">
+            <i class="fas fa-cogs"></i> Review Selected Courses
+          </button>
+          <a href="{{ url_for('build_planner_actions.view_upcoming_allocation') }}" class="btn btn-info ms-2" title="View the last prepared build plan that has not been scheduled yet.">
+            <i class="fas fa-eye"></i> View Pending Allocation
+          </a>
         </div>
-        <small id="buildLoadingText" class="text-muted ms-2" style="display: none;">Processing host availability...</small>
+        <div>
+          <div id="buildLoadingIndicator" class="spinner-border spinner-border-sm text-primary" role="status" style="display: none;">
+              <span class="visually-hidden">Loading...</span>
+          </div>
+          <small id="buildLoadingText" class="text-muted ms-2" style="display: none;">Processing host availability...</small>
+        </div>
       </div>
-       <small class="text-muted mt-1 d-block">Note: Uses selected LabBuild Course.</small> {# Moved note slightly #}
+
 
     {% elif error_message %}
         <div class="alert alert-warning m-3">{{ error_message }}</div>
