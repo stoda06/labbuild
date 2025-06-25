@@ -18,7 +18,10 @@ import requests
 import pymongo
 from apscheduler.triggers.date import DateTrigger
 from ..extensions import (
-    scheduler, db, interim_alloc_collection, host_collection, course_config_collection, build_rules_collection, alloc_collection
+    scheduler, db, interim_alloc_collection, 
+    host_collection, course_config_collection, 
+    build_rules_collection, alloc_collection, 
+    locations_collection
 )
 from ..tasks import run_labbuild_task
 from ..utils import get_hosts_available_memory_parallel
@@ -93,7 +96,8 @@ def intermediate_build_review():
             "build_rules": [], "all_available_host_names": [], "host_memory_start_of_batch": {},
             "db_locked_pods": defaultdict(set),
             "course_configs": [], "available_lab_courses": defaultdict(set),
-            "f5_highest_class_number_used": 0
+            "f5_highest_class_number_used": 0,
+            "locations_map": {}
         }
         try:
             initial_data["build_rules"] = list(build_rules_collection.find().sort("priority", pymongo.ASCENDING))
@@ -124,6 +128,15 @@ def intermediate_build_review():
                 h_name = h_doc.get("host_name")
                 vc_cap = raw_caps_gb.get(h_name)
                 if h_name and vc_cap is not None: initial_data["host_memory_start_of_batch"][h_name] = round(vc_cap, 2)
+
+            if locations_collection is not None:
+                locations_cursor = locations_collection.find({})
+                # Create a map of 'code' -> 'name'
+                initial_data["locations_map"] = {loc['code']: loc['name'] for loc in locations_cursor if 'code' in loc and 'name' in loc}
+                logger.info(f"Loaded {len(initial_data['locations_map'])} locations from the database.")
+            else:
+                logger.warning("Locations collection is not available.")
+
             return initial_data
         except Exception as e:
             logger.error(f"Error during initial data fetch: {e}", exc_info=True)
@@ -208,57 +221,114 @@ def intermediate_build_review():
         """
         Processes a single Salesforce course. If it's a Maestro course, it "explodes" it
         into multiple build items. Otherwise, it processes it as a standard course.
+        This version includes the location lookup logic.
+
         Returns a LIST of (interim_doc, display_doc) tuples.
         """
-        sf_code, vendor, sf_course_type = course_input.get('sf_course_code', 'UNKNOWN'), course_input.get('vendor', '').lower(), course_input.get('sf_course_type', 'N/A')
+        sf_code = course_input.get('sf_course_code', 'UNKNOWN')
+        vendor = course_input.get('vendor', '').lower()
+        sf_course_type = course_input.get('sf_course_type', 'N/A')
         
-        matched_rules = _find_all_matching_rules(initial_data["build_rules"], vendor, sf_code, sf_course_type)
-        
-        # --- NEW: Maestro Split Build Logic ---
-        maestro_rule_config = None
-        rule_based_actions = {}
-        for rule in matched_rules:
-            # Capture the first maestro_split_build action found (due to priority sort)
-            if "maestro_split_build" in rule.get("actions", {}) and not maestro_rule_config:
-                maestro_rule_config = rule["actions"]["maestro_split_build"]
-            # Capture all other highest-priority actions
-            for key in ["set_labbuild_course", "host_priority", "allow_spillover", "start_pod_number", "set_max_pods", "override_pods_req"]:
-                 if key not in rule_based_actions and key in rule.get("actions", {}):
-                     rule_based_actions[key] = rule["actions"][key]
+        # --- 1. Resolve Location from SF Course Code ---
+        location_name = "Virtual" # Default value
+        if len(sf_code) >= 8:
+            # Extract characters from 6th to 8th position (index 5 to 7)
+            location_code_from_sf = sf_code[5:8].upper()
+            # Look up the code in the map fetched earlier in initial_data
+            location_name = initial_data["locations_map"].get(location_code_from_sf, "Virtual")
+            logger.debug(f"For SF code '{sf_code}', found location code '{location_code_from_sf}', resolved to '{location_name}'.")
+        else:
+            logger.debug(f"SF code '{sf_code}' is too short for location lookup. Defaulting to 'Virtual'.")
 
-        if maestro_rule_config:
-            logger.info(f"Applying Maestro Split Build logic for SF Course '{sf_code}'.")
+        # --- 2. Apply Build Rules ---
+        matched_rules = _find_all_matching_rules(initial_data["build_rules"], vendor, sf_code, sf_course_type)
+
+        maestro_rule = None
+        rule_based_actions = {}
+        # Loop in REVERSE (from highest priority number to lowest) to find the first Maestro rule
+        for rule in reversed(matched_rules):
+            if "maestro_split_build" in rule.get("actions", {}):
+                maestro_rule = rule
+                break # Found the highest priority Maestro rule, stop searching for it
+
+        # Now loop normally (lowest priority to highest) to gather other generic actions
+        for rule in matched_rules:
+            # Exclude the maestro_split_build action itself from this generic collection
+            for key in ["set_labbuild_course", "allow_spillover", "start_pod_number", "set_max_pods", "override_pods_req"]:
+                if key not in rule_based_actions and key in rule.get("actions", {}):
+                    rule_based_actions[key] = rule["actions"][key]
+            # Collect host_priority only if it's NOT from our chosen maestro_rule
+            if "host_priority" in rule.get("actions", {}) and not rule_based_actions.get("host_priority"):
+                if not maestro_rule or rule.get('_id') != maestro_rule.get('_id'):
+                    rule_based_actions["host_priority"] = rule["actions"]["host_priority"]
+
+        # --- 3. Handle Maestro Split Build Logic ---
+        if maestro_rule:
+            maestro_rule_config = maestro_rule.get("actions", {}).get("maestro_split_build", {})
+            logger.info(f"Applying Maestro Split Build logic for SF Course '{sf_code}' from rule '{maestro_rule.get('rule_name')}'.")
             processed_items = []
+
             
             base_interim_doc = {
-                "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
-                "sf_course_code": sf_code, "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
-                "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code), "sf_end_date": _format_date_for_review(course_input.get('sf_end_date'), sf_code),
+                "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc),
+                "status": "pending_student_review", "sf_course_code": sf_code,
+                "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
+                "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code),
+                "sf_end_date": _format_date_for_review(course_input.get('sf_end_date'), sf_code),
                 "sf_pax_count": int(course_input.get('sf_pax_count', 0)), "vendor": vendor,
-                "maestro_split_config_details_rule": maestro_rule_config # Store the rule for later steps
+                "location": location_name,
+                "maestro_split_config_details_rule": maestro_rule_config
             }
+            
+            # --- HIGHLIGHTED MODIFICATION: Explicit Host List Handling ---
+            
+            # Get the host(s) for the RACK components
+            rack_hosts_from_rule = maestro_rule_config.get("rack_host", [])
+            rack_hosts_list = [rack_hosts_from_rule] if isinstance(rack_hosts_from_rule, str) else rack_hosts_from_rule
 
-            # Define the parts of the split build
+            # --- HIGHLIGHTED FIX: Get host_priority DIRECTLY from the Maestro rule ---
+            # Do not use the generic rule_based_actions for this.
+            main_host_priority_list = maestro_rule.get("actions", {}).get("host_priority", [])
+            
+            if not main_host_priority_list:
+                logger.error(f"Maestro rule '{maestro_rule.get('rule_name')}' is missing the 'host_priority' action for main pods.")
+            
+            rack_hosts_set_lower = {h.lower() for h in rack_hosts_list}
+            main_hosts_for_allocation = [h for h in main_host_priority_list if h.lower() not in rack_hosts_set_lower]
+
+            logger.debug(f"Maestro Processing for '{sf_code}':")
+            logger.debug(f"  - Rack Hosts defined: {rack_hosts_list}")
+            logger.debug(f"  - Main Pod Host Priority (from Maestro Rule): {main_host_priority_list}")
+            logger.debug(f"  - Final Main Pod Host list for allocation: {main_hosts_for_allocation}")
+            
+            # --- END MODIFICATION ---
+
             split_parts = [
-                {"name": "Rack 1", "pods": 1, "course": maestro_rule_config.get("rack1_course"), "hosts": [maestro_rule_config.get("rack_host")]},
-                {"name": "Rack 2", "pods": 1, "course": maestro_rule_config.get("rack2_course"), "hosts": [maestro_rule_config.get("rack_host")]},
-                {"name": "Main Pods", "pods": 2, "course": maestro_rule_config.get("main_course"), "hosts": [h for h in rule_based_actions.get("host_priority", []) if h.lower() != 'hotshot']}
+                {"name": "Rack 1", "pods": 1, "course": maestro_rule_config.get("rack1_course"), "hosts": rack_hosts_list},
+                {"name": "Rack 2", "pods": 1, "course": maestro_rule_config.get("rack2_course"), "hosts": rack_hosts_list},
+                {"name": "Main Pods", "pods": 2, "course": maestro_rule_config.get("main_course"), "hosts": main_hosts_for_allocation}
             ]
+            print(split_parts)
 
             for part in split_parts:
                 part_doc = base_interim_doc.copy()
                 part_doc["_id"] = ObjectId()
+                part_doc["maestro_part_name"] = part["name"]
                 part_doc["final_labbuild_course"] = part["course"]
                 part_doc["effective_pods_req"] = part["pods"]
-                # part_doc["sf_course_code"] = f"{sf_code}-{part['name'].replace(' ','')}" # Create a unique display code
                 
                 mem = _get_memory_for_course_local(part["course"], {c['course_name']: c for c in initial_data["course_configs"]})
                 part_doc["memory_gb_one_pod"] = mem
 
+                # The _propose_assignments function will now be called with the correct host list for each part
                 assignments, warn = _propose_assignments(
-                    num_pods_to_allocate=part["pods"], hosts_to_try=part["hosts"], memory_per_pod=mem,
-                    vendor_code=vendor, start_pod_suggestion=rule_based_actions.get("start_pod_number", 1),
-                    pods_assigned_in_this_batch=batch_state["pods_assigned"], db_locked_pods=initial_data["db_locked_pods"],
+                    num_pods_to_allocate=part["pods"],
+                    hosts_to_try=part["hosts"], # Pass the correctly filtered host list
+                    memory_per_pod=mem,
+                    vendor_code=vendor,
+                    start_pod_suggestion=rule_based_actions.get("start_pod_number", 1),
+                    pods_assigned_in_this_batch=batch_state["pods_assigned"],
+                    db_locked_pods=initial_data["db_locked_pods"],
                     current_host_capacities_gb=batch_state["capacities"]
                 )
 
@@ -269,22 +339,28 @@ def intermediate_build_review():
 
             return processed_items
             
-        # --- Standard (non-Maestro) Build Logic ---
+        # --- 4. Handle Standard (non-Maestro) Build Logic ---
         else:
             final_lb_course, warning = None, None
             available_courses = initial_data["available_lab_courses"].get(vendor, set())
             user_lb_course = course_input.get('labbuild_course')
-            if user_lb_course and user_lb_course in available_courses: final_lb_course = user_lb_course
+            if user_lb_course and user_lb_course in available_courses:
+                final_lb_course = user_lb_course
             else:
                 if user_lb_course: warning = f"User selection '{user_lb_course}' invalid. "
                 rule_course = rule_based_actions.get('set_labbuild_course')
-                if rule_course and rule_course in available_courses: final_lb_course = rule_course
-                elif rule_course: warning = (warning or "") + f"Rule course '{rule_course}' is invalid."
+                if rule_course and rule_course in available_courses:
+                    final_lb_course = rule_course
+                elif rule_course:
+                    warning = (warning or "") + f"Rule course '{rule_course}' is invalid."
             
-            pods_req_str, pods_req_calc_match = course_input.get('sf_pods_req', '1'), re.match(r"^\s*(\d+)", str(course_input.get('sf_pods_req', '1')))
+            pods_req_str = str(course_input.get('sf_pods_req', '1'))
+            pods_req_calc_match = re.match(r"^\s*(\d+)", pods_req_str)
             eff_pods_req = int(pods_req_calc_match.group(1)) if pods_req_calc_match else 1
-            if rule_based_actions.get("override_pods_req") is not None: eff_pods_req = int(rule_based_actions.get("override_pods_req"))
-            if rule_based_actions.get("set_max_pods") is not None: eff_pods_req = min(eff_pods_req, int(rule_based_actions.get("set_max_pods")))
+            if rule_based_actions.get("override_pods_req") is not None:
+                eff_pods_req = int(rule_based_actions.get("override_pods_req"))
+            if rule_based_actions.get("set_max_pods") is not None:
+                eff_pods_req = min(eff_pods_req, int(rule_based_actions.get("set_max_pods")))
             
             mem_per_pod = _get_memory_for_course_local(final_lb_course, {c['course_name']: c for c in initial_data["course_configs"]}) if final_lb_course else 0.0
 
@@ -300,26 +376,35 @@ def intermediate_build_review():
             )
             
             interim_doc = {
-                "_id": ObjectId(), "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
-                "sf_course_code": sf_code, "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
-                "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code), "sf_end_date": _format_date_for_review(course_input.get('sf_end_date'), sf_code),
+                "_id": ObjectId(), "batch_review_id": batch_review_id,
+                "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
+                "sf_course_code": sf_code, "sf_course_type": sf_course_type,
+                "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
+                "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code),
+                "sf_end_date": _format_date_for_review(course_input.get('sf_end_date'), sf_code),
                 "sf_pax_count": int(course_input.get('sf_pax_count', 0)),
-                "vendor": vendor, "final_labbuild_course": final_lb_course, "effective_pods_req": max(0, eff_pods_req),
+                "location": location_name,  # <-- Add the resolved location
+                "vendor": vendor, "final_labbuild_course": final_lb_course,
+                "effective_pods_req": max(0, eff_pods_req),
                 "memory_gb_one_pod": mem_per_pod, "assignments": []
             }
+            
             if vendor == 'f5':
                 next_class_num = batch_state['f5_class_number_cursor']
-                while next_class_num in initial_data['db_locked_pods'].get('f5', set()): next_class_num += 1
+                while next_class_num in initial_data['db_locked_pods'].get('f5', set()):
+                    next_class_num += 1
                 interim_doc['f5_class_number'] = next_class_num
                 batch_state['f5_class_number_cursor'] = next_class_num + 1
 
             final_warning = (warning + ". " if warning else "") + (auto_assign_warn or "")
-            if not assignments and interim_doc["effective_pods_req"] > 0: final_warning += " Could not auto-assign any pods."
+            if not assignments and interim_doc["effective_pods_req"] > 0:
+                final_warning += " Could not auto-assign any pods."
             
             display_doc = interim_doc.copy()
             display_doc["initial_interactive_sub_rows_student"] = assignments
             display_doc["student_assignment_warning"] = final_warning.strip() or None
-            return [(interim_doc, display_doc)] # Return as a list for consistency
+            
+            return [(interim_doc, display_doc)]
 
     def _save_interim_proposals(proposals, batch_review_id):
         if not proposals: return True
@@ -996,6 +1081,7 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                 "type": "Student Build", "sf_course_code": sf_code, "original_sf_course_code": sf_code,
                 "labbuild_course": doc.get("final_labbuild_course"), "sf_course_type": doc.get("sf_course_type"),
                 "vendor": vendor, "start_date": doc.get("sf_start_date"), "end_date": doc.get("sf_end_date"),
+                "location": doc.get("location", "Virtual"),
                 "assignments": doc.get("assignments", []), "status_note": doc.get("student_assignment_warning"),
                 "sf_trainer_name": doc.get("sf_trainer_name"), "f5_class_number": doc.get("f5_class_number"),
                 "sf_pax_count": doc.get("sf_pax_count"), "effective_pods_req_student": doc.get("effective_pods_req"),
@@ -1011,6 +1097,7 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                     "type": "Trainer Build", "sf_course_code": trainer_sfc_display, "original_sf_course_code": sf_code,
                     "labbuild_course": doc.get("trainer_labbuild_course") or "N/A", "vendor": vendor,
                     "start_date": doc.get("sf_start_date"), "end_date": doc.get("sf_end_date"),
+                    "location": doc.get("location", "Virtual"),
                     "assignments": doc.get("trainer_assignment") or [], "status_note": doc.get("trainer_assignment_warning"),
                     "sf_trainer_name": doc.get("sf_trainer_name"), "f5_class_number": doc.get("f5_class_number"),
                     "apm_username": doc.get("student_apm_username"), "apm_password": doc.get("student_apm_password"),
@@ -1091,7 +1178,7 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                 response = requests.get(apm_list_url, timeout=15); response.raise_for_status()
                 current_apm_entries = response.json()
             except Exception: pass # Ignore errors for preview
-            if alloc_collection:
+            if alloc_collection is not None:
                 for doc in alloc_collection.find({"extend": "true"}, {"tag": 1, "_id": 0}):
                     if doc.get("tag"): extended_apm_codes.add(doc.get("tag"))
 

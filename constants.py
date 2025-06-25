@@ -14,6 +14,7 @@ INTERIM_ALLOCATION_COLLECTION = "interimallocation"
 BUILD_RULES_COLLECTION = "build_rules"
 TRAINER_EMAIL_COLLECTION = "trainer_emails"
 SUBSEQUENT_POD_MEMORY_FACTOR = 0.5
+LOCATIONS_COLLECTION = "locations"
 # Add other constants here if needed, e.g.:
 # DEFAULT_TAG = "untagged"
 # DEFAULT_THREAD_COUNT = 4

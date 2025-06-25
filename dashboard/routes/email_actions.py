@@ -92,6 +92,7 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
 
         start_date_str, end_date_str = first_item.get("start_date"), first_item.get("end_date")
         date_range_display, end_day_abbr = "N/A", "N/A"
+        primary_location_display = first_item.get("location", "Virtual")
         try:
             start_dt = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
             end_dt = datetime.datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
@@ -110,7 +111,7 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
                 "original_sf_course_code": sf_code,
                 "date_range_display": date_range_display,
                 "end_day_abbr": end_day_abbr,
-                "primary_location": "Virtual",
+                "primary_location": primary_location_display,
                 "sf_course_type": first_item.get('sf_course_type', 'N/A'),
                 "start_end_pod_str": pod_range_display,
                 "username": first_item.get("apm_username", "N/A"),
