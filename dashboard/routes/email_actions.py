@@ -9,20 +9,22 @@ from typing import List, Dict, Any
 import datetime
 from ..extensions import host_collection, trainer_email_collection
 from ..email_utils import send_allocation_email
+from ..utils import _create_contiguous_ranges
 from pymongo.errors import PyMongoError
 
 bp = Blueprint('email_actions', __name__, url_prefix='/email')
 logger = logging.getLogger('dashboard.routes.email_actions')
 
 
-def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any]]:
+def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Server-side logic to generate DATA for trainer email previews.
-    It consolidates data, creating multi-line strings for split-host allocations,
-    and ensures all numeric values are correctly calculated and passed.
+    It consolidates data, creates multi-line strings for split-host allocations,
+    and includes special range expansion for Nutanix (nu) vendor courses.
     """
     email_data_list = []
     
+    # Filter for items that represent student builds, have a trainer, and have assignments
     student_items = [
         item for item in all_review_items 
         if item.get("type") == "Student Build" and item.get("sf_trainer_name") and item.get("assignments")
@@ -30,6 +32,7 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
     if not student_items:
         return []
 
+    # Fetch host details once to avoid multiple DB calls
     try:
         all_hosts_set = {asgn.get("host") for item in student_items for asgn in item.get("assignments", []) if asgn.get("host")}
         hosts_info_map = {h["host_name"]: h for h in host_collection.find({"host_name": {"$in": list(all_hosts_set)}})}
@@ -37,16 +40,19 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
         logger.error(f"Failed to fetch host details for email previews: {e}")
         hosts_info_map = {}
 
+    # Group all build items by a unique key (trainer + course code)
     emails_grouped = defaultdict(list)
     for item in student_items:
         key = f"{item.get('sf_trainer_name', 'N/A')}|{item.get('original_sf_course_code', 'N/A')}"
         emails_grouped[key].append(item)
 
+    # Process each group to generate one email preview
     for key, items in emails_grouped.items():
         trainer_name, sf_code = key.split('|')
         first_item = items[0]
-        
-        # --- Group assignments by host ---
+        vendor = (first_item.get("vendor", "") or "").lower() # Get vendor for logic check
+
+        # Group assignments by the host they are on
         assignments_by_host = defaultdict(list)
         for item in items:
             for asgn in item.get("assignments", []):
@@ -54,53 +60,74 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
                 if host:
                     assignments_by_host[host].append(asgn)
 
-        # --- Generate multi-line strings for display ---
+        # Prepare strings and totals for the email body
         host_lines = []
         vcenter_lines = []
         pod_range_lines = []
-        total_pods_for_course = set() # Use a set to handle potential overlaps
+        total_logical_pods_for_course = set()
+        total_physical_pods_for_course = set()
         total_ram_for_course = 0.0
 
-        # ** THIS IS THE KEY CORRECTION BLOCK **
+        # Iterate through each host that has assignments for this course
         for host, host_assignments in sorted(assignments_by_host.items()):
-            host_pod_numbers = {p for asgn in host_assignments for p in range(int(asgn.get('start_pod')), int(asgn.get('end_pod')) + 1) if asgn.get('start_pod') is not None}
-            total_pods_for_course.update(host_pod_numbers)
             
-            pod_numbers_sorted = sorted(list(host_pod_numbers))
-            groups = [list(g) for k, g in itertools.groupby(enumerate(pod_numbers_sorted), lambda x: x[0]-x[1])]
-            host_start_end_pod_str = ", ".join([f"{r[0][1]}-{r[-1][1]}" if len(r) > 1 else str(r[0][1]) for r in groups])
+            # --- Nutanix Email Range Logic ---
+            logical_pod_numbers_on_host = set()
+            physical_pod_numbers_on_host = set()
+            for asgn in host_assignments:
+                s, e = asgn.get("start_pod"), asgn.get("end_pod")
+                if s is not None and e is not None:
+                    # Iterate through the physical pod numbers in the assignment block
+                    for pod_num in range(int(s), int(e) + 1):
+                        physical_pod_numbers_on_host.add(pod_num)
+                        if vendor == 'nu':
+                            # Nutanix logic: 1->1-4, 2->5-8, etc.
+                            start_logical = (pod_num - 1) * 4 + 1
+                            end_logical = pod_num * 4
+                            for lp in range(start_logical, end_logical + 1):
+                                logical_pod_numbers_on_host.add(lp)
+                        else:
+                            # Standard logic for other vendors: logical pod = physical pod
+                            logical_pod_numbers_on_host.add(pod_num)
+            
+            # Add this host's pods to the grand total for the course
+            total_logical_pods_for_course.update(logical_pod_numbers_on_host)
+            total_physical_pods_for_course.update(physical_pod_numbers_on_host)
 
+            # Create display strings for this specific host
+            logical_range_string = _create_contiguous_ranges(list(logical_pod_numbers_on_host))
+            physical_range_string = _create_contiguous_ranges(list(physical_pod_numbers_on_host))
+            
             host_info = hosts_info_map.get(host, {})
-            num_pods_on_host = len(host_pod_numbers)
+            num_physical_pods_on_host = len(physical_pod_numbers_on_host)
             
-            # Use the memory from the first item as it's consistent for the course
-            memory_per_pod = float(first_item.get('memory_gb_one_pod', 0.0))
-            ram_for_this_host = memory_per_pod * num_pods_on_host
-            
-            # This was missing in the previous version, causing the error.
-            # Now we correctly add this host's RAM to the grand total for the course.
+            memory_per_pod = float(first_item.get("memory_gb_one_pod", 0.0))
+            # RAM calculation is based on PHYSICAL pods deployed on this host
+            ram_for_this_host = memory_per_pod * num_physical_pods_on_host
             total_ram_for_course += ram_for_this_host 
 
-            host_lines.append(f"{host} ({host_start_end_pod_str})")
+            host_lines.append(f"{host} (Pods: {physical_range_string})")
             vcenter_lines.append(host_info.get("vcenter", "N/A"))
-            pod_range_lines.append(host_start_end_pod_str)
-        # ** END OF CORRECTION BLOCK **
+            pod_range_lines.append(logical_range_string)
             
+        # Consolidate multi-host information into single strings for the email template
         virtual_host_display = "\n".join(host_lines)
         vcenter_display = "\n".join(vcenter_lines)
-        pod_range_display = "\n".join(pod_range_lines)
+        final_pod_range_display = _create_contiguous_ranges(list(total_logical_pods_for_course))
 
+        # Format date display
         start_date_str, end_date_str = first_item.get("start_date"), first_item.get("end_date")
         date_range_display, end_day_abbr = "N/A", "N/A"
-        primary_location_display = first_item.get("location", "Virtual")
         try:
             start_dt = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
             end_dt = datetime.datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
             start_day, end_day = start_dt.strftime("%a"), end_dt.strftime("%a")
             date_range_display = f"{start_day}-{end_day}" if start_day != end_day else start_day
             end_day_abbr = end_day
-        except (ValueError, TypeError): pass
+        except (ValueError, TypeError):
+            pass
 
+        # Assemble the final data object for this email
         email_data_list.append({
             "key": key,
             "trainer_name": trainer_name,
@@ -111,16 +138,17 @@ def _generate_email_previews(all_review_items: List[Dict]) -> List[Dict[str, Any
                 "original_sf_course_code": sf_code,
                 "date_range_display": date_range_display,
                 "end_day_abbr": end_day_abbr,
-                "primary_location": primary_location_display,
+                "primary_location": first_item.get("location", "Virtual"),
                 "sf_course_type": first_item.get('sf_course_type', 'N/A'),
-                "start_end_pod_str": pod_range_display,
+                "start_end_pod_str": final_pod_range_display, # The final logical range for students
                 "username": first_item.get("apm_username", "N/A"),
                 "password": first_item.get("apm_password", "UseProvidedPassword"),
-                "effective_pods_req": len(total_pods_for_course), # Use the size of the final set
+                "effective_pods_req": len(total_logical_pods_for_course), # Count of logical pods
+                "vendor_pods": len(total_physical_pods_for_course), # Count of physical pods
                 "final_labbuild_course": first_item.get('labbuild_course', 'N/A'),
                 "virtual_host_display": virtual_host_display,
                 "primary_vcenter": vcenter_display,
-                "total_ram_for_course": total_ram_for_course # Pass the calculated total RAM
+                "total_ram_for_course": total_ram_for_course
             }
         })
     return email_data_list

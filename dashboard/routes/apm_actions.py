@@ -24,6 +24,7 @@ def _generate_apm_data_for_plan(
     """
     Generates APM commands and credentials based on the final build plan.
     Compares the desired state with the current state to generate add, update, and delete commands.
+    Includes special logic for Nutanix range expansion and APM versioning.
     """
     logger.info(f"--- APM Data Generation Started for {len(final_plan_items)} plan items ---")
     apm_commands_delete: List[str] = []
@@ -31,115 +32,151 @@ def _generate_apm_data_for_plan(
     apm_errors: List[str] = []
     apm_credentials_map: Dict[str, Dict[str, str]] = {}
 
+    def _determine_apm_version(vendor: str, lb_course_name: str, sf_course_code: str) -> str:
+        """
+        Determines the correct version string for an APM entry based on specific rules.
+        """
+        vendor_lower = (vendor or "").lower()
+        lb_course_lower = (lb_course_name or "").lower()
+        print(lb_course_lower)
+        sf_code_lower = (sf_course_code or "").lower()
+
+        if vendor_lower == 'av':
+            return "aura"
+        
+        if vendor_lower == 'cp':
+            if "maestro" in lb_course_lower or "maestro" in sf_code_lower:
+                return "maestro"
+            if "ccse" in lb_course_lower or "ccse" in sf_code_lower:
+                return "CCSE-R81.20"
+            # Add other Checkpoint rules here if needed
+        
+        if vendor_lower == 'f5':
+            # if "all" in lb_course_lower or "big-ip" in lb_course_lower:
+                return "bigip16.1.4"
+            # Add other F5 rules here if needed
+
+        if vendor_lower == 'nu':
+            return "nutanix-4"
+
+        # Fallback to the LabBuild course name if no specific rule matches
+        return lb_course_name or "unknown-version"
+
     # --- Step 1: Build the desired state from the build plan ---
     desired_apm_state = defaultdict(lambda: {"all_pod_numbers": set()})
     for item in final_plan_items:
         sf_code = item.get("original_sf_course_code") or item.get("sf_course_code")
+        vendor = (item.get("vendor", "xx") or "xx").lower()
         if not sf_code: continue
         
+        def get_expanded_pods(assignments):
+            expanded_pods = set()
+            for asgn in assignments:
+                s, e = asgn.get("start_pod"), asgn.get("end_pod")
+                if s is not None and e is not None:
+                    for pod_num in range(int(s), int(e) + 1):
+                        if vendor == 'nu':
+                            start_logical = (pod_num - 1) * 4 + 1
+                            end_logical = pod_num * 4
+                            for logical_pod in range(start_logical, end_logical + 1):
+                                expanded_pods.add(logical_pod)
+                        else:
+                            expanded_pods.add(pod_num)
+            return expanded_pods
+
         # Process student pods
         if item.get("assignments"):
             if "details" not in desired_apm_state[sf_code]:
+                # --- HIGHLIGHTED MODIFICATION: Store correct source fields ---
                 desired_apm_state[sf_code]["details"] = {
                     "trainer": item.get("sf_trainer_name", "N/A"),
                     "type": item.get("sf_course_type", "Course"),
-                    "version": item.get("final_labbuild_course", item.get("labbuild_course", "N/A")),
-                    "vendor": (item.get("vendor", "xx") or "xx").lower()
+                    "lb_course_name": item.get("final_labbuild_course", item.get("labbuild_course", "N/A")),
+                    "sf_course_code": sf_code,
+                    "vendor": vendor
                 }
-            for asgn in item.get("assignments", []):
-                s, e = asgn.get("start_pod"), asgn.get("end_pod")
-                if s is not None and e is not None:
-                    [desired_apm_state[sf_code]["all_pod_numbers"].add(p) for p in range(int(s), int(e) + 1)]
+                # --- END MODIFICATION ---
+            student_pods = get_expanded_pods(item.get("assignments", []))
+            desired_apm_state[sf_code]["all_pod_numbers"].update(student_pods)
         
         # Process trainer pods
         if item.get("trainer_assignment"):
             key_tp = f"{sf_code}-TP"
             if "details" not in desired_apm_state[key_tp]:
+                # --- HIGHLIGHTED MODIFICATION: Store correct source fields ---
                 desired_apm_state[key_tp]["details"] = {
                     "trainer": "Trainer Pods",
                     "type": item.get("sf_course_type", "Trainer Setup"),
-                    "version": item.get("trainer_labbuild_course", "N/A"),
-                    "vendor": (item.get("vendor", "xx") or "xx").lower()
+                    "lb_course_name": item.get("trainer_labbuild_course", "N/A"),
+                    "sf_course_code": sf_code,
+                    "vendor": vendor
                 }
-            for asgn_tp in item["trainer_assignment"]:
-                s, e = asgn_tp.get("start_pod"), asgn_tp.get("end_pod")
-                if s is not None and e is not None:
-                    [desired_apm_state[key_tp]["all_pod_numbers"].add(p) for p in range(int(s), int(e) + 1)]
+                # --- END MODIFICATION ---
+            trainer_pods = get_expanded_pods(item.get("trainer_assignment", []))
+            desired_apm_state[key_tp]["all_pod_numbers"].update(trainer_pods)
 
-    # --- Step 2: Finalize the desired state with passwords and ranges ---
+    # --- Step 2: Finalize the desired state with passwords, ranges, and correct version ---
     final_desired_state: Dict[str, Dict[str, Any]] = {}
     for code, data in desired_apm_state.items():
         if not data["all_pod_numbers"]: continue
+        
+        # Call the version helper with the correct source data
+        apm_version = _determine_apm_version(
+            vendor=data["details"]["vendor"],
+            lb_course_name=data["details"]["lb_course_name"],
+            sf_course_code=data["details"]["sf_course_code"]
+        )
+        
         final_desired_state[code] = {
             "vpn_auth_courses": f"{data['details']['trainer']} - {data['details']['type']}"[:250],
             "vpn_auth_range": _create_contiguous_ranges(list(data["all_pod_numbers"])),
-            "version": data["details"]["version"],
+            "version": apm_version,
             "password": _generate_random_password(),
             "vendor_short": data["details"]["vendor"]
         }
-
+    
     # --- Step 3: Compare current and desired states to generate commands ---
-    apm_code_to_user: Dict[str, str] = {} # Map of course codes that have an existing user
-
-    # First pass: find updates and deletions
+    apm_code_to_user: Dict[str, str] = {}
+    
     for username, existing_details in current_apm_entries.items():
         code = existing_details.get("vpn_auth_course_code")
         if not code:
             apm_commands_delete.append(f"course2 del {username}")
             continue
         
-        # If the code is for a course that is in the new plan, it's an update.
         if code in final_desired_state:
             apm_code_to_user[code] = username
             new = final_desired_state[code]
-            if str(existing_details.get("vpn_auth_range")) != str(new["vpn_auth_range"]):
-                apm_commands_add_update.append(f'course2 range {username} "{new["vpn_auth_range"]}"')
-            if str(existing_details.get("vpn_auth_version")) != str(new["version"]):
-                apm_commands_add_update.append(f'course2 version {username} "{new["version"]}"')
-            if str(existing_details.get("vpn_auth_courses")) != str(new["vpn_auth_courses"]):
-                apm_commands_add_update.append(f'course2 description {username} "{new["vpn_auth_courses"]}"')
-            # Always update the password for a fresh run
+            if str(existing_details.get("vpn_auth_range")) != str(new["vpn_auth_range"]): apm_commands_add_update.append(f'course2 range {username} "{new["vpn_auth_range"]}"')
+            if str(existing_details.get("vpn_auth_version")) != str(new["version"]): apm_commands_add_update.append(f'course2 version {username} "{new["version"]}"')
+            if str(existing_details.get("vpn_auth_courses")) != str(new["vpn_auth_courses"]): apm_commands_add_update.append(f'course2 description {username} "{new["vpn_auth_courses"]}"')
             apm_commands_add_update.append(f'course2 password {username} "{new["password"]}"')
-        
-        # If the code is not in the new plan AND not marked for extension, delete it.
         elif code not in extended_apm_codes:
             apm_commands_delete.append(f"course2 del {username}")
 
-    # --- HIGHLIGHTED FIX: Second pass to find new courses that need to be added ---
-    used_usernames = set(current_apm_entries.keys())
     used_x_nums = defaultdict(set)
-    for uname in used_usernames:
+    for uname in current_apm_entries.keys():
         m = re.match(r"lab([a-z0-9]+)-(\d+)", uname.lower())
-        if m:
-            used_x_nums[m.group(1)].add(int(m.group(2)))
+        if m: used_x_nums[m.group(1)].add(int(m.group(2)))
 
     for code, details in final_desired_state.items():
-        # If this course code was not found in the first pass, it's a new entry.
         if code not in apm_code_to_user:
-            vendor, x = details["vendor_short"], 1
+            vendor_short, x = details["vendor_short"], 1
             while True:
-                if x not in used_x_nums[vendor]:
-                    new_user = f"lab{vendor}-{x}"
-                    used_x_nums[vendor].add(x)
+                if x not in used_x_nums[vendor_short]:
+                    new_user = f"lab{vendor_short}-{x}"
+                    used_x_nums[vendor_short].add(x)
                     break
                 x += 1
             
-            # Generate the full 'add' command
-            apm_commands_add_update.append(
-                f'course2 add {new_user} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["version"]}" "{details["vpn_auth_courses"]}" "8" "{code}"'
-            )
-            # Store the newly generated user for the credentials map
+            apm_commands_add_update.append(f'course2 add {new_user} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["version"]}" "{details["vpn_auth_courses"]}" "8" "{code}"')
             apm_code_to_user[code] = new_user
-    # --- END FIX ---
             
     # --- Step 4: Populate the final credentials map ---
     for code, details in final_desired_state.items():
         username = apm_code_to_user.get(code)
         if username:
-            apm_credentials_map[code] = {
-                "username": username,
-                "password": details["password"]
-            }
+            apm_credentials_map[code] = {"username": username, "password": details["password"]}
 
     all_generated_commands = apm_commands_delete + apm_commands_add_update
     logger.info(f"APM Logic: Generated {len(all_generated_commands)} commands. Errors: {apm_errors}")
