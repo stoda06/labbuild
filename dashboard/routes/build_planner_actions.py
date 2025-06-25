@@ -156,6 +156,18 @@ def intermediate_build_review():
         # This helper function remains the same as the previous version.
         assignments: List[Dict[str, Any]] = []
         warning_message: Optional[str] = None
+        flat_hosts_list = []
+        if isinstance(hosts_to_try, list):
+            for item in hosts_to_try:
+                if isinstance(item, str):
+                    flat_hosts_list.append(item)
+                elif isinstance(item, list):
+                    # If we find a nested list, extend the flat list with its string elements
+                    flat_hosts_list.extend([str(sub_item) for sub_item in item if isinstance(sub_item, str)])
+        elif isinstance(hosts_to_try, str):
+            # Handle the case where a single string is passed
+            flat_hosts_list.append(hosts_to_try)
+        
         if num_pods_to_allocate <= 0: return [], None
         if memory_per_pod <= 0: return [], "Memory for LabBuild course is 0, cannot allocate."
         unavailable_pods = db_locked_pods.get(vendor_code, set()).union(pods_assigned_in_this_batch.get(vendor_code, set()))
@@ -308,7 +320,6 @@ def intermediate_build_review():
                 {"name": "Rack 2", "pods": 1, "course": maestro_rule_config.get("rack2_course"), "hosts": rack_hosts_list},
                 {"name": "Main Pods", "pods": 2, "course": maestro_rule_config.get("main_course"), "hosts": main_hosts_for_allocation}
             ]
-            print(split_parts)
 
             for part in split_parts:
                 part_doc = base_interim_doc.copy()
@@ -1073,37 +1084,75 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
 
     # --- Nested Helper: Process final plan for display ---
     def _process_plan_for_display(final_plan_docs):
-        processed_items = []
+        """
+        STEP 6: Prepare Data for Rendering.
+        This version ensures the correct APM credentials are assigned to the trainer item.
+        """
+        processed_items: List[Dict] = []
+        logger.info(f"[_process_plan_for_display] Processing {len(final_plan_docs)} final documents for display.")
+
         for doc in final_plan_docs:
-            sf_code, vendor = doc.get("sf_course_code"), doc.get("vendor")
-            # Student Part
+            sf_code = doc.get("sf_course_code")
+            vendor = doc.get("vendor")
+            logger.debug(f"[_process_plan_for_display] Processing doc for SF Code: {sf_code}")
+
+            # --- Student Part (This part is correct) ---
             student_item = {
-                "type": "Student Build", "sf_course_code": sf_code, "original_sf_course_code": sf_code,
-                "labbuild_course": doc.get("final_labbuild_course"), "sf_course_type": doc.get("sf_course_type"),
-                "vendor": vendor, "start_date": doc.get("sf_start_date"), "end_date": doc.get("sf_end_date"),
+                "type": "Student Build",
+                "sf_course_code": sf_code,
+                "original_sf_course_code": sf_code,
+                "labbuild_course": doc.get("final_labbuild_course"),
+                "sf_course_type": doc.get("sf_course_type"),
+                "vendor": vendor,
+                "start_date": doc.get("sf_start_date"),
+                "end_date": doc.get("sf_end_date"),
                 "location": doc.get("location", "Virtual"),
-                "assignments": doc.get("assignments", []), "status_note": doc.get("student_assignment_warning"),
-                "sf_trainer_name": doc.get("sf_trainer_name"), "f5_class_number": doc.get("f5_class_number"),
-                "sf_pax_count": doc.get("sf_pax_count"), "effective_pods_req_student": doc.get("effective_pods_req"),
-                "memory_gb_one_pod": doc.get("memory_gb_one_pod"), "apm_username": doc.get("student_apm_username"),
+                "assignments": doc.get("assignments", []),
+                "status_note": doc.get("student_assignment_warning"),
+                "sf_trainer_name": doc.get("sf_trainer_name"),
+                "f5_class_number": doc.get("f5_class_number"),
+                "sf_pax_count": doc.get("sf_pax_count"),
+                "effective_pods_req_student": doc.get("effective_pods_req"),
+                "memory_gb_one_pod": doc.get("memory_gb_one_pod"),
+                "apm_username": doc.get("student_apm_username"),
                 "apm_password": doc.get("student_apm_password"),
             }
             processed_items.append(student_item)
-            # Trainer Part
+            logger.debug(f"[_process_plan_for_display] Added student item. APM User: {student_item.get('apm_username')}")
+
+            # --- Trainer Part ---
             if doc.get("status") in ["trainer_confirmed", "trainer_skipped_by_user", "trainer_disabled_by_rule"]:
                 is_skipped = not doc.get("trainer_assignment")
                 trainer_sfc_display = sf_code + ("-TP (Skipped)" if is_skipped else "-TP")
+                
+                # --- HIGHLIGHTED FIX: Use trainer_apm_* fields for the generic keys ---
                 trainer_item = {
-                    "type": "Trainer Build", "sf_course_code": trainer_sfc_display, "original_sf_course_code": sf_code,
-                    "labbuild_course": doc.get("trainer_labbuild_course") or "N/A", "vendor": vendor,
-                    "start_date": doc.get("sf_start_date"), "end_date": doc.get("sf_end_date"),
+                    "type": "Trainer Build",
+                    "sf_course_code": trainer_sfc_display,
+                    "original_sf_course_code": sf_code,
+                    "labbuild_course": doc.get("trainer_labbuild_course") or "N/A",
+                    "vendor": vendor,
+                    "start_date": doc.get("sf_start_date"),
+                    "end_date": doc.get("sf_end_date"),
                     "location": doc.get("location", "Virtual"),
-                    "assignments": doc.get("trainer_assignment") or [], "status_note": doc.get("trainer_assignment_warning"),
-                    "sf_trainer_name": doc.get("sf_trainer_name"), "f5_class_number": doc.get("f5_class_number"),
-                    "apm_username": doc.get("student_apm_username"), "apm_password": doc.get("student_apm_password"),
-                    "trainer_apm_username": doc.get("trainer_apm_username"), "trainer_apm_password": doc.get("trainer_apm_password")
+                    "assignments": doc.get("trainer_assignment") or [],
+                    "status_note": doc.get("trainer_assignment_warning"),
+                    "sf_trainer_name": doc.get("sf_trainer_name"),
+                    "f5_class_number": doc.get("f5_class_number"),
+                    
+                    # This is the corrected block
+                    "apm_username": doc.get("trainer_apm_username"),
+                    "apm_password": doc.get("trainer_apm_password"),
+                    
+                    # These fields are still useful for context if needed elsewhere, but not for display
+                    "student_apm_username": doc.get("student_apm_username"),
+                    "trainer_apm_username": doc.get("trainer_apm_username"),
+                    "trainer_apm_password": doc.get("trainer_apm_password")
                 }
+                # --- END OF FIX ---
                 processed_items.append(trainer_item)
+                logger.debug(f"[_process_plan_for_display] Added trainer item. APM User: {trainer_item.get('apm_username')}")
+
         return processed_items
 
     # --- Nested Helper: Sanitize data for JSON embedding ---
