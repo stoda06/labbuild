@@ -285,7 +285,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (realSendBtn || testSendBtn) {
                     const button = realSendBtn || testSendBtn;
                     const isTest = !!testSendBtn;
-                    const endpoint = isTest ? "/email/send-test-email" : "/email/send-trainer-email";
+                    const endpoint = isTest ? "/email-actions/send-test-email" : "/email-actions/send-trainer-email";
                     const section = button.closest('.trainer-email-section');
                     const trainerName = section.querySelector('h5').textContent.split('(')[0].replace('To: ', '').trim();
                     const subject = section.querySelector('.email-subject-input').value;
