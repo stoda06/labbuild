@@ -110,6 +110,21 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
             vcenter_lines.append(host_info.get("vcenter", "N/A"))
             pod_range_lines.append(logical_range_string)
             
+        # --- NEW: Determine lab access URL message based on hosts ---
+        all_hosts_for_course = assignments_by_host.keys()
+        us_hosts = {"hotshot", "trypticon"}
+        has_us_host = any(host.lower() in us_hosts for host in all_hosts_for_course)
+
+        if has_us_host:
+            lab_access_url = "https://labs.rededucation.us"
+            lab_access_domain = "labs.rededucation.us"
+        else:
+            lab_access_url = "https://labs.rededucation.com"
+            lab_access_domain = "labs.rededucation.com"
+        
+        lab_access_message = f"Your pods are on <a href='{lab_access_url}' target='_blank' style='color:#0d6efd;'>{lab_access_domain}</a>"
+        # --- END NEW LOGIC ---
+
         # Consolidate multi-host information into single strings for the email template
         virtual_host_display = "\n".join(host_lines)
         vcenter_display = "\n".join(vcenter_lines)
@@ -148,7 +163,8 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
                 "final_labbuild_course": first_item.get('labbuild_course', 'N/A'),
                 "virtual_host_display": virtual_host_display,
                 "primary_vcenter": vcenter_display,
-                "total_ram_for_course": total_ram_for_course
+                "total_ram_for_course": total_ram_for_course,
+                "lab_access_url_message": lab_access_message
             }
         })
     return email_data_list

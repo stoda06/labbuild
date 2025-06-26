@@ -200,9 +200,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     const templateData = previewData.template_data;
                     const nl2br = (str) => (str || '').toString().replace(/\n/g, '<br>');
                     
+                    const labAccessMessage = templateData.lab_access_url_message || '';
+                    
                     body.innerHTML = `
                         <p>Dear ${previewData.trainer_name},</p>
                         <p>Here are the details for your course allocation (${templateData.original_sf_course_code}):</p>
+                        ${labAccessMessage ? `<p><strong>${labAccessMessage}</strong></p>` : ''}
                         <table>
                             <thead><tr><th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th><th>Course Name</th><th>Start/End Pod</th><th>Username</th><th>Password</th><th>Students</th><th>Vendor Pods</th><th>Version</th><th>Virtual Host</th><th>vCenter</th><th>RAM (GB)</th></tr></thead>
                             <tbody>
@@ -282,7 +285,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (realSendBtn || testSendBtn) {
                     const button = realSendBtn || testSendBtn;
                     const isTest = !!testSendBtn;
-                    const endpoint = isTest ? "/send-test-email" : "/send-trainer-email";
+                    const endpoint = isTest ? "/email/send-test-email" : "/email/send-trainer-email";
                     const section = button.closest('.trainer-email-section');
                     const trainerName = section.querySelector('h5').textContent.split('(')[0].replace('To: ', '').trim();
                     const subject = section.querySelector('.email-subject-input').value;
