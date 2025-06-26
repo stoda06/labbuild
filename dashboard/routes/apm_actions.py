@@ -38,7 +38,6 @@ def _generate_apm_data_for_plan(
         """
         vendor_lower = (vendor or "").lower()
         lb_course_lower = (lb_course_name or "").lower()
-        print(lb_course_lower)
         sf_code_lower = (sf_course_code or "").lower()
 
         if vendor_lower == 'av':
