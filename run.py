@@ -3,6 +3,8 @@
 
 import os
 import sys
+from dotenv import load_dotenv
+load_dotenv()
 
 # Add project root to sys.path to allow imports from dashboard package
 project_root = os.path.dirname(os.path.abspath(__file__))

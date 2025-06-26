@@ -495,3 +495,17 @@ def get_hosts_available_memory_parallel(host_details_list: List[Dict]) -> Dict[s
 
     logger.info(f"Finished parallel memory fetch. Results for {len(host_memory_gb)} hosts.")
     return host_memory_gb
+
+# Add this new function to the end of dashboard/utils.py
+
+def get_next_monday_date_str(format_str="%Y%m%d"):
+    """
+    Calculates the date of the upcoming Monday.
+    If today is Monday, it returns today's date.
+    Returns the date as a formatted string.
+    """
+    today = datetime.datetime.today()
+    # weekday() returns 0 for Monday, 1 for Tuesday, ..., 6 for Sunday.
+    days_until_monday = (0 - today.weekday() + 7) % 7
+    next_monday = today + datetime.timedelta(days=days_until_monday)
+    return next_monday.strftime(format_str)
