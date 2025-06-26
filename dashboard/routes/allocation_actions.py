@@ -4,15 +4,17 @@ import logging
 import json
 import threading
 from flask import (
-    Blueprint, request, redirect, url_for, flash, jsonify
+    Blueprint, request, redirect, url_for, flash, jsonify, Response
 )
 from pymongo.errors import PyMongoError
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
 import datetime
 from ..extensions import alloc_collection, db
-from ..utils import update_power_state_in_db
+from ..utils import update_power_state_in_db, get_next_monday_date_str
 from ..tasks import run_labbuild_task
+from ..trainer_report_generator import fetch_trainer_pod_data, create_trainer_report_in_memory
+from ..report_generator import get_full_report_data, generate_excel_in_memory
 from db_utils import delete_from_database
 
 bp = Blueprint('allocation_actions', __name__, url_prefix='/allocations')
@@ -773,18 +775,67 @@ def bulk_db_delete_items():
 @bp.route('/export-current-lab-report')
 def export_current_lab_report():
     """
-    Dummy endpoint for the 'Current Lab Report' export functionality.
+    Generates and serves the full, comprehensive labbuild excel report.
+    This replaces the old dummy function.
     """
-    logger.info("DUMMY ACTION: 'Export Current Lab Report' was triggered.")
-    flash("Feature not yet implemented: The 'Current Lab Report' export is under development.", "info")
-    return redirect(url_for('main.view_allocations'))
+    logger.info("Request received for 'Current Lab Report', generating full report.")
 
+    try:
+        # 1. Fetch and process all the data using our new helper
+        course_allocs, trainer_pods, extended_pods = get_full_report_data(db)
+
+        # 2. Generate the Excel file in memory using our new helper
+        excel_stream = generate_excel_in_memory(course_allocs, trainer_pods, extended_pods)
+
+        # 3. Prepare the filename
+        next_monday_str = get_next_monday_date_str("%Y%m%d")
+        filename = f"Lab Build - {next_monday_str}.xlsx"
+
+        # 4. Create and return a Flask Response to trigger the download
+        return Response(
+            excel_stream,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={
+                'Content-Disposition': f'attachment;filename={filename}'
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate full lab report: {e}", exc_info=True)
+        flash(f"Could not generate the report. Error: {e}", 'danger')
+        # Redirect back to the page where the button was
+        return redirect(url_for('main.view_allocations'))
+
+
+# In allocation_actions.py
 
 @bp.route('/export-trainer-pod-allocation')
 def export_trainer_pod_allocation():
     """
-    Dummy endpoint for the 'Trainer Pod Allocation' export functionality.
+    Generates and serves the structured trainer pod allocation report.
     """
-    logger.info("DUMMY ACTION: 'Trainer Pod Allocation' export was triggered.")
-    flash("Feature not yet implemented: The 'Trainer Pod Allocation' export is under development.", "info")
-    return redirect(url_for('main.view_allocations'))
+    logger.info("Request received for 'Trainer Pod Allocation' report.")
+    try:
+        # 1. Fetch and process the specific trainer pod data
+        trainer_pods_data = fetch_trainer_pod_data(db)
+
+        # 2. Generate the Excel file in memory
+        if not trainer_pods_data:
+            flash("No trainer pod data was found to generate the report.", "warning")
+            return redirect(url_for('main.view_allocations'))
+
+        excel_stream = create_trainer_report_in_memory(trainer_pods_data)
+
+        # 3. Prepare the filename
+        next_monday_str = get_next_monday_date_str("%Y%m%d")
+        filename = f"Trainer Pod Allocation - {next_monday_str}.xlsx"
+
+        # 4. Serve the file
+        return Response(
+            excel_stream,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment;filename={filename}'}
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate Trainer Pod Allocation report: {e}", exc_info=True)
+        flash(f"Could not generate the trainer pod report. Error: {e}", 'danger')
+        return redirect(url_for('main.view_allocations')) # Adjust redirect as needed

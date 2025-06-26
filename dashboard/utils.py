@@ -548,3 +548,16 @@ def _create_contiguous_ranges(pod_numbers: List[Union[int,str]]) -> str:
         ranges.append(f"{start_range}-{end_range}")
         
     return ",".join(ranges)
+
+
+def get_next_monday_date_str(format_str="%Y%m%d"):
+    """
+    Calculates the date of the upcoming Monday.
+    If today is Monday, it returns today's date.
+    Returns the date as a formatted string.
+    """
+    today = datetime.datetime.today()
+    # weekday() returns 0 for Monday, 1 for Tuesday, ..., 6 for Sunday.
+    days_until_monday = (0 - today.weekday() + 7) % 7
+    next_monday = today + datetime.timedelta(days=days_until_monday)
+    return next_monday.strftime(format_str)
