@@ -7,9 +7,11 @@ import logging
 import sys
 # argparse is no longer directly needed here, keep for type hints if desired
 import argparse
+import argparse
 from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 from utils import wait_for_tasks
+from labs.test import checkpoint as test_checkpoint 
 from labs.test import checkpoint as test_checkpoint 
 
 # Import local utilities and helpers
@@ -18,7 +20,8 @@ from vcenter_utils import get_vcenter_instance
 # Pass args_dict down to orchestrator functions
 from orchestrator import vendor_setup, vendor_teardown, update_monitor_and_database
 from operation_logger import OperationLogger
-from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client
+# Import the new function from db_utils
+from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
 from monitor.prtg import PRTGManager
 
 import labs.setup.checkpoint as checkpoint 
@@ -31,11 +34,59 @@ logger = logging.getLogger('labbuild.commands')
 COMPONENT_LIST_STATUS = "component_list_displayed"
 
 def test_environment(args_dict, operation_logger=None):
+    """Runs a test suite for a lab, either by tag or by manual parameters."""
+    # --- Check for tag and fetch parameters ---
+    if args_dict.get('tag'):
+        tag = args_dict.get('tag')
+        logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
+        try:
+            # Warn if conflicting arguments are provided, then ignore them.
+            conflicting_args = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
+            if any(arg in args_dict for arg in conflicting_args if arg != 'tag'):
+                logger.warning(f"Conflicting arguments provided with --tag. Using parameters from tag '{tag}'.")
+                # Clean them up to be safe
+                for arg in conflicting_args:
+                    args_dict.pop(arg, None)
+            
+            test_params = get_test_params_by_tag(tag)
+            args_dict.update(test_params)
+            logger.info(f"Successfully fetched parameters for tag '{tag}': {test_params}")
+
+        except (ValueError, ConnectionError) as e:
+            err_msg = f"Failed to get test parameters for tag '{tag}': {e}"
+            logger.error(err_msg)
+            print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
+        except Exception as e:
+            err_msg = f"An unexpected error occurred while fetching parameters for tag '{tag}': {e}"
+            logger.error(err_msg, exc_info=True)
+            print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
+
+    # --- Validate that all necessary arguments are now present ---
+    required_args = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
+    missing_args = [arg for arg in required_args if args_dict.get(arg) is None]
+    
+    # Special validation for F5
+    if args_dict.get('vendor', '').lower() == 'f5':
+        if args_dict.get('class_number') is None:
+            missing_args.append('class_number')
+
+    if missing_args:
+        err_msg = f"Missing required arguments for test command: {', '.join(missing_args)}. Provide them manually or use a valid --tag."
+        logger.error(err_msg)
+        print(f"Error: {err_msg}", file=sys.stderr)
+        return [{"status": "failed", "error": err_msg}]
+
+    # --- Extract final arguments ---
     vendor = args_dict["vendor"]
     start = args_dict["start_pod"]
     end = args_dict["end_pod"]
     host = args_dict["host"]
     group = args_dict["group"]
+
+    # --- Execute vendor-specific test script ---
+    logger.info(f"Executing test for vendor '{vendor}' on host '{host}' for group '{group}' (Pods/Class: {start}-{end})")
 
     if vendor.lower() == "cp":
         from labs.test import checkpoint
@@ -57,8 +108,9 @@ def test_environment(args_dict, operation_logger=None):
 
     elif vendor.lower() == "f5":
         classnum = args_dict.get("class_number")
+        # Validation already happened, but this is a final safeguard.
         if classnum is None:
-            raise ValueError("Missing required argument '--classnum' for vendor 'f5'")
+            raise ValueError("Internal Error: class_number is missing for F5 test.")
         from labs.test import f5
         f5_args = [
             "-s", str(start),
@@ -71,10 +123,14 @@ def test_environment(args_dict, operation_logger=None):
         return [{"status": "success", "pod": start}]
 
     else:
-        print(f"Vendor '{vendor}' is not yet supported.")
-        return [{"status": "failed", "error": "Unsupported vendor"}]
+        err_msg = f"Vendor '{vendor}' is not yet supported for testing."
+        print(err_msg)
+        return [{"status": "failed", "error": err_msg}]
 
 
+# --- Modified setup_environment ---
+# (The rest of the file remains unchanged)
+# ...
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
 def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
