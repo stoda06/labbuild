@@ -106,6 +106,17 @@ def test_environment(args_dict, operation_logger=None):
         nu.main(nu_args)
         return [{"status": "success", "pod": start}]
 
+    elif vendor.lower() == "av":
+        from labs.test import avaya
+        avaya_args = [
+            "-s", str(start),
+            "-e", str(end),
+            "--host", host,
+            "-g", group
+        ]
+        avaya.main(avaya_args)
+        return [{"status": "success", "pod": start}]
+
     elif vendor.lower() == "f5":
         classnum = args_dict.get("class_number")
         # Validation already happened, but this is a final safeguard.
@@ -127,10 +138,6 @@ def test_environment(args_dict, operation_logger=None):
         print(err_msg)
         return [{"status": "failed", "error": err_msg}]
 
-
-# --- Modified setup_environment ---
-# (The rest of the file remains unchanged)
-# ...
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
 def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
