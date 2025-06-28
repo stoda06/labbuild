@@ -227,6 +227,8 @@ def main():
         needs_core_args = not is_listing_components and \
                         not is_db_only and not is_monitor_only and not is_perm_only
 
+        missing_args = []  # Initialize here to avoid UnboundLocalError
+
         if needs_core_args:
             logger.debug("Validating core arguments for standard operation...")
             missing_args = []
