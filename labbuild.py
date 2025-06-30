@@ -228,9 +228,9 @@ def main():
     needs_core_args = not is_listing_components and \
                       not is_db_only and not is_monitor_only and not is_perm_only
 
+    missing_args = []
     if needs_core_args:
         logger.debug("Validating core arguments for standard operation...")
-        missing_args = []
         # Host is now defined in common_parser, check presence in args_dict
         if 'host' not in args_dict: missing_args.append("--host")
 

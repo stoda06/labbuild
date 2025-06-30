@@ -1049,7 +1049,9 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
 
     # --- Nested Helper: Fetch all finalized docs for the batch ---
     def _fetch_all_plan_data(batch_id):
-        finalized_statuses = ["student_confirmed", "trainer_confirmed", "trainer_skipped_by_user", "trainer_disabled_by_rule"]
+        finalized_statuses = ["student_confirmed", "trainer_confirmed", 
+                              "trainer_skipped_by_user", "trainer_disabled_by_rule",
+                              "builds_fully_scheduled"]
         try:
             if interim_alloc_collection is None:
                 return [], "Database service unavailable."

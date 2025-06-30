@@ -153,7 +153,7 @@
 <div class="modal fade" id="addConfigModal" tabindex="-1" aria-labelledby="addConfigModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg"> {# Use modal-lg for wider modal #}
     <div class="modal-content">
-      <form action="{{ url_for('actions.add_course_config') }}" method="POST">
+      <form action="{{ url_for('settings.add_course_config') }}" method="POST">
         {# Add CSRF token if needed #}
         <div class="modal-header">
           <h5 class="modal-title" id="addConfigModalLabel">Add New Course Configuration</h5>
