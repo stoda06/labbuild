@@ -32,31 +32,48 @@ def build_args_from_form(form_data):
 
         args = [command]  # Command first
 
-        # Map standard arguments to flags
+        # Map standard arguments applicable to most commands
         arg_map = {
             'vendor': '-v', 'course': '-g', 'host': '--host',
             'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn',
             'tag': '-t', 'component': '-c', 'operation': '-o',
-            'memory': '-mem', 'prtg_server': '--prtg-server',
-            'datastore': '-ds', 'thread': '-th',
-            'clonefrom': '--clonefrom' 
+            'thread': '-th', 'clonefrom': '--clonefrom'
         }
         for key, flag in arg_map.items():
             value = form_data.get(key)
             if value is not None and value != '':
                 args.extend([flag, str(value)])
+        
+        # --- THIS IS THE FIX: Command-specific arguments ---
+        if command == 'setup':
+            # These arguments are only valid for the 'setup' command
+            setup_specific_args = {
+                'memory': '-mem',
+                'prtg_server': '--prtg-server',
+                'datastore': '-ds'
+            }
+            for key, flag in setup_specific_args.items():
+                value = form_data.get(key)
+                if value is not None and value != '':
+                    args.extend([flag, str(value)])
+        # --- END OF FIX ---
 
-        # Map boolean flags (checkboxes) - value is 'on' if checked
+        # Map boolean flags (checkboxes)
         bool_flags = {
              're_build': '--re-build', 'full': '--full',
              'monitor_only': '--monitor-only', 'db_only': '--db-only',
              'perm': '--perm', 'verbose': '--verbose'
         }
         for key, flag in bool_flags.items():
-            # Check if the key exists and its value is 'on'
             if form_data.get(key) == 'on':
-                args.append(flag)
-
+                # Only add flags relevant to the command
+                if command == 'setup' and flag in ['--re-build', '--full', '--monitor-only', '--db-only', '--perm']:
+                    args.append(flag)
+                elif command == 'teardown' and flag in ['--monitor-only', '--db-only']:
+                    args.append(flag)
+                elif flag == '--verbose': # Verbose is global
+                    args.append(flag)
+                
         # --- Basic Validation ---
         error_msg = None
         vendor_val = form_data.get('vendor')
@@ -72,7 +89,7 @@ def build_args_from_form(form_data):
             is_special_mode = (
                 form_data.get('db_only') == 'on' or
                 form_data.get('monitor_only') == 'on' or
-                form_data.get('perm') == 'on' or
+                (command == 'setup' and form_data.get('perm') == 'on') or
                 form_data.get('component') == '?' or
                 form_data.get('course') == '?'
             )
@@ -117,36 +134,49 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
 
     args = [command] # Command first
 
-    # --- Map standard arguments to flags ---
+    # --- Map standard arguments applicable to most commands ---
     arg_map = {
         'vendor': '-v', 'course': '-g', 'host': '--host',
         'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn',
         'tag': '-t', 'component': '-c', 'operation': '-o',
-        'memory': '-mem', 'prtg_server': '--prtg-server',
-        'datastore': '-ds', 'thread': '-th',
-        'clonefrom': '--clonefrom'
+        'thread': '-th', 'clonefrom': '--clonefrom'
     }
     for key, flag in arg_map.items():
         value = data.get(key)
         if value is not None:
-             # Skip empty tag if provided as ""
              if key == 'tag' and value == '': continue
              args.extend([flag, str(value)])
 
-    # --- Map boolean flags ---
+    # --- THIS IS THE FIX: Command-specific arguments for API calls ---
+    if command == 'setup':
+        setup_specific_args = {
+            'memory': '-mem',
+            'prtg_server': '--prtg-server',
+            'datastore': '-ds'
+        }
+        for key, flag in setup_specific_args.items():
+            value = data.get(key)
+            if value is not None and value != '':
+                args.extend([flag, str(value)])
+    # --- END OF FIX ---
+
+    # Map boolean flags
     bool_flags = {
-         'rebuild': '--re-build', # Key name used in API request
-         'full': '--full',
-         'monitor_only': '--monitor-only',
-         'db_only': '--db-only',
-         'perm': '--perm',
-         'verbose': '--verbose'
+         'rebuild': '--re-build', 'full': '--full',
+         'monitor_only': '--monitor-only', 'db_only': '--db-only',
+         'perm': '--perm', 'verbose': '--verbose'
     }
     for key, flag in bool_flags.items():
-        if data.get(key) is True: # Check for explicit True
-            args.append(flag)
+        if data.get(key) is True:
+            # Only add flags relevant to the command
+            if command == 'setup' and flag in ['--re-build', '--full', '--monitor-only', '--db-only', '--perm']:
+                args.append(flag)
+            elif command == 'teardown' and flag in ['--monitor-only', '--db-only']:
+                args.append(flag)
+            elif flag == '--verbose': # Verbose is global
+                args.append(flag)
 
-    # --- Basic Server-Side Validation ---
+    # Basic Server-Side Validation (unchanged)
     vendor_val = data.get('vendor')
     if not vendor_val:
         return None, "'vendor' field is required."
@@ -161,7 +191,7 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
         is_special_mode = (
             data.get('db_only') is True or
             data.get('monitor_only') is True or
-            data.get('perm') is True or
+            (command == 'setup' and data.get('perm') is True) or
             data.get('component') == '?' or
             data.get('course') == '?'
         )
@@ -182,7 +212,7 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
                        return None, "Invalid non-integer value for start_pod or end_pod."
 
     logger.debug(f"Built arguments from API data: {args}")
-    return args, None # Return args and no error message
+    return args, None
 
 def build_log_filter_query(request_args):
     """Builds a MongoDB filter dictionary based on request arguments."""
