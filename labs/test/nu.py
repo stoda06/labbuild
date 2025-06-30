@@ -191,14 +191,22 @@ def main(argv=None):
     parser.add_argument("-s", "--start", type=int, required=True, help="Start pod number")
     parser.add_argument("-e", "--end", type=int, required=True, help="End pod number")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
-
+    parser.add_argument("-c", "--component", help="Test specific components (comma-separated list).")
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
     print(f"[INFO] Host argument received: '{args.host}'")
     print(f"📘 Fetching components for course: {args.course}")
     components = get_course_components(args.course)
+    
+    if args.component:
+        selected_components = [c.strip() for c in args.component.split(',')]
+        original_count = len(components)
+        components = [c for c in components if c[0] in selected_components]
+        print(f"\n🔎 Filtering: Selected {len(components)} of {original_count} components based on user input.")
+
     if not components:
+        print(f"❌ No usable components found (or matched filter). Exiting.")
         return
 
     full_results = []

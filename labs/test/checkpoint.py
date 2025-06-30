@@ -307,6 +307,7 @@ def main(argv=None):
     parser.add_argument("-H", "--host", required=True)
     parser.add_argument("-g", "--group", required=True)
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument("-c", "--component", help="Test specific components (comma-separated list).")
     args = parser.parse_args(argv)
 
     host_key = args.host.lower()
@@ -335,6 +336,16 @@ def main(argv=None):
         futures = []
         for pod in pod_range:
             components, ignore_list = fetch_course_config(pod, args.group, args.verbose)
+            
+            if args.component:
+                selected_components = [c.strip() for c in args.component.split(',')]
+                original_count = len(components)
+                components = [c for c in components if c[0] in selected_components]
+                print(f"\n🔎 Filtering for pod {pod}: Selected {len(components)} of {original_count} components based on user input.")
+                if not components:
+                    print(f"   - No matching components found for pod {pod}. Skipping network checks for this pod.")
+                    continue
+
             futures.append(executor.submit(perform_network_checks_over_ssh, pod, components, ignore_list, host_key, power_states.get(pod, {}), args.verbose))
         concurrent.futures.wait(futures)
 

@@ -1,5 +1,3 @@
-# --- START OF FILE labbuild.py ---
-
 #!/usr/bin/env python3
 """
 Lab Build Management Tool - Entry Point
@@ -59,7 +57,7 @@ def main():
 
     # --- Subparsers for Commands ---
     subparsers = parser.add_subparsers(dest='command', title='commands',
-                                       help='Action command (setup, manage, teardown)')
+                                       help='Action command (setup, manage, teardown, test)')
 
     # --- Common Arguments for Subparsers ---
     common_parser = argparse.ArgumentParser(add_help=False)
@@ -106,7 +104,7 @@ def main():
     manage_parser.add_argument('-c', '--component', help='Specify components or use "?" to list.')
     manage_parser.add_argument('-o', '--operation', choices=['start', 'stop', 'reboot'], required=True, help='Power operation to perform.')
     manage_parser.set_defaults(func=manage_environment)
-
+ 
     teardown_parser = subparsers.add_parser('teardown', help='Tear down lab environment.',
                                             parents=[common_parser, pod_range_parser, f5_parser])
     teardown_parser.add_argument('--monitor-only', action='store_true', help='Only remove monitoring entries.')
@@ -117,11 +115,13 @@ def main():
     # Test Subcommand
     # -------------------------------
     test_parser = subparsers.add_parser("test", help="Run test suite for labs", parents=[f5_parser])
-    test_parser.add_argument("-v", "--vendor", required=True, help="Vendor name")
-    test_parser.add_argument("-s", "--start_pod", type=int, required=True, help="Start pod number")
-    test_parser.add_argument("-e", "--end_pod", type=int, required=True, help="End pod number")
-    test_parser.add_argument("-H", "--host", required=True, help="ESXi host name")
-    test_parser.add_argument("-g", "--group", required=True, help="Course group/section")  
+    test_parser.add_argument("-t", "--tag", help="Run tests for a specific allocation by tag name.")
+    test_parser.add_argument("-v", "--vendor", help="Vendor name (required if not using --tag).")
+    test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod number (required if not using --tag).")
+    test_parser.add_argument("-e", "--end_pod", type=int, help="End pod number (required if not using --tag).")
+    test_parser.add_argument("-H", "--host", help="ESXi host name (required if not using --tag).")
+    test_parser.add_argument("-g", "--group", help="Course group/section (required if not using --tag).")  
+    test_parser.add_argument("-c", "--component", help="Test specific component(s), or '?' to list available.") 
     test_parser.set_defaults(func=test_environment)
 
 
@@ -152,7 +152,7 @@ def main():
             parser.error("--test flag can only be used with --list-allocations (-l).")
         else:
             # No command and not listing
-            parser.error("A command (setup, manage, teardown) is required if not using -l.")
+            parser.error("A command (setup, manage, teardown, test) is required if not using -l.")
     
 
     # Ensure --test is not used with commands
@@ -160,7 +160,7 @@ def main():
         parser.error("--test flag cannot be used with commands (setup, manage, teardown).")
 
     # --- Vendor is Required for Commands (also checked in common_parser parent) ---
-    if args.command and not args.vendor:
+    if args.command in ['setup', 'manage', 'teardown'] and not args.vendor:
          parser.error("The vendor argument (-v) is required for commands (setup, manage, teardown).")
 
 
@@ -188,8 +188,7 @@ def main():
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logger.setLevel(log_level)
     print(f"DEBUG: Logger level set to {logging.getLevelName(log_level)}")
-    # Set levels for sub-loggers (no changes needed here)
-    # ... (rest of logger level setting code) ...
+    
     try: # Set levels for other known loggers used by managers/labs
         logging.getLogger("VmManager").setLevel(log_level)
         logging.getLogger("NetworkManager").setLevel(log_level)
@@ -218,67 +217,57 @@ def main():
 
     # --- Validate Core Arguments for Commands (Conditional) ---
     # Note: args_dict now holds the arguments relevant to the command
-    is_listing_components = args_dict.get('component') == "?"
-    # is_listing_courses handled above
-    is_db_only = args_dict.get('db_only', False)
-    is_monitor_only = args_dict.get('monitor_only', False)
-    is_perm_only = args.command == 'setup' and args_dict.get('perm', False)
+    # This section does not apply to the `test` command, which has its own validation
+    if args.command in ['setup', 'manage', 'teardown']:
+        is_listing_components = args_dict.get('component') == "?"
+        is_db_only = args_dict.get('db_only', False)
+        is_monitor_only = args_dict.get('monitor_only', False)
+        is_perm_only = args.command == 'setup' and args_dict.get('perm', False)
 
-    # Core args needed if not listing components and not in special mode
-    needs_core_args = not is_listing_components and \
-                      not is_db_only and not is_monitor_only and not is_perm_only
+        # Core args needed if not listing components and not in special mode
+        needs_core_args = not is_listing_components and \
+                        not is_db_only and not is_monitor_only and not is_perm_only
 
-    missing_args = []
-    if needs_core_args:
-        logger.debug("Validating core arguments for standard operation...")
-        # Host is now defined in common_parser, check presence in args_dict
-        if 'host' not in args_dict: missing_args.append("--host")
+        missing_args = []  # Initialize here to avoid UnboundLocalError
 
-        # Access start/end pod and class number from args_dict for validation
-        cmd_start_pod = args_dict.get('start_pod')
-        cmd_end_pod = args_dict.get('end_pod')
-        cmd_class_number = args_dict.get('class_number')
+        if needs_core_args:
+            logger.debug("Validating core arguments for standard operation...")
+            missing_args = []
+            # Host is now defined in common_parser, check presence in args_dict
+            if 'host' not in args_dict: missing_args.append("--host")
 
-        is_f5_vendor = args.vendor.lower() == 'f5' # Use args.vendor as it's always present
-        has_pod_range = cmd_start_pod is not None and cmd_end_pod is not None
-        has_class_number = cmd_class_number is not None
+            # Access start/end pod and class number from args_dict for validation
+            cmd_start_pod = args_dict.get('start_pod')
+            cmd_end_pod = args_dict.get('end_pod')
+            cmd_class_number = args_dict.get('class_number')
 
-        # --- THIS IS THE CORRECTED LOGIC ---
-        # F5 validation
-        if is_f5_vendor and not has_class_number:
-            missing_args.append("--class_number (Required for F5 operations)")
-            
-        # Non-F5 validation
-        # The pod range is required for non-F5 vendors for ALL commands.
-        # For F5, it's only strictly required for `setup` and `manage` if you are targeting pods.
-        # It is NOT required for F5 `teardown` of an entire class.
-        elif not is_f5_vendor and not has_pod_range:
-            missing_args.append("--start-pod / --end-pod (Required for non-F5 operations)")
-        
-        # Specific check for F5 pod operations in setup/manage that NEED a range
-        elif is_f5_vendor and args.command in ['setup', 'manage'] and has_class_number:
-             # If you are NOT in a special mode and you are doing F5 setup/manage,
-             # you might want to enforce a pod range if you expect pod-level actions.
-             # This part is optional but adds robustness. For now, we assume the new teardown logic is the main point.
-             # Example: if 'component' is not '?' and not db_only etc, then pod range might be needed.
-             # For simplicity, we'll let the command handler manage this specific case.
-             pass
+            is_f5_vendor = args.vendor.lower() == 'f5' # Use args.vendor as it's always present
+            has_pod_range = cmd_start_pod is not None and cmd_end_pod is not None
+            has_class_number = cmd_class_number is not None
 
-        # Pod range sanity check
-        if cmd_start_pod is not None and cmd_end_pod is not None:
-             try:
-                 if int(cmd_start_pod) > int(cmd_end_pod):
-                     err_msg = "Error: start-pod cannot be greater than end-pod."
-                     logger.critical(err_msg)
-                     operation_logger.log_pod_status(pod_id="arg_validation", status="failed", step="invalid_pod_range", error=err_msg)
-                     if operation_logger and not operation_logger._is_finalized:
-                          operation_logger.finalize("failed", 0, 0)
-                     sys.exit(1)
-             except ValueError:
-                  logger.critical("Invalid non-integer value received for start/end pod.")
-                  if operation_logger and not operation_logger._is_finalized:
-                       operation_logger.finalize("failed", 0, 0)
-                  sys.exit(1)
+            # F5 validation
+            if is_f5_vendor and not has_class_number:
+                missing_args.append("--class_number (Required for F5 operations)")
+            # Non-F5 validation
+            elif not is_f5_vendor and not has_pod_range:
+                missing_args.append("--start-pod / --end-pod (Required for non-F5 operations)")
+
+            # Pod range sanity check
+            if cmd_start_pod is not None and cmd_end_pod is not None:
+                try: # Ensure they are comparable (should be ints if parsing worked)
+                    if int(cmd_start_pod) > int(cmd_end_pod):
+                        err_msg = "Error: start-pod cannot be greater than end-pod."
+                        logger.critical(err_msg)
+                        operation_logger.log_pod_status(pod_id="arg_validation", status="failed", step="invalid_pod_range", error=err_msg)
+                        if operation_logger and not operation_logger._is_finalized:
+                            operation_logger.finalize("failed", 0, 0)
+                        sys.exit(1)
+                except ValueError:
+                    # Should not happen if type=int is used, but defensive check
+                    logger.critical("Invalid non-integer value received for start/end pod.")
+                    if operation_logger and not operation_logger._is_finalized:
+                        operation_logger.finalize("failed", 0, 0)
+                    sys.exit(1)
 
         if missing_args:
             err_msg = f"Missing required args for '{args.command}': {', '.join(missing_args)}"

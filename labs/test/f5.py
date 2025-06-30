@@ -247,6 +247,7 @@ def main(argv=None):
     parser.add_argument("-s", "--start", type=int, required=True, help="Start pod number")
     parser.add_argument("-e", "--end", type=int, required=True, help="End pod number")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument("-c", "--component", help="Test specific components (comma-separated list).")
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
     ssh_target = f"f5vr{args.classnum}.us" if args.host.lower() == "hotshot" else f"f5vr{args.classnum}"
@@ -256,6 +257,28 @@ def main(argv=None):
     if not grouped_components:
         print(f"❌ No components found for course {args.course}")
         return
+    
+    if args.component:
+        selected_components = [c.strip() for c in args.component.split(',')]
+        filtered_grouped_components = []
+        original_count = 0
+        filtered_count = 0
+        for group_name, components in grouped_components:
+            original_count += len(components)
+            # Filter components within this group
+            filtered_comps_in_group = [c for c in components if c[0] in selected_components]
+            if filtered_comps_in_group:
+                # If any components in this group are selected, add the group back with the filtered list
+                filtered_grouped_components.append((group_name, filtered_comps_in_group))
+                filtered_count += len(filtered_comps_in_group)
+        
+        print(f"\n🔎 Filtering: Selected {filtered_count} of {original_count} components based on user input.")
+        grouped_components = filtered_grouped_components
+
+    if not grouped_components:
+        print(f"❌ No usable components found (or matched filter). Exiting.")
+        return
+
     vcenter_host = VCENTER_MAP.get(args.host.lower())
     if not vcenter_host:
         print(f"❌ Host '{args.host}' is not mapped to any vCenter in VCENTER_MAP.")
