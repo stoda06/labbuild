@@ -121,6 +121,7 @@ def main():
     test_parser.add_argument("-e", "--end_pod", type=int, help="End pod number (required if not using --tag).")
     test_parser.add_argument("-H", "--host", help="ESXi host name (required if not using --tag).")
     test_parser.add_argument("-g", "--group", help="Course group/section (required if not using --tag).")  
+    test_parser.add_argument("-c", "--component", help="Test specific component(s), or '?' to list available.") 
     test_parser.set_defaults(func=test_environment)
 
 

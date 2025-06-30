@@ -278,7 +278,7 @@ def main(argv=None):
     parser.add_argument("-s", "--start", type=int, required=True, help="Start pod number")
     parser.add_argument("-e", "--end", type=int, required=True, help="End pod number")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
-
+    parser.add_argument("-c", "--component", help="Test specific components (comma-separated list).")
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
@@ -316,10 +316,15 @@ def main(argv=None):
                     skipped_display.append(comp)  # fallback if old format
 
             print(f"⚠️ Pod {pod}: Skipped components (missing podip/podport): {', '.join(skipped_display)}")
-
+        
+        if args.component:
+            selected_components = [c.strip() for c in args.component.split(',')]
+            original_count = len(components)
+            components = [c for c in components if c[0] in selected_components]
+            print(f"\n🔎 Filtering for pod {pod}: Selected {len(components)} of {original_count} components based on user input.")
 
         if not components:
-            print(f"❌ Pod {pod}: No usable components found. Skipping pod.")
+            print(f"❌ Pod {pod}: No usable components found (or matched filter). Skipping pod.")
             continue
 
         power_map = get_vm_power_map(si, pod)

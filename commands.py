@@ -1,18 +1,9 @@
-# --- START OF FILE commands.py ---
-
-# commands.py
-"""Functions that handle the main logic for setup, manage, and teardown commands."""
-
 import logging
 import sys
-# argparse is no longer directly needed here, keep for type hints if desired
-import argparse
 import argparse
 from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 from utils import wait_for_tasks
-from labs.test import checkpoint as test_checkpoint 
-from labs.test import checkpoint as test_checkpoint 
 
 # Import local utilities and helpers
 from config_utils import fetch_and_prepare_course_config, extract_components, get_host_by_name
@@ -23,6 +14,7 @@ from operation_logger import OperationLogger
 # Import the new function from db_utils
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
 from monitor.prtg import PRTGManager
+from constants import DB_NAME
 
 import labs.setup.checkpoint as checkpoint 
 from labs.test import checkpoint as test_checkpoint 
@@ -32,9 +24,44 @@ logger = logging.getLogger('labbuild.commands')
 
 # --- Constants for return status ---
 COMPONENT_LIST_STATUS = "component_list_displayed"
+TEMP_COURSE_CONFIG_COLLECTION = "temp_courseconfig"
 
 def test_environment(args_dict, operation_logger=None):
     """Runs a test suite for a lab, either by tag or by manual parameters."""
+    # --- Check for component listing request ---
+    if args_dict.get('component') == '?':
+        course_name = args_dict.get('group')
+        if not course_name:
+            err_msg = "Cannot list components: --group (course name) is required with --component '?'"
+            logger.error(err_msg)
+            print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
+        
+        logger.info(f"Listing components for course: {course_name}")
+        try:
+            with mongo_client() as client:
+                if not client:
+                    raise ConnectionError("DB connection failed.")
+                db = client[DB_NAME]
+                collection = db[TEMP_COURSE_CONFIG_COLLECTION]
+                doc = collection.find_one({"course_name": course_name}, {"components.component_name": 1})
+                if not doc or 'components' not in doc:
+                    print(f"No components found for course: {course_name}")
+                    return [{"status": "success", "message": "No components found"}]
+                
+                component_names = [c.get('component_name') for c in doc.get('components', []) if c.get('component_name')]
+                
+                print(f"\nAvailable components for course '{course_name}':")
+                for name in sorted(component_names):
+                    print(f"  - {name}")
+                print("\nUse -c with one or more comma-separated names to test specific components.")
+                return [{"status": "success", "message": "Component list displayed"}]
+        except Exception as e:
+            err_msg = f"Failed to fetch component list: {e}"
+            logger.error(err_msg, exc_info=True)
+            print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
+
     # --- Check for tag and fetch parameters ---
     if args_dict.get('tag'):
         tag = args_dict.get('tag')
@@ -84,6 +111,7 @@ def test_environment(args_dict, operation_logger=None):
     end = args_dict["end_pod"]
     host = args_dict["host"]
     group = args_dict["group"]
+    component_arg = args_dict.get("component")
 
     # --- Execute vendor-specific test script ---
     logger.info(f"Executing test for vendor '{vendor}' on host '{host}' for group '{group}' (Pods/Class: {start}-{end})")
@@ -91,18 +119,24 @@ def test_environment(args_dict, operation_logger=None):
     if vendor.lower() == "cp":
         from labs.test import checkpoint
         checkpoint_args = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
+        if component_arg:
+            checkpoint_args.extend(["-c", component_arg])
         checkpoint.main(checkpoint_args)
         return [{"status": "success", "pod": start}]
 
     elif vendor.lower() == "pa":
         from labs.test import palo
         palo_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        if component_arg:
+            palo_args.extend(["-c", component_arg])
         palo.main(palo_args)
         return [{"status": "success", "pod": start}]
 
     elif vendor.lower() == "nu":
         from labs.test import nu
         nu_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        if component_arg:
+            nu_args.extend(["-c", component_arg])
         nu.main(nu_args)
         return [{"status": "success", "pod": start}]
 
@@ -114,6 +148,8 @@ def test_environment(args_dict, operation_logger=None):
             "--host", host,
             "-g", group
         ]
+        if component_arg:
+            avaya_args.extend(["-c", component_arg])
         avaya.main(avaya_args)
         return [{"status": "success", "pod": start}]
 
@@ -130,6 +166,8 @@ def test_environment(args_dict, operation_logger=None):
             "-g", group,
             "--classnum", str(classnum)
         ]
+        if component_arg:
+            f5_args.extend(["-c", component_arg])
         f5.main(f5_args)
         return [{"status": "success", "pod": start}]
 
