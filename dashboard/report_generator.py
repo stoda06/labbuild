@@ -21,7 +21,7 @@ from constants import (
     AU_HOST_NAMES, US_HOST_NAMES,
   
   INTERIM_ALLOCATION_COLLECTION,
-    ALLOCATION_COLLECTION
+    ALLOCATION_COLLECTION, HOST_COLLECTION
 
 
 )# Import db connection from extensions
@@ -217,6 +217,8 @@ def find_location_from_code(course_code: str, location_map: dict) -> str:
         if loc_code in course_code: return location_map[loc_code]
     return ""
 
+# --- PART 1: REPLACE THIS FUNCTION ---
+
 def unpack_interim_allocations(documents, vendor_map, location_map):
     grouped_courses = defaultdict(lambda: {'assignments': [], 'trainer_assignments': [], 'docs': []})
     for doc in documents:
@@ -235,6 +237,10 @@ def unpack_interim_allocations(documents, vendor_map, location_map):
             pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in data['assignments'] if a.get('start_pod')]
             hosts = sorted(set(a.get('host') for a in data['assignments'] if a.get('host')))
             student_virtual_hosts_str = ", ".join(hosts)
+            
+            # Find the version from 'final_labbuild_course'
+            found_version = base_doc.get('final_labbuild_course')
+            
             course = {
                 'course_code': code, 'us_au_location': determine_us_au_location(student_virtual_hosts_str),
                 'course_start_date': format_date(base_doc.get('sf_start_date')), 'last_day': format_date(base_doc.get('sf_end_date')),
@@ -242,24 +248,38 @@ def unpack_interim_allocations(documents, vendor_map, location_map):
                 'course_name': base_doc.get('sf_course_type'), 'start_end_pod': ", ".join(pod_ranges),
                 'username': base_doc.get('student_apm_username'), 'password': base_doc.get('student_apm_password'),
                 'class_number': base_doc.get('f5_class_number'), 'students': base_doc.get('sf_pax_count', 0),
-                'vendor_pods': base_doc.get('effective_pods_req', len(pod_ranges)), 'version': base_doc.get('final_labbuild_course'),
-                'ram': meta_doc.get('memory_gb_one_pod'), 'virtual_hosts': student_virtual_hosts_str, 'pod_type': 'default'
+                'vendor_pods': base_doc.get('effective_pods_req', len(pod_ranges)),
+                'ram': meta_doc.get('memory_gb_one_pod'), 'virtual_hosts': student_virtual_hosts_str, 'pod_type': 'default',
+
+                # --- CHANGE IS HERE ---
+                'version': found_version,        # Set Version
+                'course_version': found_version, # Set Course Version to be the same
             }
             standard_courses.append(course)
+            
         if data['trainer_assignments']:
             meta_doc = next((d for d in data['docs'] if d.get('trainer_memory_gb_one_pod') is not None), base_doc)
             pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in data['trainer_assignments'] if a.get('start_pod')]
             final_trainer_hosts = student_virtual_hosts_str or ", ".join(sorted(set(a.get('host') for a in data['trainer_assignments'] if a.get('host'))))
+            
+            # Find the trainer version from 'trainer_labbuild_course'
+            found_trainer_version = meta_doc.get('trainer_labbuild_course')
+            
             trainer = {
                 'course_code': f"{code}-TP", 'us_au_location': determine_us_au_location(final_trainer_hosts),
                 'course_name': meta_doc.get('trainer_labbuild_course') or base_doc.get('sf_course_type'), 'start_end_pod': ", ".join(pod_ranges),
                 'pod_type': 'trainer', 'course_start_date': format_date(base_doc.get('sf_start_date')), 'last_day': format_date(base_doc.get('sf_end_date')),
                 'location': resolved_location, 'trainer_name': base_doc.get('sf_trainer_name'),
                 'username': meta_doc.get('trainer_apm_username') or base_doc.get('apm_username'), 'password': meta_doc.get('trainer_apm_password') or base_doc.get('apm_password'),
-                'vendor_pods': len(pod_ranges), 'version': meta_doc.get('trainer_labbuild_course'),
+                'vendor_pods': len(pod_ranges),
                 'ram': meta_doc.get('trainer_memory_gb_one_pod'), 'virtual_hosts': final_trainer_hosts,
+
+                # --- CHANGE IS HERE ---
+                'version': found_trainer_version,        # Set Version
+                'course_version': found_trainer_version, # Set Course Version to be the same
             }
             trainer_pods.append(trainer)
+            
     return standard_courses, trainer_pods
 
 def _find_field(doc, keys):
@@ -269,42 +289,80 @@ def _find_field(doc, keys):
         if course_details.get(key) is not None: return course_details.get(key)
     return None
 
-def unpack_current_allocations(documents, vendor_map, apm_credentials, location_map):
+# --- REVISED AND CORRECTED FUNCTION ---
+# Replace your old unpack_current_allocations function with this one.
+
+# --- PART 2: REPLACE THIS FUNCTION ---
+
+# --- PART 2: REPLACE THIS FUNCTION ---
+
+def unpack_current_allocations(documents, vendor_map, apm_credentials, location_map, host_to_vcenter_map):
     grouped = defaultdict(lambda: {'pod_numbers': set(), 'hosts': set(), 'doc': None})
     for doc in documents:
-        if doc.get('extend') != 'true': continue
-        course = doc.get('courses', [{}])[0]
-        key = (course.get('vendor'), course.get('course_name'), doc.get('tag'))
-        if not all(key): continue
-        if not grouped[key]['doc']: grouped[key]['doc'] = doc
+        if doc.get('extend') != 'true':
+            continue
+        key = doc.get('tag')
+        if not key:
+            continue
+        if not grouped[key]['doc']:
+            grouped[key]['doc'] = doc
         for c in doc.get('courses', []):
             for pd in c.get('pod_details', []):
                 for p in pd.get("pods", [pd]):
-                    if p.get("pod_number") is not None: grouped[key]['pod_numbers'].add(int(p.get("pod_number")))
-                    if p.get("host"): grouped[key]['hosts'].add(p.get("host"))
+                    if p.get("pod_number") is not None:
+                        grouped[key]['pod_numbers'].add(int(p.get("pod_number")))
+                    if p.get("host"):
+                        grouped[key]['hosts'].add(p.get("host"))
 
     extended_pods = []
-    for key, val in grouped.items():
-        if not val['pod_numbers']: continue
+    for course_code, val in grouped.items():
+        if not val['pod_numbers']:
+            continue
+        
         doc = val['doc']
-        course_code = doc.get('tag')
         creds = apm_credentials.get(course_code, {})
+        
         username = _find_field(doc, ['apm_username', 'student_apm_username']) or creds.get('username')
         password = _find_field(doc, ['apm_password', 'student_apm_password']) or creds.get('password')
         trainer_name = _find_field(doc, ['trainer_name', 'sf_trainer_name']) or creds.get('trainer_name')
+        
         pod_nums = sorted(val['pod_numbers'])
-        pod_range = f"{pod_nums[0]}-{pod_nums[-1]}" if len(pod_nums) > 1 else str(pod_nums[0])
+        pod_count = len(pod_nums)
+        pod_range = f"{pod_nums[0]}-{pod_nums[-1]}" if pod_count > 1 else str(pod_nums[0])
+        
+        course_hosts = sorted(val['hosts'])
+        vcenters = {host_to_vcenter_map.get(host) for host in course_hosts if host_to_vcenter_map.get(host)}
+        vcenter_str = ", ".join(sorted(vcenters))
+
+        # --- CHANGE IS HERE ---
+        # Find the version from 'course_name' as specified for currentallocation
+        found_version = _find_field(doc, ['course_name', 'version']) or 'N/A'
+        
         pod = {
-            'course_code': course_code, 'us_au_location': determine_us_au_location(", ".join(sorted(val['hosts']))),
-            'course_name': _find_field(doc, ['course_name', 'sf_course_type']), 'pod_type': 'extended',
-            'start_end_pod': pod_range, 'location': find_location_from_code(course_code, location_map),
-            'vendor_pods': len(pod_nums), 'virtual_hosts': ", ".join(sorted(val['hosts'])), 'ram': None,
-            'course_start_date': format_date(_find_field(doc, ['start_date', 'sf_start_date'])), 'last_day': format_date(_find_field(doc, ['end_date', 'sf_end_date'])),
-            'username': username, 'password': password, 'trainer_name': trainer_name,
+            'course_code': course_code,
+            'us_au_location': determine_us_au_location(", ".join(course_hosts)),
+            'pod_type': 'extended',
+            'start_end_pod': pod_range,
+            'location': find_location_from_code(course_code, location_map),
+            'virtual_hosts': ", ".join(course_hosts),
+            'course_start_date': format_date(_find_field(doc, ['start_date', 'sf_start_date'])),
+            'last_day': format_date(_find_field(doc, ['end_date', 'sf_end_date'])),
+            'username': username,
+            'password': password,
+            'trainer_name': trainer_name,
+            'ram': _find_field(doc, ['ram', 'memory_gb_one_pod']),
+            'vendor_pods': pod_count,
+            'students': pod_count,
+            'vcenter_name': vcenter_str,
+
+            # Apply the version to both columns
+            'version': found_version,
+            'course_version': found_version,
+            # The 'Group' (course_type) key is omitted to leave it blank
         }
         extended_pods.append(pod)
+        
     return extended_pods
-
 
 def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[Dict], extended_pods: List[Dict]) -> io.BytesIO:
     """
@@ -395,7 +453,7 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
         apply_outer_border(sheet, group_start_row, current_row - 1, 1, group_end_col)
 
     write_summary_section(sheet, 2, {})
-    column_widths = {'A': 22, 'B': 8, 'C': 14, 'D': 14, 'E': 14, 'F': 24, 'G': 28, 'H': 6, 'I': 4, 'J': 6, 'K': 14, 'L': 14, 'M': 8, 'N': 8, 'O': 10, 'P': 28, 'Q': 10, 'R': 18, 'S': 15, 'T': 12, 'U': 8, 'V': 8, 'W': 8, 'X': 8, 'Y': 8, 'Z': 8}
+    column_widths = {'A': 22, 'B': 8, 'C': 14, 'D': 14, 'E': 14, 'F': 24, 'G': 28, 'H': 6, 'I': 4, 'J': 6, 'K': 14, 'L': 14, 'M': 8, 'N': 8, 'O': 10, 'P': 6, 'Q': 10, 'R': 18, 'S': 15, 'T': 12, 'U': 8, 'V': 8, 'W': 8, 'X': 8, 'Y': 8, 'Z': 8}
     for col_letter, width in column_widths.items():
         sheet.column_dimensions[col_letter].width = width
 
@@ -422,6 +480,12 @@ def get_full_report_data(db): # <--- NOTICE THE 'db' ARGUMENT HERE
         interim_docs = list(db[INTERIM_ALLOCATION_COLLECTION].find({}))
         current_docs = list(db[ALLOCATION_COLLECTION].find({}))
         locations_data = list(db["locations"].find({}))
+        host_docs = list(db[HOST_COLLECTION].find({}))
+        host_to_vcenter_map = {
+            doc['host_name']: doc['vcenter']
+            for doc in host_docs if 'host_name' in doc and 'vcenter' in doc}
+
+
         location_map = {loc['code']: loc['name'] for loc in locations_data if 'code' in loc and 'name' in loc}
         
         logger.info("Successfully fetched data from MongoDB.")
@@ -432,7 +496,7 @@ def get_full_report_data(db): # <--- NOTICE THE 'db' ARGUMENT HERE
         apm_lookup = build_apm_lookup(apm_data)
 
         course_allocs, trainer_pods = unpack_interim_allocations(interim_docs, vendor_map, location_map)
-        extended_pods = unpack_current_allocations(current_docs, vendor_map, apm_lookup, location_map)
+        extended_pods = unpack_current_allocations(current_docs, vendor_map, apm_lookup, location_map, host_to_vcenter_map)
         
         logger.info(f"Processed: {len(course_allocs)} Standard | {len(extended_pods)} Extended | {len(trainer_pods)} Trainer pods")
         

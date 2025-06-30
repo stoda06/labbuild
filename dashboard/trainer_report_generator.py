@@ -11,7 +11,7 @@ from openpyxl.utils import get_column_letter
 # Import from your project's main constants file
 from constants import (
     ExcelStyle, TRAINER_SHEET_HEADERS, REPORT_SECTIONS, VENDOR_GROUP_MAP,
-    ALLOCATION_COLLECTION, HOST_COLLECTION
+    ALLOCATION_COLLECTION, HOST_COLLECTION, INTERIM_ALLOCATION_COLLECTION
 )
 
 logger = logging.getLogger(__name__)
@@ -54,31 +54,70 @@ def _assemble_record(doc, course_info, pod_level_2, final_pod_details, host_map)
     flat_record['vendor'] = vendor
     return flat_record
 
+# --- REVISED AND CORRECTED FUNCTION ---
+# Replace your previous fetch_trainer_pod_data function with this one.
+
 def fetch_trainer_pod_data(db):
-    """Fetches and processes ONLY trainer pods for the report."""
+    """
+    Fetches and processes trainer pods from the interimallocation collection,
+    handling pod number ranges.
+    """
     processed_data = []
     try:
         host_map = _create_host_to_vcenter_map(db)
-        collection = db[ALLOCATION_COLLECTION]
-        logger.info(f"Querying for TRAINER PODS with filter: {TRAINER_QUERY}")
-        cursor = collection.find(TRAINER_QUERY)
+        collection = db[INTERIM_ALLOCATION_COLLECTION]
         
-        for doc in cursor:
-            for course_info in doc.get('courses', []):
-                for pod_level_2 in course_info.get('pod_details', []):
-                    if 'pods' in pod_level_2 and pod_level_2.get('pods'):
-                        for final_pod_details in pod_level_2.get('pods', []):
-                            flat_record = _assemble_record(doc, course_info, pod_level_2, final_pod_details, host_map)
-                            processed_data.append(flat_record)
-                    else:
-                        final_pod_details = pod_level_2 
-                        flat_record = _assemble_record(doc, course_info, pod_level_2, final_pod_details, host_map)
-                        processed_data.append(flat_record)
+        logger.info("Querying for trainer data in 'interimallocation' collection.")
+        cursor = collection.find({"status": "trainer_confirmed"}) # Or adjust filter as needed
 
-        logger.info(f"Successfully processed {len(processed_data)} individual TRAINER pods.")
+        for doc in cursor:
+            # Loop through each assignment object for a given course
+            for assignment in doc.get('trainer_assignment', []):
+                
+                # --- KEY CHANGE: Handle the pod range ---
+                try:
+                    start = assignment.get('start_pod')
+                    end = assignment.get('end_pod')
+
+                    # Ensure both start and end pods are valid numbers before proceeding
+                    if start is not None and end is not None:
+                        # Loop from start_pod to end_pod (inclusive)
+                        for pod_num in range(int(start), int(end) + 1):
+                            
+                            # Create a unique record for EACH pod number
+                            flat_record = {}
+                            
+                            host_name = assignment.get('host', 'N/A')
+                            
+                            flat_record['host'] = host_name
+                            flat_record['vcenter'] = host_map.get(host_name, 'N/A')
+                            flat_record['course_name'] = doc.get('sf_course_type', 'N/A')
+                            flat_record['version'] = doc.get('final_labbuild_course', 'N/A')
+                            flat_record['username'] = doc.get('trainer_apm_username', 'N/A')
+                            flat_record['password'] = doc.get('trainer_apm_password', 'N/A')
+                            
+                            # Use the pod number from our loop
+                            flat_record['pod_number'] = pod_num # <-- CORRECTED LOGIC
+                            
+                            flat_record['ram'] = doc.get('trainer_memory_gb_one_pod', 'N/A')
+                            flat_record['taken_by'] = doc.get('sf_trainer_name', 'N/A')
+                            flat_record['notes'] = doc.get('trainer_assignment_warning')
+                            flat_record['class'] = 'N/A' # Field does not exist in this structure
+
+                            vendor_code = doc.get('vendor', '').upper()
+                            vendor = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
+                            flat_record['vendor'] = vendor
+
+                            processed_data.append(flat_record)
+
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Skipping pod range due to invalid data for doc _id {doc.get('_id')}: {e}")
+                    continue
+
+        logger.info(f"Successfully processed {len(processed_data)} individual TRAINER pods from 'interimallocation'.")
         return processed_data
     except Exception as e:
-        logger.error(f"An error occurred while fetching trainer data: {e}", exc_info=True)
+        logger.error(f"An error occurred while fetching trainer data from interimallocation: {e}", exc_info=True)
         raise e
 
 
@@ -90,8 +129,14 @@ def _apply_style(cell, fill=None, font=None, alignment=None, border=None):
     if alignment: cell.alignment = alignment
     if border: cell.border = border
 
+# --- REVISED FUNCTION WITH CONDITIONAL SECTION GENERATION ---
+# Replace your old create_trainer_report_in_memory function with this one.
+
 def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
-    """Generates the trainer report and saves it to an in-memory stream."""
+    """
+    Generates the trainer report, but only includes sections that have
+    at least one pod assigned.
+    """
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Trainer Pod Allocation"
@@ -103,31 +148,38 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
     _apply_style(title_cell, font=Font(bold=True, size=16), alignment=ExcelStyle.CENTER_ALIGNMENT.value)
     sheet.row_dimensions[1].height = 20
 
+    # Group all fetched pods by their assigned vendor group name
     grouped_by_vendor = defaultdict(list)
     for pod in trainer_pods:
+        # The vendor name (e.g., "PR COURSE") is already set in the fetch_trainer_pod_data function
         vendor_name = pod.get("vendor")
-        if vendor_name and vendor_name != "Other Vendors":
+        if vendor_name:
             grouped_by_vendor[vendor_name].append(pod)
 
     current_row = 3
-    # Use the REPORT_SECTIONS from the constants file
+    # Use the REPORT_SECTIONS from the constants file to maintain order
     for section_name in REPORT_SECTIONS:
-        sheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_columns)
-        cell = sheet.cell(row=current_row, column=1, value=section_name)
-        # Use styles from the main ExcelStyle class
-        _apply_style(cell, fill=ExcelStyle.LIGHT_BLUE_FILL.value, font=Font(bold=True, color="000000", size=14))
-        current_row += 1
-
-        headers = list(TRAINER_SHEET_HEADERS.keys())
-        for col_idx, header_text in enumerate(headers, 1):
-            cell = sheet.cell(row=current_row, column=col_idx, value=header_text)
-            _apply_style(cell, fill=ExcelStyle.LIGHT_BLUE_FILL.value, font=Font(bold=True),
-                         alignment=ExcelStyle.CENTER_ALIGNMENT.value, border=ExcelStyle.THIN_BORDER.value)
-        current_row += 1
-
+        
         records_for_this_section = grouped_by_vendor.get(section_name, [])
 
+        # --- KEY CHANGE: Only create the section if there are pods for it ---
         if records_for_this_section:
+            
+            # 1. Write the blue section header (e.g., "PR COURSE")
+            sheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=num_columns)
+            cell = sheet.cell(row=current_row, column=1, value=section_name)
+            _apply_style(cell, fill=ExcelStyle.LIGHT_BLUE_FILL.value, font=Font(bold=True, color="000000", size=14))
+            current_row += 1
+
+            # 2. Write the column headers (Course Name, Version, etc.)
+            headers = list(TRAINER_SHEET_HEADERS.keys())
+            for col_idx, header_text in enumerate(headers, 1):
+                cell = sheet.cell(row=current_row, column=col_idx, value=header_text)
+                _apply_style(cell, fill=ExcelStyle.LIGHT_BLUE_FILL.value, font=Font(bold=True),
+                             alignment=ExcelStyle.CENTER_ALIGNMENT.value, border=ExcelStyle.THIN_BORDER.value)
+            current_row += 1
+
+            # 3. Sort and write the actual data rows for the pods
             def sort_key(record):
                 course = record.get('course_name', '')
                 pod_num_str = str(record.get('pod_number', '0'))
@@ -143,8 +195,11 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
                     cell = sheet.cell(row=current_row, column=col_idx, value=value)
                     _apply_style(cell, border=ExcelStyle.THIN_BORDER.value, alignment=ExcelStyle.CENTER_ALIGNMENT.value)
                 current_row += 1
-        current_row += 1
+            
+            # 4. Add a blank row after the section is complete
+            current_row += 1
 
+    # Adjust column widths (this part remains the same)
     column_widths = {'A': 35, 'B': 12, 'C': 15, 'D': 15, 'E': 20, 'F': 8, 'G': 8, 'H': 15, 'I': 20, 'J': 15, 'K': 35}
     for col_letter, width in column_widths.items():
         if col_letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:num_columns]:
