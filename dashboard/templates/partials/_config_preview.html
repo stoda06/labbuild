@@ -1,0 +1,61 @@
+{# dashboard/templates/partials/_config_preview.html #}
+<div class="config-preview-container">
+    <ul class="list-unstyled mb-0">
+        {# --- Alias and APM Version --- #}
+        {% if config_doc.alias %}
+            <li><strong>Alias:</strong> {{ config_doc.alias }}</li>
+        {% endif %}
+        {% if config_doc.apm_version %}
+            <li><strong>APM Version:</strong> {{ config_doc.apm_version }}</li>
+        {% endif %}
+        {% if config_doc.memory %}
+            <li><strong>Memory:</strong> {{ config_doc.memory }}</li>
+        {% endif %}
+
+        {# --- Components Preview --- #}
+        {% if config_doc.components %}
+            <li>
+                <strong>Components ({{ config_doc.components|length }}):</strong>
+                <ul class="preview-nested-list">
+                    {% for comp in config_doc.components[:3] %} {# Show first 3 #}
+                        <li><code>{{ comp.component_name }}</code> -> <code>{{ comp.clone_name }}</code></li>
+                    {% endfor %}
+                    {% if config_doc.components|length > 3 %}
+                        <li>... and {{ config_doc.components|length - 3 }} more.</li>
+                    {% endif %}
+                </ul>
+            </li>
+        {% endif %}
+
+        {# --- Networks Preview --- #}
+        {% if config_doc.networks %}
+            <li>
+                <strong>Networks ({{ config_doc.networks|length }}):</strong>
+                <ul class="preview-nested-list">
+                    {% for net in config_doc.networks[:2] %} {# Show first 2 #}
+                        <li>
+                            Switch: <code>{{ net.switch_name or net.switch }}</code>
+                            (Port Groups: {{ net.port_groups|length }})
+                        </li>
+                    {% endfor %}
+                    {% if config_doc.networks|length > 2 %}
+                        <li>... and {{ config_doc.networks|length - 2 }} more.</li>
+                    {% endif %}
+                </ul>
+            </li>
+        {% endif %}
+        
+        {# --- PRTG Preview --- #}
+        {% if config_doc.prtg %}
+            <li>
+                <strong>PRTG:</strong> 
+                {% if config_doc.prtg is mapping %}
+                    1 entry
+                {% elif config_doc.prtg is sequence %}
+                    {{ config_doc.prtg|length }} entries
+                {% endif %}
+            </li>
+        {% endif %}
+
+    </ul>
+</div>

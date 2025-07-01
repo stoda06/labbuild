@@ -1,0 +1,16 @@
+{# dashboard/templates/partials/_config_form_section.html #}
+<div class="accordion-item">
+    <h2 class="accordion-header" id="heading-{{ section_name }}">
+        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ section_name }}" aria-expanded="false" aria-controls="collapse-{{ section_name }}">
+            {{ title }}
+        </button>
+    </h2>
+    <div id="collapse-{{ section_name }}" class="accordion-collapse collapse" aria-labelledby="heading-{{ section_name }}" data-bs-parent="#configAccordion">
+        <div class="accordion-body">
+            <div id="{{ section_name }}-container" class="dynamic-items-container">
+                <!-- Dynamic items will be injected here by JS -->
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-primary mt-2 add-item-btn" data-section-name="{{ section_name }}">Add {{ singular_title }}</button>
+        </div>
+    </div>
+</div>
