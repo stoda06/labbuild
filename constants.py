@@ -27,6 +27,19 @@ LOG_LEVEL_GENERATE_EXCEL = logging.DEBUG
 HOST_MAP = {"Ni": "nightbird", "Cl": "cliffjumper", "Ul": "ultramagnus", "Un": "unicron", "Ho": "hotshot", "Tr": "Trainer"}
 AU_HOST_NAMES = ["nightbird", "cliffjumper", "ultramagnus", "unicron"]
 US_HOST_NAMES = ["hotshot"]
+
+# These values were inferred from your original hardcoded report generator.
+AVAILABLE_RAM_GB = {
+    "Ni": 1800,
+    "Cl": 500,
+    "Ul": 2000,
+    "Un": 2000,
+    "Ho": 2000,
+    "Tr": 1000,
+}
+
+# Define the order of environments for the summary section in the Excel report.
+SUMMARY_ENV_ORDER = ["Ni", "Cl", "Ul", "Un", "Ho", "Tr"]
 DEFAULT_PA_HEADER = {
     "Course Code": 'course_code', "US/AU": 'us_au_location', "Start Date": 'course_start_date', "Last Day": 'last_day',
     "Location": 'location', "Trainer Name": 'trainer_name', "Course Name": 'course_name',

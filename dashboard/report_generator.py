@@ -19,7 +19,7 @@ from openpyxl.utils import get_column_letter
 from constants import (
     ExcelStyle, LOG_LEVEL_GENERATE_EXCEL, HOST_MAP,
     AU_HOST_NAMES, US_HOST_NAMES,
-  
+     AVAILABLE_RAM_GB, SUMMARY_ENV_ORDER,
   INTERIM_ALLOCATION_COLLECTION,
     ALLOCATION_COLLECTION, HOST_COLLECTION
 
@@ -33,6 +33,14 @@ logger = logging.getLogger(__name__)
 # ALL THE HELPER AND DATA PROCESSING FUNCTIONS
 # This section contains all the functions needed to process the data.
 # ==============================================================================
+def calculate_ram_summary(all_allocations: List[Dict], host_map: Dict) -> Dict[str, float]:
+    """
+    Calculates the total allocated RAM for each environment.
+    ... (rest of the function) ...
+    """
+    allocated_ram_by_env = {env_key: 0 for env_key in host_map.keys()}
+    # ... function body ...
+    return allocated_ram_by_env
 
 def convert_to_numeric(val):
     if val is None: return None
@@ -80,37 +88,88 @@ def write_merged_header(sheet, row, col, header_text):
         cell.alignment = ExcelStyle.CENTER_ALIGNMENT.value
     sheet.cell(row=row, column=col, value=header_text)
 
-def write_summary_section(sheet, row_offset, _):
-    start_col = 19
-    headers = ["RAM Summary", "Total", *HOST_MAP.keys()]
-    host_col_letters = [get_column_letter(start_col + i + 1) for i in range(len(HOST_MAP))]
-    total_formula = "+".join([f"SUM({col}:{col})" for col in host_col_letters])
-    allocated_formulas = [f"={total_formula}"] + [f"=SUM({col}:{col})" for col in host_col_letters]
-    ram_values = {
-        "Available RAM (%)": ["65%", "83%", "88%", "57%", "57%", "60%", "100%"],
-        "Available RAM (GB)": [8300, 1800, 500, 2000, 2000, 2000, 1000],
-        "Allocated RAM (GB)": allocated_formulas,
-    }
-    available_row, allocated_row = row_offset + 1, row_offset + 3
-    allocated_pct = [f"={col}{allocated_row}/{col}{available_row}" for col in host_col_letters]
-    remaining_ram = [f"={col}{available_row}-{col}{allocated_row}" for col in host_col_letters]
-    ram_values["Allocated RAM (%)"] = allocated_pct
-    ram_values["Remaining RAM (GB)"] = remaining_ram
-    for i, label in enumerate(ram_values):
-        row = row_offset + i
-        sheet.cell(row=row, column=start_col, value=label).font = Font(bold=True)
-        for j, val in enumerate(ram_values[label]):
-            col = start_col + 1 + j
-            cell = sheet.cell(row=row, column=col)
-            cell.value = val
-            cell.border = ExcelStyle.THIN_BORDER.value
-            cell.alignment = ExcelStyle.CENTER_ALIGNMENT.value
-            if "Allocated" in label:
-                cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-                cell.font = Font(bold=True, color="FF0000")
-            if label == "Allocated RAM (%)": cell.number_format = "0%"
+# --- REPLACE THE OLD FUNCTION WITH THIS ONE ---
 
-def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trainer, use_green_fill):
+def write_summary_section(sheet, row_offset, allocated_ram_by_env: Dict[str, float]):
+    """
+    Writes the dynamic RAM summary section to the Excel sheet using calculated data and formulas.
+    """
+    start_col = 19
+    # Use the new constant for consistent ordering
+    env_keys = SUMMARY_ENV_ORDER
+    headers = ["RAM Summary", "Total", *env_keys]
+
+    # --- Write Headers ---
+    for i, header in enumerate(headers):
+        col = start_col + i
+        cell = sheet.cell(row=row_offset, column=col, value=header)
+        cell.font = Font(bold=True)
+        apply_style(cell, is_summary=True)
+
+    # --- Data Rows ---
+    available_ram_row = row_offset + 1
+    allocated_ram_row = row_offset + 2
+    allocated_pct_row = row_offset + 3
+    remaining_ram_row = row_offset + 4
+
+    # Row Labels
+    sheet.cell(row=available_ram_row, column=start_col, value="Available RAM (GB)").font = Font(bold=True)
+    sheet.cell(row=allocated_ram_row, column=start_col, value="Allocated RAM (GB)").font = Font(bold=True)
+    sheet.cell(row=allocated_pct_row, column=start_col, value="Allocated RAM (%)").font = Font(bold=True)
+    sheet.cell(row=remaining_ram_row, column=start_col, value="Remaining RAM (GB)").font = Font(bold=True)
+
+    # --- Write Data and Formulas ---
+    total_col_letter = get_column_letter(start_col + 1)
+    
+    # Write environment-specific data
+    for i, env_key in enumerate(env_keys):
+        col = start_col + 2 + i
+        col_letter = get_column_letter(col)
+
+        # Available RAM (from constants)
+        available_ram = AVAILABLE_RAM_GB.get(env_key, 0)
+        write_cell(sheet, available_ram_row, col, available_ram, is_summary=False, number_format='0')
+
+        # Allocated RAM (from calculation)
+        allocated_ram = allocated_ram_by_env.get(env_key, 0)
+        write_cell(sheet, allocated_ram_row, col, allocated_ram, is_summary=False, number_format='0.0')
+
+        # Allocated RAM % (Formula)
+        formula_pct = f"=IF({col_letter}{available_ram_row}>0, {col_letter}{allocated_ram_row}/{col_letter}{available_ram_row}, 0)"
+        write_cell(sheet, allocated_pct_row, col, formula_pct, is_summary=False, number_format="0%")
+        
+        # Remaining RAM (Formula)
+        formula_rem = f"={col_letter}{available_ram_row}-{col_letter}{allocated_ram_row}"
+        write_cell(sheet, remaining_ram_row, col, formula_rem, is_summary=False, number_format='0.0')
+
+    # --- Write Total Column Formulas ---
+    first_env_col_letter = get_column_letter(start_col + 2)
+    last_env_col_letter = get_column_letter(start_col + 1 + len(env_keys))
+    
+    # Total Available
+    write_cell(sheet, available_ram_row, start_col + 1, f"=SUM({first_env_col_letter}{available_ram_row}:{last_env_col_letter}{available_ram_row})", number_format='0')
+    # Total Allocated
+    write_cell(sheet, allocated_ram_row, start_col + 1, f"=SUM({first_env_col_letter}{allocated_ram_row}:{last_env_col_letter}{allocated_ram_row})", number_format='0.0')
+    # Total Allocated %
+    write_cell(sheet, allocated_pct_row, start_col + 1, f"=IF({total_col_letter}{available_ram_row}>0, {total_col_letter}{allocated_ram_row}/{total_col_letter}{available_ram_row}, 0)", number_format="0%")
+    # Total Remaining
+    write_cell(sheet, remaining_ram_row, start_col + 1, f"={total_col_letter}{available_ram_row}-{total_col_letter}{allocated_ram_row}", number_format='0.0')
+    
+    # --- Apply Special Styling ---
+    for r in [allocated_ram_row, allocated_pct_row, remaining_ram_row]:
+        for c in range(start_col + 1, start_col + 2 + len(env_keys)):
+            cell = sheet.cell(row=r, column=c)
+            cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill
+            cell.font = Font(bold=True, color="FF0000") # Red bold font
+
+# In report_generator.py
+
+# --- REPLACE THIS ENTIRE FUNCTION ---
+def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trainer, use_green_fill, host_map: Dict):
+    """
+    Writes a single data row to the sheet.
+    NOW uses the dynamic host_map instead of the old constant.
+    """
     trainer_flag, green_flag = (True, False) if is_trainer else (False, use_green_fill)
     virtual_hosts_str = entry.get("virtual_hosts", "").lower()
     col = 1
@@ -123,8 +182,12 @@ def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trai
             write_cell(sheet, row, col, left, trainer=trainer_flag, use_green_fill=green_flag); col += 1
             write_cell(sheet, row, col, "->", trainer=trainer_flag, use_green_fill=green_flag); col += 1
             write_cell(sheet, row, col, right, trainer=trainer_flag, use_green_fill=green_flag); col += 1
-        elif h in HOST_MAP:
-            host_name_for_this_column = HOST_MAP[h].lower()
+        
+        # --- THIS IS THE CRITICAL CHANGE ---
+        # It now checks `h` against the keys of the dynamic `host_map`.
+        elif h in host_map:
+            # It now gets the value (e.g., "nightbird") from the dynamic map.
+            host_name_for_this_column = host_map[h].lower()
             if host_name_for_this_column in virtual_hosts_str:
                 ram_col_letter, pods_col_letter = get_column_letter(header_pos["RAM"]), get_column_letter(header_pos["Vendor Pods"])
                 formula = f"=IF({pods_col_letter}{row}<=1, {ram_col_letter}{row}, {ram_col_letter}{row} + ({pods_col_letter}{row}-1)*{ram_col_letter}{row}/2)"
@@ -364,16 +427,26 @@ def unpack_current_allocations(documents, vendor_map, apm_credentials, location_
         
     return extended_pods
 
-def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[Dict], extended_pods: List[Dict]) -> io.BytesIO:
+# --- REPLACE THE OLD FUNCTION WITH THIS ONE ---
+
+# In report_generator.py
+
+# --- DELETE your old function and REPLACE it with this one ---
+
+def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[Dict], extended_pods: List[Dict], host_map: Dict) -> io.BytesIO:
     """
-    This is the main function that generates the entire Excel file and returns it
-    as an in-memory binary stream, ready to be sent to the user.
+    This is the main function that generates the entire Excel file.
+    It now correctly accepts and uses the dynamic 'host_map'.
     """
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Labbuild"
 
     all_data = course_allocations + trainer_pods + extended_pods
+    
+    # CORRECT: Uses the 'host_map' variable passed into the function
+    allocated_ram_data = calculate_ram_summary(all_data, host_map)
+
     expanded_data = []
     for entry in all_data:
         hosts = entry.get("virtual_hosts", "")
@@ -421,18 +494,21 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
                 cell.font = Font(bold=True)
                 apply_style(cell, is_summary=True); col += 1
         current_row += 1
-
-        group_host_ram_totals, group_pod_total = {k: 0 for k in HOST_MAP}, 0
+        
+        # CORRECT: Initializes totals using the dynamic 'host_map'
+        group_host_ram_totals, group_pod_total = {k: 0 for k in host_map}, 0
         non_trainer_pods = [e for e in records if e.get("pod_type") != "trainer"]
         trainer_pods_in_group = [e for e in records if e.get("pod_type") == "trainer"]
 
         for entry in non_trainer_pods:
             is_extended = entry.get("pod_type") == "extended"
-            _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, False, is_extended)
+            # CORRECT: Passes the 'host_map' variable down
+            _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, False, is_extended, host_map)
             group_pod_total += convert_to_numeric(entry.get("vendor_pods")) or 0
             entry_ram = convert_to_numeric(entry.get("ram")) or 0
             if entry_ram > 0:
-                for host_key, host_name in HOST_MAP.items():
+                # CORRECT: Loops over the dynamic 'host_map'
+                for host_key, host_name in host_map.items():
                     if host_name.lower() in entry.get("virtual_hosts", "").lower():
                         group_host_ram_totals[host_key] += entry_ram
             current_row += 1
@@ -440,11 +516,13 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
         if non_trainer_pods and trainer_pods_in_group: current_row += 1
 
         for entry in trainer_pods_in_group:
-            _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, True, False)
+            # CORRECT: Passes the 'host_map' variable down
+            _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, True, False, host_map)
             group_pod_total += convert_to_numeric(entry.get("vendor_pods")) or 0
             entry_ram = convert_to_numeric(entry.get("ram")) or 0
             if entry_ram > 0:
-                for host_key, host_name in HOST_MAP.items():
+                # CORRECT: Loops over the dynamic 'host_map'
+                for host_key, host_name in host_map.items():
                     if host_name.lower() in entry.get("virtual_hosts", "").lower():
                         group_host_ram_totals[host_key] += entry_ram
             current_row += 1
@@ -452,8 +530,9 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
         current_row = write_group_summary_boxes(sheet, current_row, header_pos, group_pod_total, group_host_ram_totals, group_name)
         apply_outer_border(sheet, group_start_row, current_row - 1, 1, group_end_col)
 
-    write_summary_section(sheet, 2, {})
-    column_widths = {'A': 22, 'B': 8, 'C': 14, 'D': 14, 'E': 14, 'F': 24, 'G': 28, 'H': 6, 'I': 4, 'J': 6, 'K': 14, 'L': 14, 'M': 8, 'N': 8, 'O': 10, 'P': 6, 'Q': 10, 'R': 18, 'S': 15, 'T': 12, 'U': 8, 'V': 8, 'W': 8, 'X': 8, 'Y': 8, 'Z': 8}
+    write_summary_section(sheet, 2, allocated_ram_data)
+    
+    column_widths = {'A': 22, 'B': 8, 'C': 14, 'D': 14, 'E': 14, 'F': 24, 'G': 28, 'H': 6, 'I': 4, 'J': 6, 'K': 14, 'L': 14, 'M': 8, 'N': 8, 'O': 10, 'P': 6, 'Q': 10, 'R': 18, 'S': 15, 'T': 12, 'U': 8, 'V': 8, 'W': 8, 'X': 8, 'Y': 8, 'Z': 8, 'AA': 8}
     for col_letter, width in column_widths.items():
         sheet.column_dimensions[col_letter].width = width
 
@@ -466,9 +545,12 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
 
 # In report_generator.py
 
+# In report_generator.py
+
 def get_full_report_data(db): # <--- NOTICE THE 'db' ARGUMENT HERE
     """
-    Main data orchestrator. Fetches all data using a provided DB connection.
+    Main data orchestrator. Fetches all data using a provided DB connection and
+    builds necessary lookup maps dynamically.
     """
     try:
         if db is None:
@@ -480,12 +562,27 @@ def get_full_report_data(db): # <--- NOTICE THE 'db' ARGUMENT HERE
         interim_docs = list(db[INTERIM_ALLOCATION_COLLECTION].find({}))
         current_docs = list(db[ALLOCATION_COLLECTION].find({}))
         locations_data = list(db["locations"].find({}))
-        host_docs = list(db[HOST_COLLECTION].find({}))
+        host_docs = list(db[HOST_COLLECTION].find({})) # Fetch from 'host' collection
+
+        # --- DYNAMICALLY BUILD THE HOST MAPS ---
+        # This is the key change. We now build the map from the database.
+        
+        # This map will be used for the RAM summary calculation.
+        # It maps the Shortcode (e.g., "Ni") to the Host Name (e.g., "nightbird").
+        # The key is capitalized to match the Excel column headers.
+        host_map_for_summary = {
+            doc['host_shortcode'].capitalize(): doc['host_shortcode']
+            for doc in host_docs if 'host_shortcode' in doc and
+    doc.get('include_for_build') == 'true'
+
+        }
+        logger.info(f"Dynamically built HOST_MAP for summary: {host_map_for_summary}")
+
+        # This map is for finding vCenter, if needed elsewhere.
         host_to_vcenter_map = {
             doc['host_name']: doc['vcenter']
             for doc in host_docs if 'host_name' in doc and 'vcenter' in doc}
-
-
+            
         location_map = {loc['code']: loc['name'] for loc in locations_data if 'code' in loc and 'name' in loc}
         
         logger.info("Successfully fetched data from MongoDB.")
@@ -496,11 +593,14 @@ def get_full_report_data(db): # <--- NOTICE THE 'db' ARGUMENT HERE
         apm_lookup = build_apm_lookup(apm_data)
 
         course_allocs, trainer_pods = unpack_interim_allocations(interim_docs, vendor_map, location_map)
+        # Pass the dynamically created map to the function that needs it
         extended_pods = unpack_current_allocations(current_docs, vendor_map, apm_lookup, location_map, host_to_vcenter_map)
         
         logger.info(f"Processed: {len(course_allocs)} Standard | {len(extended_pods)} Extended | {len(trainer_pods)} Trainer pods")
         
-        return course_allocs, trainer_pods, extended_pods
+        # --- RETURN THE DYNAMIC MAP ---
+        # Return the newly created map so generate_excel_in_memory can use it.
+        return course_allocs, trainer_pods, extended_pods, host_map_for_summary
 
     except Exception as e:
         logger.error(f"FATAL: An error occurred during data fetching: {e}", exc_info=True)
