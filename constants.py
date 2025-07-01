@@ -3,29 +3,46 @@ from collections import namedtuple
 from openpyxl.styles import PatternFill, Border, Side, Alignment
 import logging
 
-# Database and Collection Names
+# ==============================================================================
+# DATABASE AND CORE CONSTANTS
+# ==============================================================================
 DB_NAME = "labbuild_db"
 ALLOCATION_COLLECTION = "currentallocation"
 COURSE_CONFIG_COLLECTION = "courseconfig"
 HOST_COLLECTION = "host"
 PRTG_COLLECTION = "prtg"
-OPERATION_LOG_COLLECTION = "operation_logs" # Operation summary/status logs
-LOG_COLLECTION = "logs" # Standard detailed logs from MongoLogHandler
+OPERATION_LOG_COLLECTION = "operation_logs"
+LOG_COLLECTION = "logs"
 COURSE_MAPPING_RULES_COLLECTION = "course_mapping_rules"
 INTERIM_ALLOCATION_COLLECTION = "interimallocation"
 BUILD_RULES_COLLECTION = "build_rules"
 TRAINER_EMAIL_COLLECTION = "trainer_emails"
 SUBSEQUENT_POD_MEMORY_FACTOR = 0.5
 LOCATIONS_COLLECTION = "locations"
-# Add other constants here if needed, e.g.:
-# DEFAULT_TAG = "untagged"
-# DEFAULT_THREAD_COUNT = 4
-
-
+# ==============================================================================
+# EXCEL REPORT: GENERAL & LAYOUT CONSTANTS
+# ==============================================================================
 LOG_LEVEL_GENERATE_EXCEL = logging.DEBUG
 HOST_MAP = {"Ni": "nightbird", "Cl": "cliffjumper", "Ul": "ultramagnus", "Un": "unicron", "Ho": "hotshot", "Tr": "Trainer"}
 AU_HOST_NAMES = ["nightbird", "cliffjumper", "ultramagnus", "unicron"]
 US_HOST_NAMES = ["hotshot"]
+
+# --- RAM Summary & Layout Configuration ---
+AVAILABLE_RAM_GB = {
+    "Ni": 1800, "Cl": 500, "Ul": 2000, "Un": 2000, "Ho": 2000, "Tr": 1000,
+}
+SUMMARY_ENV_ORDER = ["Ni", "Cl", "Ul", "Un", "Ho", "Tr"]
+RAM_SUMMARY_START_COL = 19
+EXCEL_GROUP_ORDER = ["PA Courses", "CP Courses", "NU Courses", "F5 Courses", "AV Courses", "PR Courses"]
+EXCEL_COLUMN_WIDTHS = {
+    'A': 22, 'B': 8, 'C': 14, 'D': 14, 'E': 14, 'F': 24, 'G': 28, 'H': 6, 'I': 4, 'J': 6, 
+    'K': 14, 'L': 14, 'M': 8, 'N': 8, 'O': 10, 'P': 6, 'Q': 10, 'R': 18, 'S': 15, 'T': 12, 
+    'U': 8, 'V': 8, 'W': 8, 'X': 8, 'Y': 8, 'Z': 8, 'AA': 8
+}
+
+# ==============================================================================
+# EXCEL REPORT: HEADER & GROUP DEFINITIONS
+# ==============================================================================
 DEFAULT_PA_HEADER = {
     "Course Code": 'course_code', "US/AU": 'us_au_location', "Start Date": 'course_start_date', "Last Day": 'last_day',
     "Location": 'location', "Trainer Name": 'trainer_name', "Course Name": 'course_name',
@@ -81,6 +98,9 @@ DEFAULT_COURSE_GROUPS = {
 }
 DEFAULT_HEADER = DEFAULT_GENERIC_HEADER
 
+# ==============================================================================
+# EXCEL REPORT: STYLING CLASS
+# ==============================================================================
 class ExcelStyle(Enum):
     SHEET_TITLE = "Sheet1"
     FONT_SIZE_BOLD = 14
@@ -98,42 +118,20 @@ class ExcelStyle(Enum):
         "F5 Courses": DEFAULT_F5_HEADER,
         "PR Courses": DEFAULT_GENERIC_HEADER,
     }
-# ... (all your existing constants for DB and the first Excel report are here) ...
 
-# --- CONSTANTS FOR TRAINER POD ALLOCATION REPORT ---
-
-# The names here will be used as the blue header text in the Excel file.
+# ==============================================================================
+# CONSTANTS FOR TRAINER POD ALLOCATION REPORT
+# ==============================================================================
 REPORT_SECTIONS = [
-    "F5 COURSE",
-    "CHECK POINT",
-    "PALO ALTO",
-    "NUTANIX",
-    "AV COURSES",
-    "PR COURSE"
+    "F5 COURSE", "CHECK POINT", "PALO ALTO", "NUTANIX", "AV COURSES", "PR COURSE"
 ]
-
-# This map links the data 'tag' to the internal name used for grouping.
 VENDOR_GROUP_MAP = {
-    "F5": "F5 COURSE",
-    "CP": "CHECK POINT",
-    "PA": "PALO ALTO",
-    "PANGF": "PALO ALTO",
-    "PCNSA": "PALO ALTO",
-    "NU": "NUTANIX",
-    "AV": "AV COURSES",
-    "PR": "PR COURSE"
+    "F5": "F5 COURSE", "CP": "CHECK POINT", "PA": "PALO ALTO", "PANGF": "PALO ALTO",
+    "PCNSA": "PALO ALTO", "NU": "NUTANIX", "AV": "AV COURSES", "PR": "PR COURSE"
 }
-
 TRAINER_SHEET_HEADERS = {
-    "Course Name": "course_name",
-    "Pod Number": "pod_number",
-    "Username": "username",
-    "Password": "password",
-    "Version": "version",
-    "RAM": "ram",
-    "Class": "class",
-    "Host": "host",
-    "vCenter": "vcenter",
-    "Taken By": "taken_by",
+    "Course Name": "course_name", "Pod Number": "pod_number", "Username": "username",
+    "Password": "password", "Version": "version", "RAM": "ram", "Class": "class",
+    "Host": "host", "vCenter": "vcenter", "Taken By": "taken_by",
     "Don't Delete Until US Courses Complete": "notes"
 }

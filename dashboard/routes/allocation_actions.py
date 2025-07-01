@@ -3,13 +3,22 @@
 import logging
 import json
 import threading
+from dashboard.utils import get_next_monday_date_str
+# Add these with your other imports
+from flask import Response # This one is probably new for this file
+from datetime import datetime
+# At the top of allocation_actions.py
+# ... other imports
+from dashboard.trainer_report_generator import fetch_trainer_pod_data, create_trainer_report_in_memory
+# This is the crucial import from the new file we created
+from ..report_generator import get_full_report_data, generate_excel_in_memory
 from flask import (
     Blueprint, request, redirect, url_for, flash, jsonify, Response
 )
 from pymongo.errors import PyMongoError
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
-import datetime
+from datetime import datetime
 from ..extensions import alloc_collection, db
 from ..utils import update_power_state_in_db, get_next_monday_date_str
 from ..tasks import run_labbuild_task
@@ -772,6 +781,8 @@ def bulk_db_delete_items():
     return redirect(url_for('main.view_allocations', **preserved_filters))
 
 
+# In your routes file (e.g., dashboard/routes.py)
+
 @bp.route('/export-current-lab-report')
 def export_current_lab_report():
     """
@@ -781,11 +792,17 @@ def export_current_lab_report():
     logger.info("Request received for 'Current Lab Report', generating full report.")
 
     try:
-        # 1. Fetch and process all the data using our new helper
-        course_allocs, trainer_pods, extended_pods = get_full_report_data(db)
+        # 1. Fetch and process all the data.
+        # --- THIS LINE IS CHANGED ---
+        # It now unpacks a 4th value: the dynamically created host map.
+        course_allocs, trainer_pods, extended_pods, dynamic_host_map = get_full_report_data(db)
 
-        # 2. Generate the Excel file in memory using our new helper
-        excel_stream = generate_excel_in_memory(course_allocs, trainer_pods, extended_pods)
+        # 2. Generate the Excel file in memory.
+        # --- THIS LINE IS CHANGED ---
+        # It now passes the dynamic_host_map as a 4th argument.
+        excel_stream = generate_excel_in_memory(
+            course_allocs, trainer_pods, extended_pods, dynamic_host_map
+        )
 
         # 3. Prepare the filename
         next_monday_str = get_next_monday_date_str("%Y%m%d")
@@ -799,6 +816,12 @@ def export_current_lab_report():
                 'Content-Disposition': f'attachment;filename={filename}'
             }
         )
+    except Exception as e:
+        logger.error(f"Failed to generate full lab report: {e}", exc_info=True)
+        flash(f"Could not generate the report. Error: {e}", 'danger')
+        # Redirect back to the page where the button was
+        # Make sure 'main.view_allocations' is the correct endpoint name for your dashboard
+        return redirect(url_for('main.view_allocations'))
     except Exception as e:
         logger.error(f"Failed to generate full lab report: {e}", exc_info=True)
         flash(f"Could not generate the report. Error: {e}", 'danger')
