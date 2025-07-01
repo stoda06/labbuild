@@ -10,11 +10,146 @@ from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import PyMongoError, DuplicateKeyError
 from bson import ObjectId # For converting string IDs back to ObjectId
 from bson.errors import InvalidId
-from ..extensions import build_rules_collection, course_config_collection
+from ..extensions import build_rules_collection, course_config_collection, trainer_email_collection
 
 # Define Blueprint
 bp = Blueprint('settings', __name__, url_prefix='/settings')
 logger = logging.getLogger('dashboard.routes.settings')
+
+
+@bp.route('/trainer-emails')
+def view_trainer_emails():
+    """Displays the trainer emails management page."""
+    current_theme = request.cookies.get('theme', 'light')
+    trainers = []
+    if trainer_email_collection is not None:
+        try:
+            trainers_cursor = trainer_email_collection.find().sort("trainer_name", ASCENDING)
+            trainers = list(trainers_cursor)
+            for trainer in trainers:
+                trainer['_id'] = str(trainer['_id']) # For template usage
+        except PyMongoError as e:
+            logger.error(f"Error fetching trainer emails: {e}")
+            flash("Error fetching trainer emails from the database.", "danger")
+    else:
+        flash("Trainer emails collection is unavailable.", "danger")
+    
+    return render_template(
+        'settings_trainer_emails.html',
+        trainers=trainers,
+        current_theme=current_theme
+    )
+
+@bp.route('/trainer-emails/add', methods=['POST'])
+def add_trainer_email():
+    """Adds a new trainer email record."""
+    if trainer_email_collection is None:
+        flash("Database collection for trainer emails is unavailable.", "danger")
+        return redirect(url_for('.view_trainer_emails'))
+
+    trainer_name = request.form.get('trainer_name', '').strip()
+    email_address = request.form.get('email_address', '').strip()
+    # 'active' will be 'on' if checked, or not present if unchecked
+    active = 'active' in request.form
+
+    if not trainer_name or not email_address:
+        flash("Trainer Name and Email Address are required.", "danger")
+        return redirect(url_for('.view_trainer_emails'))
+
+    try:
+        # Check for duplicate trainer name
+        if trainer_email_collection.count_documents({"trainer_name": trainer_name}) > 0:
+            flash(f"A trainer with the name '{trainer_name}' already exists.", "warning")
+            return redirect(url_for('.view_trainer_emails'))
+        
+        new_trainer_doc = {
+            "trainer_name": trainer_name,
+            "email_address": email_address,
+            "active": active
+        }
+        trainer_email_collection.insert_one(new_trainer_doc)
+        flash(f"Successfully added trainer '{trainer_name}'.", "success")
+    except PyMongoError as e:
+        logger.error(f"Database error adding trainer email: {e}")
+        flash("A database error occurred while adding the trainer.", "danger")
+
+    return redirect(url_for('.view_trainer_emails'))
+
+@bp.route('/trainer-emails/update/<trainer_id>', methods=['POST'])
+def update_trainer_email(trainer_id):
+    """Updates an existing trainer email record."""
+    if trainer_email_collection is None:
+        flash("Database collection for trainer emails is unavailable.", "danger")
+        return redirect(url_for('.view_trainer_emails'))
+
+    try:
+        trainer_oid = ObjectId(trainer_id)
+    except InvalidId:
+        flash("Invalid trainer ID provided.", "danger")
+        return redirect(url_for('.view_trainer_emails'))
+
+    trainer_name = request.form.get('trainer_name', '').strip()
+    email_address = request.form.get('email_address', '').strip()
+    active = 'active' in request.form
+
+    if not trainer_name or not email_address:
+        flash("Trainer Name and Email Address cannot be empty.", "danger")
+        return redirect(url_for('.view_trainer_emails'))
+
+    try:
+        # Check if the new name conflicts with another existing trainer
+        existing_trainer = trainer_email_collection.find_one({
+            "trainer_name": trainer_name,
+            "_id": {"$ne": trainer_oid} # Look for a different document with the same name
+        })
+        if existing_trainer:
+            flash(f"Cannot rename to '{trainer_name}' as another trainer with that name already exists.", "danger")
+            return redirect(url_for('.view_trainer_emails'))
+
+        update_doc = {
+            "$set": {
+                "trainer_name": trainer_name,
+                "email_address": email_address,
+                "active": active
+            }
+        }
+        result = trainer_email_collection.update_one({"_id": trainer_oid}, update_doc)
+
+        if result.modified_count > 0:
+            flash(f"Successfully updated trainer '{trainer_name}'.", "success")
+        else:
+            flash(f"No changes detected for trainer '{trainer_name}'.", "info")
+            
+    except PyMongoError as e:
+        logger.error(f"Database error updating trainer email {trainer_id}: {e}")
+        flash("A database error occurred while updating the trainer.", "danger")
+        
+    return redirect(url_for('.view_trainer_emails'))
+
+@bp.route('/trainer-emails/delete/<trainer_id>', methods=['POST'])
+def delete_trainer_email(trainer_id):
+    """Deletes a trainer email record."""
+    if trainer_email_collection is None:
+        flash("Database collection for trainer emails is unavailable.", "danger")
+        return redirect(url_for('.view_trainer_emails'))
+
+    try:
+        trainer_oid = ObjectId(trainer_id)
+    except InvalidId:
+        flash("Invalid trainer ID provided for deletion.", "danger")
+        return redirect(url_for('.view_trainer_emails'))
+
+    try:
+        result = trainer_email_collection.delete_one({"_id": trainer_oid})
+        if result.deleted_count == 1:
+            flash("Trainer email record deleted successfully.", "success")
+        else:
+            flash("Trainer record not found for deletion.", "warning")
+    except PyMongoError as e:
+        logger.error(f"Database error deleting trainer email {trainer_id}: {e}")
+        flash("A database error occurred while deleting the trainer.", "danger")
+
+    return redirect(url_for('.view_trainer_emails'))
 
 # --- Route to Display Build Rules ---
 @bp.route('/build-rules')

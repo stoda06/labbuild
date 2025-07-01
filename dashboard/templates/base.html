@@ -86,6 +86,11 @@
                     <i class="fas fa-book fa-fw me-2"></i>Course Configs
                 </a>
             </li>
+            <li class="nav-item">
+                <a class="nav-link {% if request.blueprint == 'settings' and request.endpoint.endswith('view_trainer_emails') %}active{% endif %}" href="{{ url_for('settings.view_trainer_emails') }}">
+                    <i class="fas fa-envelope-open-text fa-fw me-2"></i>Trainer Emails
+                </a>
+            </li>
             <li class="nav-item"><hr class="sidebar-divider my-2"></li>
             <li class="nav-item">
                 <a class="nav-link" href="#" id="darkModeToggleSidebar" title="Toggle light/dark mode">

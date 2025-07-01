@@ -21,6 +21,7 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
     Server-side logic to generate DATA for trainer email previews.
     It consolidates data, creates multi-line strings for split-host allocations,
     and includes special range expansion for Nutanix (nu) vendor courses.
+    **MODIFIED**: Now checks for trainer email existence.
     """
     email_data_list = []
     
@@ -31,6 +32,18 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
     ]
     if not student_items:
         return []
+
+    # --- NEW: Fetch active trainer emails once for efficient lookup ---
+    active_trainer_emails = set()
+    if trainer_email_collection is not None:
+        try:
+            # Find all documents where 'active' is True and get their 'trainer_name'
+            cursor = trainer_email_collection.find({"active": True}, {"trainer_name": 1, "_id": 0})
+            active_trainer_emails = {doc.get("trainer_name") for doc in cursor if doc.get("trainer_name")}
+            logger.info(f"Loaded {len(active_trainer_emails)} active trainer emails for validation.")
+        except PyMongoError as e:
+            logger.error(f"Failed to fetch trainer emails for validation: {e}")
+    # --- END NEW ---
 
     # Fetch host details once to avoid multiple DB calls
     try:
@@ -49,6 +62,11 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
     # Process each group to generate one email preview
     for key, items in emails_grouped.items():
         trainer_name, sf_code = key.split('|')
+        
+        # --- NEW: Check if trainer email exists ---
+        trainer_email_exists = trainer_name in active_trainer_emails
+        # --- END NEW ---
+
         first_item = items[0]
         vendor = (first_item.get("vendor", "") or "").lower() # Get vendor for logic check
 
@@ -146,6 +164,7 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
         email_data_list.append({
             "key": key,
             "trainer_name": trainer_name,
+            "trainer_email_found": trainer_email_exists, # <-- ADD THE NEW FLAG
             "sf_course_code": sf_code,
             "email_subject": f"Lab Allocation for {sf_code}",
             "payload_items": items,
@@ -155,11 +174,11 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
                 "end_day_abbr": end_day_abbr,
                 "primary_location": first_item.get("location", "Virtual"),
                 "sf_course_type": first_item.get('sf_course_type', 'N/A'),
-                "start_end_pod_str": final_pod_range_display, # The final logical range for students
+                "start_end_pod_str": final_pod_range_display,
                 "username": first_item.get("apm_username", "N/A"),
                 "password": first_item.get("apm_password", "UseProvidedPassword"),
-                "effective_pods_req": len(total_logical_pods_for_course), # Count of logical pods
-                "vendor_pods": len(total_physical_pods_for_course), # Count of physical pods
+                "effective_pods_req": len(total_logical_pods_for_course),
+                "vendor_pods": len(total_physical_pods_for_course),
                 "final_labbuild_course": first_item.get('labbuild_course', 'N/A'),
                 "virtual_host_display": virtual_host_display,
                 "primary_vcenter": vcenter_display,
