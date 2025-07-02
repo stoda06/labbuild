@@ -246,6 +246,7 @@ def view_allocations():
     filter_course = request.args.get('filter_course', '').strip()
     filter_host_str = request.args.get('filter_host', '').strip().lower()
     filter_number_str = request.args.get('filter_number', '').strip()
+    filter_extend = request.args.get('filter_extend', '')
     try:
         page = int(request.args.get('page', 1))
         page = max(1, page)
@@ -257,9 +258,18 @@ def view_allocations():
     if filter_tag_input: 
         mongo_query['tag'] = {'$regex': re.escape(filter_tag_input), '$options': 'i'}
 
+    if filter_extend == 'yes':
+        mongo_query['extend'] = 'true'
+    elif filter_extend == 'no':
+        # Find documents where extend is not 'true'
+        # This includes documents where it is 'false', null, or non-existent
+        mongo_query['extend'] = {'$ne': 'true'}
+    # If filter_extend is empty, we don't add it to the query, so all are shown.
+
     current_filter_params = {
         'filter_tag': filter_tag_input, 'filter_vendor': filter_vendor, 'filter_course': filter_course,
-        'filter_host': filter_host_str, 'filter_number': filter_number_str
+        'filter_host': filter_host_str, 'filter_number': filter_number_str,
+        'filter_extend': filter_extend
     }
     pagination_link_args = current_filter_params.copy()
 
