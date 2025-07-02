@@ -7,13 +7,87 @@ import pytz
 from flask import (
     Blueprint, request, redirect, url_for, flash
 )
-from ..extensions import scheduler
+from ..extensions import scheduler, op_logs_collection
 from ..utils import build_args_from_form, parse_command_line
 from ..tasks import run_labbuild_task
 from .main import get_user_timezone
 
 bp = Blueprint('labbuild_actions', __name__)
 logger = logging.getLogger('dashboard.routes.labbuild_actions')
+
+
+@bp.route('/rerun/<run_id>', methods=['POST'])
+def rerun_job(run_id):
+    """
+    Fetches the arguments from a previous run and re-submits it as a new
+    immediate job.
+    """
+    logger.info(f"Received re-run request for run_id: {run_id}")
+
+    if op_logs_collection is None:
+        flash("Database collection for operation logs is unavailable.", "danger")
+        return redirect(request.referrer or url_for('main.all_logs'))
+
+    try:
+        # Find the original log entry
+        original_log = op_logs_collection.find_one({"run_id": run_id})
+        if not original_log:
+            flash(f"Could not find original run log for ID: {run_id}", "danger")
+            return redirect(request.referrer or url_for('main.all_logs'))
+
+        # Extract the original arguments dictionary
+        original_args_dict = original_log.get('args')
+        if not original_args_dict or not isinstance(original_args_dict, dict):
+            flash(f"No valid arguments found in the log for run ID: {run_id}", "danger")
+            return redirect(request.referrer or url_for('main.all_logs'))
+
+        # --- Reconstruct the argument list for the subprocess ---
+        # This logic is similar to build_args_from_dict but simpler
+        # as we are just converting a stored dictionary back to a list.
+        command = original_args_dict.get('command')
+        if not command:
+            flash("Original command not found in log arguments.", "danger")
+            return redirect(request.referrer or url_for('main.all_logs'))
+        
+        args_list = [command]
+        
+        # Mapping of keys to flags
+        arg_map = {
+            'vendor': '-v', 'course': '-g', 'host': '--host',
+            'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn', 'tag': '-t',
+            'component': '-c', 'operation': '-o', 'thread': '-th',
+            'clonefrom': '--clonefrom', 'memory': '-mem', 'prtg_server': '--prtg-server',
+            'datastore': '-ds', 'start_date': '--start-date', 'end_date': '--end-date',
+            'trainer_name': '--trainer-name', 'username': '--username', 'password': '--password'
+        }
+        
+        for key, flag in arg_map.items():
+            value = original_args_dict.get(key)
+            if value is not None and value != '':
+                args_list.extend([flag, str(value)])
+        
+        # Handle boolean flags
+        bool_flags = {
+            're_build': '--re-build', 'full': '--full', 'monitor_only': '--monitor-only',
+            'db_only': '--db-only', 'perm': '--perm', 'verbose': '--verbose'
+        }
+        for key, flag in bool_flags.items():
+            if original_args_dict.get(key) is True:
+                args_list.append(flag)
+
+        # Run the command in a background thread
+        thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True)
+        thread.start()
+        
+        flash(f"Re-running command from log {run_id}. New job submitted.", 'info')
+        logger.info(f"Re-submitted job from run {run_id} with command: {' '.join(args_list)}")
+
+    except Exception as e:
+        logger.error(f"Failed to re-run job from log {run_id}: {e}", exc_info=True)
+        flash(f"Error re-running job: {e}", 'danger')
+
+    # Redirect back to the page the user came from (either all_logs or log_detail)
+    return redirect(request.referrer or url_for('main.index'))
 
 
 @bp.route('/run', methods=['POST'])
