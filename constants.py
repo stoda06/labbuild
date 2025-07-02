@@ -19,6 +19,7 @@ BUILD_RULES_COLLECTION = "build_rules"
 TRAINER_EMAIL_COLLECTION = "trainer_emails"
 SUBSEQUENT_POD_MEMORY_FACTOR = 0.5
 LOCATIONS_COLLECTION = "locations"
+TEMP_COURSE_CONFIG_COLLECTION = "temp_courseconfig" 
 # ==============================================================================
 # EXCEL REPORT: GENERAL & LAYOUT CONSTANTS
 # ==============================================================================

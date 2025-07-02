@@ -1,3 +1,5 @@
+# --- START OF FILE commands.py ---
+
 import logging
 import sys
 import argparse
@@ -11,37 +13,151 @@ from vcenter_utils import get_vcenter_instance
 # Pass args_dict down to orchestrator functions
 from orchestrator import vendor_setup, vendor_teardown, update_monitor_and_database
 from operation_logger import OperationLogger
-# Import the new function from db_utils
+# Import from db_utils and the new test_utils
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
+from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs_and_confirm
 from monitor.prtg import PRTGManager
-from constants import DB_NAME
+# CORRECTED IMPORT: Now includes TEMP_COURSE_CONFIG_COLLECTION
+from constants import DB_NAME, TEMP_COURSE_CONFIG_COLLECTION
 
-import labs.setup.checkpoint as checkpoint 
-from labs.test import checkpoint as test_checkpoint 
+import labs.setup.checkpoint as checkpoint
+from labs.test import checkpoint as test_checkpoint
 import labs.manage.vm_operations as vm_operations
 
 logger = logging.getLogger('labbuild.commands')
 
 # --- Constants for return status ---
 COMPONENT_LIST_STATUS = "component_list_displayed"
-TEMP_COURSE_CONFIG_COLLECTION = "temp_courseconfig"
+# REMOVED: TEMP_COURSE_CONFIG_COLLECTION = "temp_courseconfig" (Now imported from constants.py)
+
+
+def _execute_single_test(args_dict: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Helper function to execute a single test run based on a prepared dictionary of arguments.
+    This contains the logic for dispatching to the correct vendor test script.
+    """
+    # --- Extract final arguments ---
+    vendor = args_dict.get("vendor")
+    start = args_dict.get("start_pod")
+    end = args_dict.get("end_pod")
+    host = args_dict.get("host")
+    group = args_dict.get("group")
+    component_arg = args_dict.get("component")
+
+    # This validation is a final safeguard
+    required = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
+    if any(args_dict.get(arg) is None for arg in required):
+        err_msg = f"Internal Error: Missing required arguments for test execution: {args_dict}."
+        logger.error(err_msg)
+        return [{"status": "failed", "error": err_msg}]
+
+    logger.info(f"Executing test for vendor '{vendor}' on host '{host}' for group '{group}' (Pods/Class: {start}-{end})")
+
+    # --- Dispatch to vendor-specific test script ---
+    if vendor.lower() == "cp":
+        from labs.test import checkpoint
+        checkpoint_args = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
+        if component_arg: checkpoint_args.extend(["-c", component_arg])
+        checkpoint.main(checkpoint_args)
+        return [{"status": "success", "pod_range": f"{start}-{end}", "vendor": "cp"}]
+
+    elif vendor.lower() == "pa":
+        from labs.test import palo
+        palo_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        if component_arg: palo_args.extend(["-c", component_arg])
+        palo.main(palo_args)
+        return [{"status": "success", "pod_range": f"{start}-{end}", "vendor": "pa"}]
+
+    elif vendor.lower() == "nu":
+        from labs.test import nu
+        nu_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        if component_arg: nu_args.extend(["-c", component_arg])
+        nu.main(nu_args)
+        return [{"status": "success", "pod_range": f"{start}-{end}", "vendor": "nu"}]
+
+    elif vendor.lower() == "av":
+        from labs.test import avaya
+        avaya_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        if component_arg: avaya_args.extend(["-c", component_arg])
+        avaya.main(avaya_args)
+        return [{"status": "success", "pod_range": f"{start}-{end}", "vendor": "av"}]
+
+    elif vendor.lower() == "f5":
+        classnum = args_dict.get("class_number")
+        if classnum is None:
+            err_msg = "Internal Error: class_number is missing for F5 test execution."
+            logger.error(err_msg)
+            return [{"status": "failed", "error": err_msg}]
+        from labs.test import f5
+        f5_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group, "--classnum", str(classnum)]
+        if component_arg: f5_args.extend(["-c", component_arg])
+        f5.main(f5_args)
+        return [{"status": "success", "class_number": classnum, "pod_range": f"{start}-{end}", "vendor": "f5"}]
+
+    else:
+        err_msg = f"Vendor '{vendor}' is not yet supported for testing."
+        print(err_msg)
+        return [{"status": "failed", "error": err_msg}]
+
 
 def test_environment(args_dict, operation_logger=None):
-    """Runs a test suite for a lab, either by tag or by manual parameters."""
-    # --- Check for component listing request ---
+    """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
+
+    # --- Mode 1: Vendor-wide test mode ---
+    # Triggered if 'vendor' is present but not 'tag' or other manual parameters like 'start_pod' or 'host'.
+    is_vendor_mode = (
+        args_dict.get('vendor') and
+        not args_dict.get('tag') and
+        args_dict.get('start_pod') is None and
+        args_dict.get('host') is None
+    )
+    if is_vendor_mode:
+        vendor = args_dict.get('vendor')
+        exclude_str = args_dict.get('exclude')
+        logger.info(f"Vendor-wide test mode activated for vendor: '{vendor}'")
+        try:
+            exclude_set = parse_exclude_string(exclude_str)
+            if exclude_set:
+                logger.info(f"Excluding the following pods/classes: {sorted(list(exclude_set))}")
+
+            jobs = get_test_jobs_by_vendor(vendor, exclude_set)
+            if not jobs:
+                return [{"status": "success", "message": f"No testable allocations found for vendor '{vendor}'."}]
+
+            if not display_test_jobs_and_confirm(jobs, vendor):
+                return [{"status": "cancelled", "message": "Operation cancelled by user."}]
+
+            all_results = []
+            logger.info(f"Starting execution of {len(jobs)} test jobs.")
+            for i, job in enumerate(jobs):
+                print("\n" + "-"*20 + f" Running Job {i+1}/{len(jobs)} " + "-"*20)
+                job_args_dict = job.copy() # Start with the job dictionary
+                job_args_dict["group"] = job.get("course_name") # Align key names
+                job_args_dict["component"] = args_dict.get("component") # Pass component filter through
+                
+                results = _execute_single_test(job_args_dict)
+                all_results.extend(results)
+            
+            logger.info("All vendor-wide test jobs completed.")
+            return all_results
+        except Exception as e:
+            err_msg = f"An error occurred during vendor-wide test for '{vendor}': {e}"
+            logger.error(err_msg, exc_info=True)
+            print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
+
+    # --- Mode 2: Component listing request ---
     if args_dict.get('component') == '?':
         course_name = args_dict.get('group')
         if not course_name:
             err_msg = "Cannot list components: --group (course name) is required with --component '?'"
-            logger.error(err_msg)
-            print(f"Error: {err_msg}", file=sys.stderr)
+            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
         
         logger.info(f"Listing components for course: {course_name}")
         try:
             with mongo_client() as client:
-                if not client:
-                    raise ConnectionError("DB connection failed.")
+                if not client: raise ConnectionError("DB connection failed.")
                 db = client[DB_NAME]
                 collection = db[TEMP_COURSE_CONFIG_COLLECTION]
                 doc = collection.find_one({"course_name": course_name}, {"components.component_name": 1})
@@ -49,132 +165,49 @@ def test_environment(args_dict, operation_logger=None):
                     print(f"No components found for course: {course_name}")
                     return [{"status": "success", "message": "No components found"}]
                 
-                component_names = [c.get('component_name') for c in doc.get('components', []) if c.get('component_name')]
-                
-                print(f"\nAvailable components for course '{course_name}':")
-                for name in sorted(component_names):
-                    print(f"  - {name}")
+                component_names = sorted([c.get('component_name') for c in doc.get('components', []) if c.get('component_name')])
+                print(f"\nAvailable components for course '{course_name}':\n  - " + "\n  - ".join(component_names))
                 print("\nUse -c with one or more comma-separated names to test specific components.")
                 return [{"status": "success", "message": "Component list displayed"}]
         except Exception as e:
-            err_msg = f"Failed to fetch component list: {e}"
-            logger.error(err_msg, exc_info=True)
+            err_msg = f"Failed to fetch component list: {e}"; logger.error(err_msg, exc_info=True)
             print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-    # --- Check for tag and fetch parameters ---
+    # --- Mode 3: Tag-based or Manual test mode ---
     if args_dict.get('tag'):
         tag = args_dict.get('tag')
         logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
         try:
-            # Warn if conflicting arguments are provided, then ignore them.
-            conflicting_args = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
-            if any(arg in args_dict for arg in conflicting_args if arg != 'tag'):
+            if any(k in args_dict for k in ['vendor', 'start_pod', 'host', 'group'] if k != 'tag'):
                 logger.warning(f"Conflicting arguments provided with --tag. Using parameters from tag '{tag}'.")
-                # Clean them up to be safe
-                for arg in conflicting_args:
-                    args_dict.pop(arg, None)
             
             test_params = get_test_params_by_tag(tag)
+            if not test_params:
+                err_msg = f"Could not retrieve valid test parameters for tag '{tag}'."
+                logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
+                return [{"status": "failed", "error": err_msg}]
+
             args_dict.update(test_params)
             logger.info(f"Successfully fetched parameters for tag '{tag}': {test_params}")
-
-        except (ValueError, ConnectionError) as e:
-            err_msg = f"Failed to get test parameters for tag '{tag}': {e}"
-            logger.error(err_msg)
-            print(f"Error: {err_msg}", file=sys.stderr)
-            return [{"status": "failed", "error": err_msg}]
         except Exception as e:
             err_msg = f"An unexpected error occurred while fetching parameters for tag '{tag}': {e}"
-            logger.error(err_msg, exc_info=True)
-            print(f"Error: {err_msg}", file=sys.stderr)
+            logger.error(err_msg, exc_info=True); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-    # --- Validate that all necessary arguments are now present ---
+    # --- Validate arguments for a single run ---
     required_args = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
     missing_args = [arg for arg in required_args if args_dict.get(arg) is None]
-    
-    # Special validation for F5
-    if args_dict.get('vendor', '').lower() == 'f5':
-        if args_dict.get('class_number') is None:
-            missing_args.append('class_number')
+    if args_dict.get('vendor', '').lower() == 'f5' and args_dict.get('class_number') is None:
+        missing_args.append('class_number')
 
     if missing_args:
-        err_msg = f"Missing required arguments for test command: {', '.join(missing_args)}. Provide them manually or use a valid --tag."
-        logger.error(err_msg)
-        print(f"Error: {err_msg}", file=sys.stderr)
+        err_msg = f"Missing required arguments for test: {', '.join(missing_args)}. Provide them manually, use a valid --tag, or use vendor-only mode (-v <vendor>)."
+        logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
         return [{"status": "failed", "error": err_msg}]
 
-    # --- Extract final arguments ---
-    vendor = args_dict["vendor"]
-    start = args_dict["start_pod"]
-    end = args_dict["end_pod"]
-    host = args_dict["host"]
-    group = args_dict["group"]
-    component_arg = args_dict.get("component")
-
-    # --- Execute vendor-specific test script ---
-    logger.info(f"Executing test for vendor '{vendor}' on host '{host}' for group '{group}' (Pods/Class: {start}-{end})")
-
-    if vendor.lower() == "cp":
-        from labs.test import checkpoint
-        checkpoint_args = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
-        if component_arg:
-            checkpoint_args.extend(["-c", component_arg])
-        checkpoint.main(checkpoint_args)
-        return [{"status": "success", "pod": start}]
-
-    elif vendor.lower() == "pa":
-        from labs.test import palo
-        palo_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
-        if component_arg:
-            palo_args.extend(["-c", component_arg])
-        palo.main(palo_args)
-        return [{"status": "success", "pod": start}]
-
-    elif vendor.lower() == "nu":
-        from labs.test import nu
-        nu_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
-        if component_arg:
-            nu_args.extend(["-c", component_arg])
-        nu.main(nu_args)
-        return [{"status": "success", "pod": start}]
-
-    elif vendor.lower() == "av":
-        from labs.test import avaya
-        avaya_args = [
-            "-s", str(start),
-            "-e", str(end),
-            "--host", host,
-            "-g", group
-        ]
-        if component_arg:
-            avaya_args.extend(["-c", component_arg])
-        avaya.main(avaya_args)
-        return [{"status": "success", "pod": start}]
-
-    elif vendor.lower() == "f5":
-        classnum = args_dict.get("class_number")
-        # Validation already happened, but this is a final safeguard.
-        if classnum is None:
-            raise ValueError("Internal Error: class_number is missing for F5 test.")
-        from labs.test import f5
-        f5_args = [
-            "-s", str(start),
-            "-e", str(end),
-            "--host", host,
-            "-g", group,
-            "--classnum", str(classnum)
-        ]
-        if component_arg:
-            f5_args.extend(["-c", component_arg])
-        f5.main(f5_args)
-        return [{"status": "success", "pod": start}]
-
-    else:
-        err_msg = f"Vendor '{vendor}' is not yet supported for testing."
-        print(err_msg)
-        return [{"status": "failed", "error": err_msg}]
+    # --- Execute the single test ---
+    return _execute_single_test(args_dict)
 
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
