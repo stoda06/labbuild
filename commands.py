@@ -47,7 +47,6 @@ def _execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading
             from labs.test import checkpoint
             argv = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
             if component_arg: argv.extend(["-c", component_arg])
-            # NOTE: checkpoint.py and others need to be refactored like palo.py
             return checkpoint.main(argv, print_lock=print_lock)
         elif vendor == "pa":
             from labs.test import palo
@@ -117,7 +116,8 @@ def test_environment(args_dict, operation_logger=None):
                     results = future.result()
                     # A result is a list of check-dictionaries
                     for res in results:
-                        if res.get('status', '').upper() not in ['UP', 'SUCCESS']:
+                        # ***** THIS IS THE CORRECTED LINE *****
+                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
@@ -150,7 +150,6 @@ def test_environment(args_dict, operation_logger=None):
 
     # --- Mode 2: Component listing request ---
     if args_dict.get('component') == '?':
-        # ... (this part remains unchanged)
         course_name = args_dict.get('group')
         if not course_name:
             err_msg = "Cannot list components: --group (course name) is required with --component '?'"
@@ -179,7 +178,6 @@ def test_environment(args_dict, operation_logger=None):
 
     # --- Mode 3: Tag-based or Manual single-job test mode ---
     if args_dict.get('tag'):
-        # ... (this part remains unchanged)
         tag = args_dict.get('tag')
         logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
         try:
