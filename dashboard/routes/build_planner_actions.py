@@ -7,7 +7,7 @@ import re
 from flask import (
     Blueprint, request, redirect, url_for, flash, render_template, jsonify
 )
-from pymongo import ASCENDING, DESCENDING, UpdateOne
+from pymongo import ASCENDING, DESCENDING, UpdateOne, UpdateMany
 from pymongo.errors import PyMongoError, BulkWriteError
 from collections import defaultdict
 from typing import List, Dict, Optional, Tuple, Any, Union
@@ -1065,20 +1065,36 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
 
     # --- Nested Helper: Update DB with APM credentials ---
     def _update_db_with_apm(batch_id, apm_creds_map):
+        """
+        Updates all interim documents for a given course code with the generated APM credentials.
+        This now uses UpdateMany to handle split courses like Maestro.
+        """
         if not apm_creds_map:
             return True, "No APM credentials to update."
+        
         update_ops = []
         for apm_code, creds in apm_creds_map.items():
             if apm_code.endswith("-TP"):
+                # Handle trainer pods
                 sf_code = apm_code[:-3]
                 payload = {"trainer_apm_username": creds.get("username"), "trainer_apm_password": creds.get("password")}
-                update_ops.append(UpdateOne({"batch_review_id": batch_id, "sf_course_code": sf_code}, {"$set": payload}))
+                # Use UpdateMany to apply trainer creds to all parts of a course (e.g., Maestro)
+                update_ops.append(UpdateMany(
+                    {"batch_review_id": batch_id, "sf_course_code": sf_code},
+                    {"$set": payload}
+                ))
             else:
+                # Handle student pods
                 payload = {"student_apm_username": creds.get("username"), "student_apm_password": creds.get("password")}
-                update_ops.append(UpdateOne({"batch_review_id": batch_id, "sf_course_code": apm_code}, {"$set": payload}))
+                # Use UpdateMany to apply student creds to all parts of a course (e.g., Maestro)
+                update_ops.append(UpdateMany(
+                    {"batch_review_id": batch_id, "sf_course_code": apm_code},
+                    {"$set": payload}
+                ))
         try:
             if update_ops and interim_alloc_collection is not None:
-                interim_alloc_collection.bulk_write(update_ops)
+                result = interim_alloc_collection.bulk_write(update_ops)
+                logger.info(f"Updated APM credentials in DB. Matched: {result.matched_count}, Modified: {result.modified_count}")
             return True, None
         except Exception as e:
             logger.error(f"Error updating interim DB with APM credentials: {e}", exc_info=True)

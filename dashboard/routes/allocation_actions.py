@@ -145,7 +145,7 @@ def _get_memory_for_course_local(course_name: str, local_course_configs_map: Dic
 def _format_date_for_review(raw_date_str: Optional[str], context: str) -> str:
     # ... (Implementation from previous responses) ...
     if not raw_date_str or raw_date_str == "N/A": return "N/A"
-    try: datetime.datetime.strptime(raw_date_str, "%Y-%m-%d"); return raw_date_str
+    try: datetime.strptime(raw_date_str, "%Y-%m-%d"); return raw_date_str
     except ValueError:
         for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"):
             try: return datetime.datetime.strptime(raw_date_str, fmt).strftime("%Y-%m-%d")
