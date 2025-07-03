@@ -10,20 +10,25 @@ from collections import defaultdict
 from typing import List, Dict, Any, Optional
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Border, Side
+# --- MODIFIED: Added Alignment for vertical centering in merged cells ---
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
 # --- UPDATED IMPORTS ---
 # Import the new configuration constants alongside the existing ones.
 from constants import (
+    INTERIM_ALLOCATION_COLLECTION,
+    ALLOCATION_COLLECTION,
+    HOST_COLLECTION
+)
+
+from excelreport_config import (
     ExcelStyle, LOG_LEVEL_GENERATE_EXCEL,
     AU_HOST_NAMES, US_HOST_NAMES,
-    INTERIM_ALLOCATION_COLLECTION, ALLOCATION_COLLECTION, HOST_COLLECTION,
     AVAILABLE_RAM_GB, SUMMARY_ENV_ORDER,
-    
-    # --- NEWLY ADDED CONSTANTS FOR BETTER MAINTAINABILITY ---
     RAM_SUMMARY_START_COL, EXCEL_GROUP_ORDER, EXCEL_COLUMN_WIDTHS
 )
+
 
 # --- Logging Setup ---
 logger = logging.getLogger(__name__)
@@ -43,7 +48,7 @@ def calculate_ram_summary(all_allocations: List[Dict], host_map: Dict) -> Dict[s
         if not ram or ram <= 0:
             continue
 
-        virtual_hosts_str = allocation.get("virtual_hosts", "").lower()
+        virtual_hosts_str = allocation.get("virtual_hosts", "").lower() if allocation.get("virtual_hosts") else ""
         if not virtual_hosts_str:
             continue
 
@@ -155,7 +160,7 @@ def write_summary_section(sheet, row_offset, allocated_ram_by_env: Dict[str, flo
 
 def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trainer, use_green_fill, host_map: Dict):
     trainer_flag, green_flag = (True, False) if is_trainer else (False, use_green_fill)
-    virtual_hosts_str = entry.get("virtual_hosts", "").lower()
+    virtual_hosts_str = entry.get("virtual_hosts", "").lower() if entry.get("virtual_hosts") else ""
     col = 1
     for h in header_keys:
         if h == "Start/End Pod":
@@ -182,44 +187,101 @@ def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trai
             write_cell(sheet, row, col, val_to_write, trainer_flag, green_flag, number_format=num_format)
             col += 1
 
-def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total, group_host_ram_totals, group_name):
-    vendor_col, ram_col = header_pos.get("Vendor Pods"), header_pos.get("RAM")
-    if not vendor_col and not ram_col: return start_row
-    label_row, value_row = start_row, start_row + 1
-    if vendor_col and group_pod_total > 0:
-        sheet.merge_cells(start_row=label_row, start_column=vendor_col - 1, end_row=label_row, end_column=vendor_col + 1)
-        label_cell = sheet.cell(row=label_row, column=vendor_col - 1, value="Total Pods")
-        label_cell.font = Font(bold=True, size=14)
-        apply_style(cell=label_cell, is_summary=True)
-        for offset in [-1, 0, 1]:
-            cell = sheet.cell(row=value_row, column=vendor_col + offset, value=group_pod_total if offset == 0 else "")
-            cell.font = Font(bold=True, size=12)
-            apply_style(cell=cell, is_summary=True)
-    if ram_col and sum(group_host_ram_totals.values()) > 0:
-        # Correctly iterates over the keys from the dynamically calculated totals
-        for host_key in group_host_ram_totals.keys():
+def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total, group_host_ram_totals, group_name, group_end_col):
+    """
+    Writes a 4-row summary block, applying color only to cells with content.
+    Uses custom borders to visually group rows into two 2-row high sections.
+    """
+    vendor_col = header_pos.get("Vendor Pods")
+    has_pod_summary = vendor_col and group_pod_total > 0
+    has_ram_summary = sum(group_host_ram_totals.values()) > 0
+    if not (has_pod_summary or has_ram_summary):
+        return start_row
+
+    label_start_row = start_row
+    label_end_row = start_row + 1
+    value_start_row = start_row + 2
+    value_end_row = start_row + 3
+    summary_end_row = value_end_row
+
+    thin_side = Side(style='thin')
+    no_side = Side(style=None)
+    border_top_half = Border(left=thin_side, right=thin_side, top=thin_side, bottom=no_side)
+    border_bottom_half = Border(left=thin_side, right=thin_side, top=no_side, bottom=thin_side)
+
+    # Step 1: Apply borders and alignment to all cells, but NO fill color yet.
+    for r in range(start_row, summary_end_row + 1):
+        for c in range(1, group_end_col + 1):
+            cell = sheet.cell(row=r, column=c)
+            cell.alignment = ExcelStyle.CENTER_ALIGNMENT.value
+            if r == label_start_row or r == value_start_row:
+                cell.border = border_top_half
+            elif r == label_end_row or r == value_end_row:
+                cell.border = border_bottom_half
+
+    # Step 2: Handle "Total Pods" section, now applying content AND fill color.
+    if has_pod_summary:
+        merge_start_col = vendor_col - 1
+        merge_end_col = vendor_col + 1
+
+        sheet.merge_cells(start_row=label_start_row, start_column=merge_start_col, end_row=label_end_row, end_column=merge_end_col)
+        label_cell = sheet.cell(row=label_start_row, column=merge_start_col)
+        label_cell.value = "Total Pods"
+        label_cell.font = Font(bold=True, size=16)
+        label_cell.alignment = Alignment(horizontal='center', vertical='center')
+        label_cell.fill = ExcelStyle.LIGHT_BLUE_FILL.value
+
+        sheet.merge_cells(start_row=value_start_row, start_column=merge_start_col, end_row=value_end_row, end_column=merge_end_col)
+        value_cell = sheet.cell(row=value_start_row, column=merge_start_col)
+        value_cell.value = group_pod_total
+        value_cell.font = Font(bold=True, size=14)
+        value_cell.alignment = Alignment(horizontal='center', vertical='center')
+        value_cell.fill = ExcelStyle.LIGHT_BLUE_FILL.value
+
+    # Step 3: Handle RAM totals, applying content AND fill color to the visual pair of cells.
+    if has_ram_summary:
+        for host_key, host_ram in group_host_ram_totals.items():
             host_col = header_pos.get(host_key)
-            if not host_col: continue
-            host_ram = group_host_ram_totals.get(host_key, 0)
-            cell = sheet.cell(row=value_row, column=host_col)
-            cell.value = host_ram if host_ram > 0 else 0
-            cell.number_format = '0'
-            apply_style(cell, is_summary=True)
-            cell.font = Font(bold=True, color="FFFF00")
-    return start_row + 3
+            if host_col:
+                # Get the top and bottom cells of the visual pair for the RAM total
+                cell_top = sheet.cell(row=value_start_row, column=host_col)
+                cell_bottom = sheet.cell(row=value_end_row, column=host_col)
+                
+                # Set the value in the bottom cell
+                cell_bottom.value = host_ram if host_ram > 0 else 0
+                cell_bottom.number_format = '0'
+                cell_bottom.font = Font(bold=True, color="FFFF00")
+
+                # Apply the fill to BOTH cells to color the entire visual block
+                cell_top.fill = ExcelStyle.LIGHT_BLUE_FILL.value
+                cell_bottom.fill = ExcelStyle.LIGHT_BLUE_FILL.value
+
+    return start_row + 4
 
 def apply_outer_border(sheet, start_row, end_row, start_col, end_col):
-    medium_border = ExcelStyle.MEDIUM_OUTER_BORDER.value
-    for col in range(start_col, end_col + 1):
-        top_cell = sheet.cell(row=start_row, column=col)
-        top_cell.border = Border(top=medium_border.top, left=top_cell.border.left, right=top_cell.border.right, bottom=top_cell.border.bottom)
-        bottom_cell = sheet.cell(row=end_row, column=col)
-        bottom_cell.border = Border(top=bottom_cell.border.top, left=bottom_cell.border.left, right=bottom_cell.border.right, bottom=medium_border.bottom)
-    for row in range(start_row, end_row + 1):
-        left_cell = sheet.cell(row=row, column=start_col)
-        left_cell.border = Border(top=left_cell.border.top, left=medium_border.left, right=left_cell.border.right, bottom=left_cell.border.bottom)
-        right_cell = sheet.cell(row=row, column=end_col)
-        right_cell.border = Border(top=right_cell.border.top, left=right_cell.border.left, right=medium_border.right, bottom=right_cell.border.bottom)
+    """
+    Applies a medium border to the left, right, and bottom of a range,
+    and removes the top border of the first row.
+    """
+    medium_side = Side(style='medium')
+    no_side = Side(style=None)
+
+    for r in range(start_row, end_row + 1):
+        for c in range(start_col, end_col + 1):
+            cell = sheet.cell(row=r, column=c)
+            b = cell.border
+            
+            is_top_row = (r == start_row)
+            is_bottom_row = (r == end_row)
+            is_left_col = (c == start_col)
+            is_right_col = (c == end_col)
+
+            if is_top_row or is_bottom_row or is_left_col or is_right_col:
+                left = medium_side if is_left_col else b.left
+                right = medium_side if is_right_col else b.right
+                top = no_side if is_top_row else b.top
+                bottom = medium_side if is_bottom_row else b.bottom
+                cell.border = Border(left=left, right=right, top=top, bottom=bottom)
 
 def determine_us_au_location(virtual_hosts_str: str) -> str:
     if not virtual_hosts_str: return ""
@@ -359,19 +421,15 @@ def unpack_current_allocations(documents, vendor_map, apm_credentials, location_
         pod_count = len(pod_nums)
         pod_range = f"{pod_nums[0]}-{pod_nums[-1]}" if pod_count > 1 else str(pod_nums[0])
         
-        course_hosts = sorted(val['hosts'])
-        vcenters = {host_to_vcenter_map.get(host) for host in course_hosts if host_to_vcenter_map.get(host)}
-        vcenter_str = ", ".join(sorted(vcenters))
-        
         found_version = _find_field(doc, ['course_name', 'version']) or 'N/A'
-        
-        pod = {
+        course_hosts = sorted(val['hosts'])
+
+        base_pod_data = {
             'course_code': course_code,
             'us_au_location': determine_us_au_location(", ".join(course_hosts)),
             'pod_type': 'extended',
             'start_end_pod': pod_range,
             'location': find_location_from_code(course_code, location_map),
-            'virtual_hosts': ", ".join(course_hosts),
             'course_start_date': format_date(_find_field(doc, ['start_date', 'sf_start_date'])),
             'last_day': format_date(_find_field(doc, ['end_date', 'sf_end_date'])),
             'username': username,
@@ -380,11 +438,22 @@ def unpack_current_allocations(documents, vendor_map, apm_credentials, location_
             'ram': _find_field(doc, ['ram', 'memory_gb_one_pod']),
             'vendor_pods': pod_count,
             'students': pod_count,
-            'vcenter_name': vcenter_str,
+            'course_name': found_version,
             'version': found_version,
             'course_version': found_version,
         }
-        extended_pods.append(pod)
+        
+        if not course_hosts:
+            pod = base_pod_data.copy()
+            pod['virtual_hosts'] = None
+            pod['vcenter_name'] = ""
+            extended_pods.append(pod)
+        else:
+            for host in course_hosts:
+                pod = base_pod_data.copy()
+                pod['virtual_hosts'] = host
+                pod['vcenter_name'] = host_to_vcenter_map.get(host, "")
+                extended_pods.append(pod)
         
     return extended_pods
 
@@ -402,7 +471,8 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
 
     expanded_data = []
     for entry in all_data:
-        hosts = entry.get("virtual_hosts", "")
+        hosts_val = entry.get("virtual_hosts")
+        hosts = hosts_val if isinstance(hosts_val, str) else ""
         host_list = [h.strip() for h in hosts.split(",") if h.strip()]
         if len(host_list) <= 1:
             expanded_data.append(entry)
@@ -460,11 +530,15 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
             entry_ram = convert_to_numeric(entry.get("ram")) or 0
             if entry_ram > 0:
                 for host_key, host_name in host_map.items():
-                    if host_name.lower() in entry.get("virtual_hosts", "").lower():
+                    if host_name.lower() in (entry.get("virtual_hosts", "") or "").lower():
                         group_host_ram_totals[host_key] += entry_ram
             current_row += 1
 
-        if non_trainer_pods and trainer_pods_in_group: current_row += 1
+        if non_trainer_pods and trainer_pods_in_group:
+            # Add a blank row with thin borders for visual separation
+            for col in range(1, group_end_col + 1):
+                sheet.cell(row=current_row, column=col).border = ExcelStyle.THIN_BORDER.value
+            current_row += 1
 
         for entry in trainer_pods_in_group:
             _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, True, False, host_map)
@@ -472,12 +546,24 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
             entry_ram = convert_to_numeric(entry.get("ram")) or 0
             if entry_ram > 0:
                 for host_key, host_name in host_map.items():
-                    if host_name.lower() in entry.get("virtual_hosts", "").lower():
+                    if host_name.lower() in (entry.get("virtual_hosts", "") or "").lower():
                         group_host_ram_totals[host_key] += entry_ram
             current_row += 1
+        
+        summary_start_row = current_row
+        current_row = write_group_summary_boxes(sheet, summary_start_row, header_pos, group_pod_total, group_host_ram_totals, group_name, group_end_col)
+        
+        # Apply the outer border to the entire block, from the title row to the last summary row.
+        # current_row is now the next blank row, so the end row is current_row - 1.
+        if summary_start_row < current_row: # Only apply if a summary box was written
+             apply_outer_border(sheet, group_start_row, current_row - 1, 1, group_end_col)
+        else: # No summary box, apply border to data rows
+             apply_outer_border(sheet, group_start_row, summary_start_row - 1, 1, group_end_col)
 
-        current_row = write_group_summary_boxes(sheet, current_row, header_pos, group_pod_total, group_host_ram_totals, group_name)
-        apply_outer_border(sheet, group_start_row, current_row - 1, 1, group_end_col)
+        # Add a blank row after each group for spacing, but don't increment current_row yet
+        # The next loop will overwrite this if it runs, or it provides a space at the end.
+        current_row += 1
+
 
     write_summary_section(sheet, 2, allocated_ram_data)
     

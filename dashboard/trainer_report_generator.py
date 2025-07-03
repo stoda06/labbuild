@@ -10,9 +10,16 @@ from openpyxl.utils import get_column_letter
 
 # Import from your project's main constants file
 from constants import (
-    ExcelStyle, TRAINER_SHEET_HEADERS, REPORT_SECTIONS, VENDOR_GROUP_MAP,
-    ALLOCATION_COLLECTION, HOST_COLLECTION, INTERIM_ALLOCATION_COLLECTION
+    ALLOCATION_COLLECTION,
+    HOST_COLLECTION,
+    INTERIM_ALLOCATION_COLLECTION
 )
+
+from excelreport_config import (
+    ExcelStyle, TRAINER_SHEET_HEADERS,
+    REPORT_SECTIONS, VENDOR_GROUP_MAP
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +67,7 @@ def _assemble_record(doc, course_info, pod_level_2, final_pod_details, host_map)
 def fetch_trainer_pod_data(db):
     """
     Fetches and processes trainer pods from the interimallocation collection,
-    handling pod number ranges.
+    handling pod number ranges and applying specific formatting rules for the report.
     """
     processed_data = []
     try:
@@ -74,39 +81,42 @@ def fetch_trainer_pod_data(db):
             # Loop through each assignment object for a given course
             for assignment in doc.get('trainer_assignment', []):
                 
-                # --- KEY CHANGE: Handle the pod range ---
                 try:
                     start = assignment.get('start_pod')
                     end = assignment.get('end_pod')
 
-                    # Ensure both start and end pods are valid numbers before proceeding
                     if start is not None and end is not None:
-                        # Loop from start_pod to end_pod (inclusive)
                         for pod_num in range(int(start), int(end) + 1):
                             
-                            # Create a unique record for EACH pod number
                             flat_record = {}
                             
                             host_name = assignment.get('host', 'N/A')
+                            full_vcenter = host_map.get(host_name, 'N/A')
                             
                             flat_record['host'] = host_name
-                            flat_record['vcenter'] = host_map.get(host_name, 'N/A')
+                            flat_record['vcenter'] = full_vcenter.split('.')[0]
                             flat_record['course_name'] = doc.get('sf_course_type', 'N/A')
                             flat_record['version'] = doc.get('final_labbuild_course', 'N/A')
                             flat_record['username'] = doc.get('trainer_apm_username', 'N/A')
                             flat_record['password'] = doc.get('trainer_apm_password', 'N/A')
-                            
-                            # Use the pod number from our loop
-                            flat_record['pod_number'] = pod_num # <-- CORRECTED LOGIC
-                            
+                            flat_record['pod_number'] = pod_num
                             flat_record['ram'] = doc.get('trainer_memory_gb_one_pod', 'N/A')
-                            flat_record['taken_by'] = doc.get('sf_trainer_name', 'N/A')
+                            flat_record['taken_by'] = '' # Kept blank for manual entry
                             flat_record['notes'] = doc.get('trainer_assignment_warning')
-                            flat_record['class'] = 'N/A' # Field does not exist in this structure
-
+                            
                             vendor_code = doc.get('vendor', '').upper()
                             vendor = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
                             flat_record['vendor'] = vendor
+
+                            # --- THIS IS THE KEY LOGIC FOR THE "CLASS" FIELD ---
+                            # It specifically checks if the vendor is F5.
+                            # If it is not F5, the 'else' block runs, making the field blank.
+                            if vendor_code == 'F5':
+                                # Only for F5, try to get the class number.
+                                flat_record['class'] = doc.get('sf_class_number', '') 
+                            else:
+                                # For ALL other vendors (Palo Alto, Check Point, etc.), set to blank.
+                                flat_record['class'] = ''
 
                             processed_data.append(flat_record)
 
@@ -132,10 +142,13 @@ def _apply_style(cell, fill=None, font=None, alignment=None, border=None):
 # --- REVISED FUNCTION WITH CONDITIONAL SECTION GENERATION ---
 # Replace your old create_trainer_report_in_memory function with this one.
 
+# --- REVISED FUNCTION WITH CONDITIONAL HEADER NAME ---
+# This version keeps the column structure consistent for all sections.
+
 def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
     """
-    Generates the trainer report, but only includes sections that have
-    at least one pod assigned.
+    Generates the trainer report. The layout is consistent, but the "Class"
+    header text is only displayed for the "F5 COURSE" section.
     """
     wb = Workbook()
     sheet = wb.active
@@ -151,7 +164,6 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
     # Group all fetched pods by their assigned vendor group name
     grouped_by_vendor = defaultdict(list)
     for pod in trainer_pods:
-        # The vendor name (e.g., "PR COURSE") is already set in the fetch_trainer_pod_data function
         vendor_name = pod.get("vendor")
         if vendor_name:
             grouped_by_vendor[vendor_name].append(pod)
@@ -162,7 +174,6 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
         
         records_for_this_section = grouped_by_vendor.get(section_name, [])
 
-        # --- KEY CHANGE: Only create the section if there are pods for it ---
         if records_for_this_section:
             
             # 1. Write the blue section header (e.g., "PR COURSE")
@@ -174,7 +185,14 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
             # 2. Write the column headers (Course Name, Version, etc.)
             headers = list(TRAINER_SHEET_HEADERS.keys())
             for col_idx, header_text in enumerate(headers, 1):
-                cell = sheet.cell(row=current_row, column=col_idx, value=header_text)
+                
+                # --- KEY CHANGE: Conditionally blank out the 'Class' header ---
+                # The header text is set to blank if it is 'Class' AND the section is not 'F5 COURSE'
+                value_to_write = header_text
+                if header_text == 'Class' and section_name != 'F5 COURSE':
+                    value_to_write = '' # This makes the header cell blank
+
+                cell = sheet.cell(row=current_row, column=col_idx, value=value_to_write)
                 _apply_style(cell, fill=ExcelStyle.LIGHT_BLUE_FILL.value, font=Font(bold=True),
                              alignment=ExcelStyle.CENTER_ALIGNMENT.value, border=ExcelStyle.THIN_BORDER.value)
             current_row += 1
@@ -182,8 +200,7 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
             # 3. Sort and write the actual data rows for the pods
             def sort_key(record):
                 course = record.get('course_name', '')
-                pod_num_str = str(record.get('pod_number', '0'))
-                pod_num = int(pod_num_str) if pod_num_str.isdigit() else 0
+                pod_num = int(record.get('pod_number', 0))
                 return (course, pod_num)
 
             sorted_records = sorted(records_for_this_section, key=sort_key)
@@ -200,7 +217,13 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
             current_row += 1
 
     # Adjust column widths (this part remains the same)
-    column_widths = {'A': 35, 'B': 12, 'C': 15, 'D': 15, 'E': 20, 'F': 8, 'G': 8, 'H': 15, 'I': 20, 'J': 15, 'K': 35}
+    # The columns are now fixed, so we can use the original letter-based widths.
+    # Make sure the 'Class' column (likely G or H) has a width defined here.
+    column_widths = {
+        'A': 35, 'B': 12, 'C': 15, 'D': 15, 'E': 20, 'F': 8, 'G': 8, 'H': 15, 
+        'I': 20, 'J': 15, 'K': 35
+    } # Assuming 'Class' is column 'G'. Adjust if your header order is different.
+    
     for col_letter, width in column_widths.items():
         if col_letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:num_columns]:
             sheet.column_dimensions[col_letter].width = width
