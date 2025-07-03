@@ -1,5 +1,3 @@
---- START OF FILE labs/test/nu.py ---
-
 #!/usr/bin/env python3.10
 
 import argparse, re, pexpect, sys, threading
