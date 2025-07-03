@@ -1,126 +1,186 @@
 // dashboard/static/js/settings_course_configs.js
 
 document.addEventListener('DOMContentLoaded', function() {
-    // --- Add Config Modal ---
-    const addConfigModalElement = document.getElementById('addConfigModal');
-    if (addConfigModalElement) {
-        const addJsonTextarea = addConfigModalElement.querySelector('#add_config_json');
+    const configModal = document.getElementById('configModal');
+    if (!configModal) return;
 
-        addConfigModalElement.addEventListener('show.bs.modal', function() {
-            // Set initial empty JSON structure when "Add New" is clicked
-            if (addJsonTextarea && (addJsonTextarea.value.trim() === "" || addJsonTextarea.value.trim() === "{}")) {
-                addJsonTextarea.value = JSON.stringify({
-                    "course_name": "",
-                    "vendor_shortcode": "",
-                    "description": "",
-                    "memory_gb_per_pod": 0,
-                    "components": [],
-                    "networks": [],
-                    "prtg": {},
-                    "groups": [] // If your F5 or other configs use this
-                }, null, 2); // Pretty print with 2 spaces
-            }
-        });
+    const form = configModal.querySelector('#configForm');
 
-        addConfigModalElement.addEventListener('hidden.bs.modal', function () {
-            const form = addConfigModalElement.querySelector('form');
-            if (form) form.reset();
-            // Reset textarea to default placeholder or empty JSON after closing
-            if (addJsonTextarea) {
-                 addJsonTextarea.value = JSON.stringify({
-                    "course_name": "",
-                    "vendor_shortcode": ""
-                }, null, 2);
-            }
-        });
-    } else {
-        console.warn("Add Config Modal element ('addConfigModal') not found.");
-    }
+    // --- TEMPLATE DEFINITIONS ---
+    // A map to associate section names with their corresponding HTML template IDs
+    const sectionTemplates = {
+        'components': 'components-template',
+        'networks': 'networks-template',
+        'groups': 'generic-object-template', // Using a generic one for simple objects
+        'prtg': 'generic-object-template',
+        'servers': 'generic-object-template'
+    };
+    
+    // --- UTILITY FUNCTIONS ---
 
-
-    // --- Edit Config Modal ---
-    const editConfigModalElement = document.getElementById('editConfigModal');
-    if (editConfigModalElement) {
-        editConfigModalElement.addEventListener('show.bs.modal', function (event) {
-            const button = event.relatedTarget; // Button that triggered the modal
-            if (!button) {
-                console.error("Edit Config modal: No relatedTarget (triggering button) found.");
-                return;
-            }
-
-            // Extract data from button's data-* attributes
-            const configId = button.getAttribute('data-config-id');
-            const configJsonString = button.getAttribute('data-config-json');
-
-            // Log for debugging
-            console.log("--- Edit Config Modal Data ---");
-            console.log("ID:", configId);
-            console.log("Raw Config JSON Attr:", configJsonString);
-
-            // Get modal elements
-            const modalTitle = editConfigModalElement.querySelector('.modal-title');
-            const configIdInput = editConfigModalElement.querySelector('#edit_config_id');
-            const configJsonTextarea = editConfigModalElement.querySelector('#edit_config_json');
-            const errorContainer = editConfigModalElement.querySelector('.modal-body');
-
-            // Ensure all modal elements are found
-            if (!modalTitle || !configIdInput || !configJsonTextarea || !errorContainer) {
-                console.error("Edit Config modal: One or more form elements not found. Check IDs.");
-                if (errorContainer) errorContainer.innerHTML = '<p class="text-danger">Modal form error. Cannot load data.</p>';
-                return;
-            }
-
-            // Clear previous dynamic error messages
-            errorContainer.querySelectorAll('.dynamic-error-msg').forEach(el => el.remove());
-
-            // Populate hidden ID field
-            configIdInput.value = configId || '';
-
-            // Process and populate JSON textarea
-            let configObject = {}; // Default to empty object
-            let courseNameForTitle = 'N/A';
-
-            if (configJsonString && configJsonString.trim() !== "") {
-                try {
-                    // Browsers automatically unescape HTML entities from getAttribute
-                    configObject = JSON.parse(configJsonString);
-                    courseNameForTitle = configObject.course_name || 'N/A'; // Get course name for title
-                    // Remove _id from the object displayed in textarea, as it's not directly editable
-                    // but it is submitted via the hidden input.
-                    delete configObject._id;
-                } catch (e) {
-                    console.error("Error parsing config JSON for edit modal:", e, "\nOriginal JSON String:", configJsonString);
-                    configJsonTextarea.value = configJsonString; // Show raw string on error
-                    const errorMsg = document.createElement('small');
-                    errorMsg.className = 'text-danger d-block dynamic-error-msg';
-                    errorMsg.textContent = 'Invalid JSON format in current config. Displaying raw data.';
-                    // Insert error message after the textarea
-                    configJsonTextarea.parentNode.insertBefore(errorMsg, configJsonTextarea.nextSibling);
+    /**
+     * Re-indexes the name and id attributes of form elements within a container
+     * after an item has been added or removed.
+     * @param {HTMLElement} container - The container holding the dynamic items.
+     * @param {string} sectionName - The top-level key (e.g., 'components').
+     */
+    function reindexItems(container, sectionName) {
+        const items = container.querySelectorAll(':scope > .dynamic-item, :scope > .dynamic-item-nested');
+        items.forEach((item, index) => {
+            item.querySelectorAll('input, select, textarea').forEach(input => {
+                const name = input.getAttribute('name');
+                if (name) {
+                    // This regex finds the first index placeholder and replaces it
+                    const newName = name.replace(/\[\d+\]/, `[${index}]`);
+                    input.setAttribute('name', newName);
                 }
-            }
-            // Always set textarea value, pretty-printing the object (or empty if error/no data)
-            // This ensures that if an error occurred above and textarea was set to raw string, it remains.
-            // Otherwise, if it's empty or was successfully parsed, pretty-print.
-            if (configJsonTextarea.value.trim() === "" || configJsonTextarea.value.trim() === "{}" || configObject ) {
-                 configJsonTextarea.value = JSON.stringify(configObject, null, 2);
-            }
-
-
-            // Update modal title
-            modalTitle.textContent = 'Edit Course Config: ' + courseNameForTitle;
+            });
         });
-
-        // Reset form when Edit Modal is hidden
-        editConfigModalElement.addEventListener('hidden.bs.modal', function () {
-            const form = editConfigModalElement.querySelector('form');
-            if (form) form.reset(); // Resets form fields to their initial HTML values
-            editConfigModalElement.querySelectorAll('.dynamic-error-msg').forEach(el => el.remove());
-            const modalTitle = editConfigModalElement.querySelector('.modal-title');
-            if (modalTitle) modalTitle.textContent = 'Edit Course Configuration'; // Reset title
-            const configJsonTextarea = editConfigModalElement.querySelector('#edit_config_json');
-            if (configJsonTextarea) configJsonTextarea.value = '{}'; // Clear textarea
-        });
-    } else {
-        console.warn("Edit Config Modal element ('editConfigModal') not found.");
     }
+
+    /**
+     * Adds a new dynamic item to a container, cloning it from a template.
+     * @param {HTMLElement} container - The container to add the item to.
+     * @param {string} templateId - The ID of the <template> element to use.
+     * @param {string} sectionName - The name of the section (e.g., 'components').
+     * @param {object} [data={}] - Optional data to populate the new item's fields.
+     */
+    function addItem(container, templateId, sectionName, data = {}) {
+        const template = document.getElementById(templateId);
+        if (!template) return;
+
+        const newItem = template.content.cloneNode(true).firstElementChild;
+        const newIndex = container.children.length;
+
+        // Populate fields with data before adding to DOM
+        Object.keys(data).forEach(key => {
+            const input = newItem.querySelector(`[name$="[${key}]"]`);
+            if (input) input.value = data[key];
+        });
+        
+        // Handle generic template where keys are also inputs
+        if(templateId === 'generic-object-template') {
+            const keyInput = newItem.querySelector('.generic-key-input');
+            const valueInput = newItem.querySelector('.generic-value-input');
+            if (keyInput && valueInput && data) {
+                 const key = Object.keys(data)[0];
+                 const value = data[key];
+                 if (key) keyInput.value = key;
+                 if (value) valueInput.value = JSON.stringify(value); // Stringify complex values
+            }
+        }
+
+        // Recursively handle nested items (for 'networks' -> 'port_groups')
+        if (sectionName === 'networks' && data.port_groups && Array.isArray(data.port_groups)) {
+            const nestedContainer = newItem.querySelector('.nested-items-container');
+            data.port_groups.forEach(pgData => {
+                addNestedItem(nestedContainer, 'port_groups-template', 'networks', newIndex, 'port_groups', pgData);
+            });
+        }
+
+        // Add remove listener
+        newItem.querySelector('.remove-item-btn').addEventListener('click', () => {
+            newItem.remove();
+            reindexItems(container, sectionName);
+        });
+        
+        // Add listener for inline "Add Port Group" button
+        const addNestedBtn = newItem.querySelector('.add-nested-item-btn');
+        if (addNestedBtn) {
+            addNestedBtn.addEventListener('click', (e) => {
+                const nestedContainer = e.target.previousElementSibling;
+                addNestedItem(nestedContainer, e.target.dataset.templateId, 'networks', newIndex, 'port_groups');
+            });
+        }
+        
+        container.appendChild(newItem);
+        reindexItems(container, sectionName); // Re-index after adding
+    }
+    
+    /**
+     * Adds a nested item (like a port group inside a network).
+     */
+    function addNestedItem(container, templateId, parentName, parentIndex, sectionName, data = {}) {
+        const template = document.getElementById(templateId);
+        if (!template) return;
+
+        const newNestedItem = template.content.cloneNode(true).firstElementChild;
+        const newIndex = container.children.length;
+        
+        newNestedItem.querySelectorAll('input, select, textarea').forEach(input => {
+            let name = input.getAttribute('name');
+            if(name) {
+                name = name.replace('__PARENT_NAME__', parentName)
+                           .replace('__PARENT_INDEX__', parentIndex)
+                           .replace('__INDEX__', newIndex);
+                input.setAttribute('name', name);
+            }
+        });
+
+        Object.keys(data).forEach(key => {
+            const input = newNestedItem.querySelector(`[name$="[${key}]"]`);
+            if (input) input.value = data[key];
+        });
+
+        newNestedItem.querySelector('.remove-item-btn').addEventListener('click', () => {
+            newNestedItem.remove();
+            // Re-indexing nested items is more complex but can be done if needed
+        });
+
+        container.appendChild(newNestedItem);
+    }
+    
+    // --- MODAL EVENT LISTENERS ---
+
+    configModal.addEventListener('show.bs.modal', function(event) {
+        const button = event.relatedTarget;
+        const mode = button.dataset.mode; // 'add' or 'edit'
+
+        // Reset form and set action URL
+        form.reset();
+        document.querySelectorAll('.dynamic-items-container').forEach(c => c.innerHTML = '');
+        
+        if (mode === 'add') {
+            form.action = "{{ url_for('settings.add_course_config') }}";
+            configModal.querySelector('.modal-title').textContent = 'Add New Course Configuration';
+            form.querySelector('#config_id').value = '';
+        } else { // 'edit' mode
+            form.action = "{{ url_for('settings.update_course_config') }}";
+            const configData = JSON.parse(button.dataset.configJson);
+            
+            configModal.querySelector('.modal-title').textContent = `Edit Course Config: ${configData.course_name}`;
+            form.querySelector('#config_id').value = configData._id;
+
+            // Populate simple fields
+            form.querySelector('#course_name').value = configData.course_name || '';
+            form.querySelector('#vendor_shortcode').value = configData.vendor_shortcode || '';
+            form.querySelector('#alias').value = configData.alias || '';
+            form.querySelector('#apm_version').value = configData.apm_version || '';
+            form.querySelector('#memory').value = configData.memory !== undefined ? configData.memory : '';
+            
+            // Populate dynamic sections
+            Object.keys(sectionTemplates).forEach(sectionName => {
+                const container = document.getElementById(`${sectionName}-container`);
+                const templateId = sectionTemplates[sectionName];
+                if (container && configData[sectionName] && Array.isArray(configData[sectionName])) {
+                    configData[sectionName].forEach(itemData => {
+                        addItem(container, templateId, sectionName, itemData);
+                    });
+                }
+            });
+        }
+    });
+
+    // Add event listeners to all "Add Item" buttons
+    document.querySelectorAll('.add-item-btn').forEach(button => {
+        button.addEventListener('click', () => {
+            const sectionName = button.dataset.sectionName;
+            const container = document.getElementById(`${sectionName}-container`);
+            const templateId = sectionTemplates[sectionName];
+            if(container && templateId) {
+                addItem(container, templateId, sectionName);
+            }
+        });
+    });
+
 });

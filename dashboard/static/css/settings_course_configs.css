@@ -7,46 +7,73 @@
     font-size: 0.9rem;
 }
 
-/* Styling for the <pre> tag showing JSON config */
 .configs-table td pre {
-    background-color: #f8f9fa; /* Light mode background */
-    border: 1px solid #dee2e6; /* Light mode border */
+    background-color: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color-translucent);
     padding: 10px;
-    border-radius: 3px;
-    max-height: 200px; /* Limit height and enable scroll */
+    border-radius: var(--bs-border-radius-sm);
+    max-height: 200px;
     overflow-y: auto;
-    font-size: 0.8rem; /* Smaller font for JSON */
-    margin-bottom: 0;
-    white-space: pre-wrap; /* Allow wrapping */
-    word-break: break-all; /* Break long words/strings */
-}
-
-/* Dark mode styling for <pre> tag */
-body.dark-mode .configs-table td pre {
-    background-color: #333;
-    border-color: #555;
-    color: #eee;
-}
-
-/* Action buttons in the table */
-.btn-action-group button,
-.btn-action-group a {
-    margin-left: 5px; /* Spacing between action buttons */
-}
-
-/* Modal styling */
-.modal-body textarea {
-    min-height: 250px; /* Ensure ample space for JSON editing */
-    font-family: monospace; /* Use monospace font for JSON */
     font-size: 0.8rem;
+    margin-bottom: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: monospace;
 }
 
-.modal-lg { /* Make modals wider for better JSON visibility */
-    max-width: 900px;
+.config-preview-container {
+    font-size: 0.8rem;
+    line-height: 1.4;
+    max-width: 450px; /* Constrain width to prevent stretching */
 }
 
-/* Helper class for dynamic error messages in modals */
-.dynamic-error-msg {
-    font-size: 0.8rem; /* Smaller error messages */
-    margin-top: 0.25rem; /* Space above the message */
+.config-preview-container .list-unstyled li {
+    margin-bottom: 0.2rem;
+}
+
+.config-preview-container .preview-nested-list {
+    list-style-type: none;
+    padding-left: 1rem;
+    font-size: 0.9em;
+    color: var(--bs-secondary-color);
+}
+.config-preview-container code {
+    font-size: 0.9em;
+    color: var(--bs-primary-text-emphasis);
+    background-color: var(--bs-primary-bg-subtle);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+.btn-action-group button, .btn-action-group a { margin-left: 5px; }
+.modal-xl { max-width: 1140px; }
+
+/* --- New styles for dynamic forms --- */
+.dynamic-item, .dynamic-item-nested {
+    position: relative;
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+}
+.dynamic-item-nested {
+    background-color: var(--bs-secondary-bg);
+}
+.remove-item-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 1em;
+    height: 1em;
+    padding: 0;
+    font-size: 1.25rem;
+    opacity: 0.5;
+}
+.remove-item-btn:hover {
+    opacity: 1;
+    color: var(--bs-danger);
+}
+.accordion-body {
+    padding: 1rem 1.25rem;
+}
+.accordion-button:not(.collapsed) {
+    background-color: var(--bs-primary-bg-subtle);
 }

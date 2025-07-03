@@ -8,7 +8,9 @@ import datetime
 import pytz
 from typing import Optional, List, Dict
 from flask import current_app
-
+import random
+import string
+from typing import Union
 from pyVmomi import vim # type: ignore
 from vcenter_utils import get_vcenter_instance # Import your vCenter connector
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,31 +32,48 @@ def build_args_from_form(form_data):
 
         args = [command]  # Command first
 
-        # Map standard arguments to flags
+        # Map standard arguments applicable to most commands
         arg_map = {
             'vendor': '-v', 'course': '-g', 'host': '--host',
             'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn',
             'tag': '-t', 'component': '-c', 'operation': '-o',
-            'memory': '-mem', 'prtg_server': '--prtg-server',
-            'datastore': '-ds', 'thread': '-th',
-            'clonefrom': '--clonefrom' 
+            'thread': '-th', 'clonefrom': '--clonefrom'
         }
         for key, flag in arg_map.items():
             value = form_data.get(key)
             if value is not None and value != '':
                 args.extend([flag, str(value)])
+        
+        # --- THIS IS THE FIX: Command-specific arguments ---
+        if command == 'setup':
+            # These arguments are only valid for the 'setup' command
+            setup_specific_args = {
+                'memory': '-mem',
+                'prtg_server': '--prtg-server',
+                'datastore': '-ds'
+            }
+            for key, flag in setup_specific_args.items():
+                value = form_data.get(key)
+                if value is not None and value != '':
+                    args.extend([flag, str(value)])
+        # --- END OF FIX ---
 
-        # Map boolean flags (checkboxes) - value is 'on' if checked
+        # Map boolean flags (checkboxes)
         bool_flags = {
              're_build': '--re-build', 'full': '--full',
              'monitor_only': '--monitor-only', 'db_only': '--db-only',
              'perm': '--perm', 'verbose': '--verbose'
         }
         for key, flag in bool_flags.items():
-            # Check if the key exists and its value is 'on'
             if form_data.get(key) == 'on':
-                args.append(flag)
-
+                # Only add flags relevant to the command
+                if command == 'setup' and flag in ['--re-build', '--full', '--monitor-only', '--db-only', '--perm']:
+                    args.append(flag)
+                elif command == 'teardown' and flag in ['--monitor-only', '--db-only']:
+                    args.append(flag)
+                elif flag == '--verbose': # Verbose is global
+                    args.append(flag)
+                
         # --- Basic Validation ---
         error_msg = None
         vendor_val = form_data.get('vendor')
@@ -70,7 +89,7 @@ def build_args_from_form(form_data):
             is_special_mode = (
                 form_data.get('db_only') == 'on' or
                 form_data.get('monitor_only') == 'on' or
-                form_data.get('perm') == 'on' or
+                (command == 'setup' and form_data.get('perm') == 'on') or
                 form_data.get('component') == '?' or
                 form_data.get('course') == '?'
             )
@@ -115,36 +134,49 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
 
     args = [command] # Command first
 
-    # --- Map standard arguments to flags ---
+    # --- Map standard arguments applicable to most commands ---
     arg_map = {
         'vendor': '-v', 'course': '-g', 'host': '--host',
         'start_pod': '-s', 'end_pod': '-e', 'class_number': '-cn',
         'tag': '-t', 'component': '-c', 'operation': '-o',
-        'memory': '-mem', 'prtg_server': '--prtg-server',
-        'datastore': '-ds', 'thread': '-th',
-        'clonefrom': '--clonefrom'
+        'thread': '-th', 'clonefrom': '--clonefrom'
     }
     for key, flag in arg_map.items():
         value = data.get(key)
         if value is not None:
-             # Skip empty tag if provided as ""
              if key == 'tag' and value == '': continue
              args.extend([flag, str(value)])
 
-    # --- Map boolean flags ---
+    # --- THIS IS THE FIX: Command-specific arguments for API calls ---
+    if command == 'setup':
+        setup_specific_args = {
+            'memory': '-mem',
+            'prtg_server': '--prtg-server',
+            'datastore': '-ds'
+        }
+        for key, flag in setup_specific_args.items():
+            value = data.get(key)
+            if value is not None and value != '':
+                args.extend([flag, str(value)])
+    # --- END OF FIX ---
+
+    # Map boolean flags
     bool_flags = {
-         'rebuild': '--re-build', # Key name used in API request
-         'full': '--full',
-         'monitor_only': '--monitor-only',
-         'db_only': '--db-only',
-         'perm': '--perm',
-         'verbose': '--verbose'
+         'rebuild': '--re-build', 'full': '--full',
+         'monitor_only': '--monitor-only', 'db_only': '--db-only',
+         'perm': '--perm', 'verbose': '--verbose'
     }
     for key, flag in bool_flags.items():
-        if data.get(key) is True: # Check for explicit True
-            args.append(flag)
+        if data.get(key) is True:
+            # Only add flags relevant to the command
+            if command == 'setup' and flag in ['--re-build', '--full', '--monitor-only', '--db-only', '--perm']:
+                args.append(flag)
+            elif command == 'teardown' and flag in ['--monitor-only', '--db-only']:
+                args.append(flag)
+            elif flag == '--verbose': # Verbose is global
+                args.append(flag)
 
-    # --- Basic Server-Side Validation ---
+    # Basic Server-Side Validation (unchanged)
     vendor_val = data.get('vendor')
     if not vendor_val:
         return None, "'vendor' field is required."
@@ -159,7 +191,7 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
         is_special_mode = (
             data.get('db_only') is True or
             data.get('monitor_only') is True or
-            data.get('perm') is True or
+            (command == 'setup' and data.get('perm') is True) or
             data.get('component') == '?' or
             data.get('course') == '?'
         )
@@ -180,7 +212,7 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
                        return None, "Invalid non-integer value for start_pod or end_pod."
 
     logger.debug(f"Built arguments from API data: {args}")
-    return args, None # Return args and no error message
+    return args, None
 
 def build_log_filter_query(request_args):
     """Builds a MongoDB filter dictionary based on request arguments."""
@@ -496,7 +528,57 @@ def get_hosts_available_memory_parallel(host_details_list: List[Dict]) -> Dict[s
     logger.info(f"Finished parallel memory fetch. Results for {len(host_memory_gb)} hosts.")
     return host_memory_gb
 
-# Add this new function to the end of dashboard/utils.py
+def _generate_random_password(length=8) -> str:
+    """Generates a random numeric password of specified length."""
+    return "".join(random.choice(string.digits) for _ in range(length))
+
+def _create_contiguous_ranges(pod_numbers: List[Union[int,str]]) -> str:
+    """
+    Converts a list of pod numbers (can be int or string)
+    into a comma-separated string of contiguous ranges.
+    Example: [1, 2, 3, '5', 6, 8] -> "1-3,5-6,8"
+    """
+    if not pod_numbers:
+        return ""
+    
+    processed_pod_numbers: List[int] = []
+    for p in pod_numbers:
+        try:
+            processed_pod_numbers.append(int(p))
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert pod number '{p}' to int in _create_contiguous_ranges. Skipping.")
+            continue
+    
+    if not processed_pod_numbers:
+        return ""
+    
+    pod_numbers_sorted_unique = sorted(list(set(processed_pod_numbers)))
+    if not pod_numbers_sorted_unique:
+        return ""
+
+    ranges = []
+    start_range = pod_numbers_sorted_unique[0]
+    end_range = pod_numbers_sorted_unique[0]
+
+    for i in range(1, len(pod_numbers_sorted_unique)):
+        if pod_numbers_sorted_unique[i] == end_range + 1:
+            end_range = pod_numbers_sorted_unique[i]
+        else:
+            if start_range == end_range:
+                ranges.append(str(start_range))
+            else:
+                ranges.append(f"{start_range}-{end_range}")
+            start_range = pod_numbers_sorted_unique[i]
+            end_range = pod_numbers_sorted_unique[i]
+    
+    # Add the last range
+    if start_range == end_range:
+        ranges.append(str(start_range))
+    else:
+        ranges.append(f"{start_range}-{end_range}")
+        
+    return ",".join(ranges)
+
 
 def get_next_monday_date_str(format_str="%Y%m%d"):
     """

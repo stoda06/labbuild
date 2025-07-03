@@ -1,0 +1,53 @@
+{# dashboard/templates/partials/_rule_preview.html #}
+<div class="rule-preview-container">
+    <div class="rule-preview-section">
+        <strong>Conditions</strong>
+        <ul class="preview-list mt-1">
+            {% set conditions = rule.conditions or {} %}
+            {% if conditions.vendor %}
+                <li>Vendor: <code>{{ conditions.vendor | upper }}</code></li>
+            {% endif %}
+            {% if conditions.course_code_contains %}
+                <li>Code Contains: <code>{{ conditions.course_code_contains | join(', ') }}</code></li>
+            {% endif %}
+            {% if conditions.course_code_not_contains %}
+                <li>Code NOT Contains: <code>{{ conditions.course_code_not_contains | join(', ') }}</code></li>
+            {% endif %}
+             {% if conditions.course_type_contains %}
+                <li>Type Contains: <code>{{ conditions.course_type_contains | join(', ') }}</code></li>
+            {% endif %}
+            {% if not conditions %}
+                <li class="text-muted"><em>(Applies to all)</em></li>
+            {% endif %}
+        </ul>
+    </div>
+    <div class="rule-preview-section">
+        <strong>Actions</strong>
+        <ul class="preview-list mt-1">
+            {% set actions = rule.actions or {} %}
+            {% if actions.set_labbuild_course %}
+                <li>Set Course: <code>{{ actions.set_labbuild_course }}</code></li>
+            {% endif %}
+            {% if actions.host_priority %}
+                <li>Host Priority: <code>{{ actions.host_priority | join(', ') }}</code></li>
+            {% endif %}
+             {% if actions.allow_spillover %}
+                <li><span class="badge text-bg-success">Allow Spillover</span></li>
+            {% else %}
+                 <li><span class="badge text-bg-secondary">No Spillover</span></li>
+            {% endif %}
+            {% if actions.start_pod_number %}
+                <li>Start Pod #: <code>{{ actions.start_pod_number }}</code></li>
+            {% endif %}
+            {% if actions.set_max_pods %}
+                <li>Max Pods: <code>{{ actions.set_max_pods }}</code></li>
+            {% endif %}
+            {% if actions.calculate_pods_from_pax %}
+                <li>Calc Pods: <span class="badge text-bg-info">Enabled</span></li>
+            {% endif %}
+            {% if actions.maestro_split_build %}
+                <li>Split Build: <span class="badge text-bg-primary">Maestro</span></li>
+            {% endif %}
+        </ul>
+    </div>
+</div>

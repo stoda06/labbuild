@@ -1,0 +1,162 @@
+{# dashboard/templates/settings_trainer_emails.html #}
+{% extends 'base.html' %}
+
+{% block title %}Trainer Email Settings{% endblock %}
+
+{% block head %}
+{{ super() }}
+<style>
+    .trainer-table th,
+    .trainer-table td {
+        vertical-align: middle;
+        font-size: 0.9rem;
+    }
+    .status-icon.active { color: var(--bs-success); }
+    .status-icon.inactive { color: var(--bs-secondary); }
+    .btn-action-group button,
+    .btn-action-group a {
+        margin-left: 5px;
+    }
+</style>
+{% endblock %}
+
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1>Trainer Email Management</h1>
+    <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+</div>
+
+<div class="mb-3">
+    <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addTrainerModal">
+        <i class="fas fa-plus"></i> Add New Trainer Email
+    </button>
+</div>
+
+<div class="card">
+    <div class="card-header">Existing Trainer Email Configurations</div>
+    <div class="card-body p-0">
+        {% if trainers %}
+        <div class="table-responsive">
+            <table class="table table-sm table-striped table-hover mb-0 trainer-table">
+                <thead class="table-light">
+                    <tr>
+                        <th class="text-center">Active</th>
+                        <th>Trainer Name</th>
+                        <th>Email Address</th>
+                        <th class="text-end">Manage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for trainer in trainers %}
+                    <tr>
+                        <td class="text-center">
+                            {% if trainer.active %}
+                                <i class="fas fa-check-circle status-icon active" title="Active"></i>
+                            {% else %}
+                                <i class="fas fa-times-circle status-icon inactive" title="Inactive"></i>
+                            {% endif %}
+                        </td>
+                        <td>{{ trainer.trainer_name }}</td>
+                        <td>{{ trainer.email_address }}</td>
+                        <td class="text-end btn-action-group">
+                            <button type="button" class="btn btn-sm btn-warning edit-trainer-btn"
+                                data-bs-toggle="modal"
+                                data-bs-target="#editTrainerModal"
+                                data-trainer-id="{{ trainer._id }}"
+                                data-name="{{ trainer.trainer_name | e }}"
+                                data-email="{{ trainer.email_address | e }}"
+                                data-active="{{ trainer.active | string | lower }}"
+                                title="Edit Trainer">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <form action="{{ url_for('settings.delete_trainer_email', trainer_id=trainer._id) }}" method="POST" class="d-inline" onsubmit="return confirm('Delete trainer \'{{ trainer.trainer_name }}\'?')">
+                                <button type="submit" class="btn btn-sm btn-danger" title="Delete Trainer">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="p-3 text-muted">No trainer email configurations found.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Add Trainer Modal -->
+<div class="modal fade" id="addTrainerModal" tabindex="-1" aria-labelledby="addTrainerModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form action="{{ url_for('settings.add_trainer_email') }}" method="POST">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addTrainerModalLabel">Add New Trainer</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+            <div class="mb-3">
+                <label for="add_trainer_name" class="form-label">Trainer Name <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" id="add_trainer_name" name="trainer_name" required>
+            </div>
+            <div class="mb-3">
+                <label for="add_email_address" class="form-label">Email Address <span class="text-danger">*</span></label>
+                <input type="email" class="form-control" id="add_email_address" name="email_address" required>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="add_active" name="active" checked>
+                <label class="form-check-label" for="add_active">
+                    Active (can receive emails)
+                </label>
+            </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-primary">Save Trainer</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Trainer Modal -->
+<div class="modal fade" id="editTrainerModal" tabindex="-1" aria-labelledby="editTrainerModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="editTrainerForm" method="POST"> {# Action will be set by JS #}
+        <div class="modal-header">
+          <h5 class="modal-title" id="editTrainerModalLabel">Edit Trainer</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+            <div class="mb-3">
+                <label for="edit_trainer_name" class="form-label">Trainer Name <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" id="edit_trainer_name" name="trainer_name" required>
+            </div>
+            <div class="mb-3">
+                <label for="edit_email_address" class="form-label">Email Address <span class="text-danger">*</span></label>
+                <input type="email" class="form-control" id="edit_email_address" name="email_address" required>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="edit_active" name="active">
+                <label class="form-check-label" for="edit_active">
+                    Active (can receive emails)
+                </label>
+            </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/settings_trainer_emails.js') }}" defer></script>
+{% endblock %}

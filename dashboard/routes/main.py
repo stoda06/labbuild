@@ -25,10 +25,65 @@ from collections import defaultdict
 # Import the Salesforce util that APPLIES RULES
 from ..salesforce_utils import get_upcoming_courses_data # USE THIS ONE
 
+import pytz
+from ..extensions import SERVER_TIMEZONE
+
 
 # Define Blueprint
 bp = Blueprint('main', __name__)
 logger = logging.getLogger('dashboard.routes.main')
+
+# --- NEW: Timezone Helper ---
+def get_user_timezone():
+    """Gets the user's timezone from the session, falling back to the server's default."""
+    try:
+        # Get the IANA timezone name from the session
+        tz_name = session.get('user_timezone', SERVER_TIMEZONE.zone)
+        # Return a pytz timezone object
+        return pytz.timezone(tz_name)
+    except pytz.UnknownTimeZoneError:
+        # If the session contains an invalid timezone, fall back to the server default
+        logger.warning(f"Invalid timezone in session: {session.get('user_timezone')}. Defaulting to {SERVER_TIMEZONE.zone}")
+        session['user_timezone'] = SERVER_TIMEZONE.zone # Correct the session
+        return SERVER_TIMEZONE
+    except Exception as e:
+        logger.error(f"Error getting user timezone: {e}")
+        return SERVER_TIMEZONE
+
+
+@bp.app_context_processor
+def inject_global_vars():
+    """Injects global variables into all templates."""
+    if 'past_due_notifications' not in g:
+        g.past_due_notifications = get_past_due_allocations()
+    
+    # --- NEW: Inject timezone information ---
+    if 'all_timezones' not in g:
+        g.all_timezones = pytz.all_timezones
+    
+    user_tz = get_user_timezone()
+    # --- END NEW ---
+    
+    return dict(
+        past_due_notifications=g.past_due_notifications,
+        all_timezones=g.all_timezones,
+        current_user_timezone=user_tz.zone # Pass the string name
+    )
+
+# --- NEW: Route to update timezone ---
+@bp.route('/set-timezone', methods=['POST'])
+def set_timezone():
+    """API endpoint to set the user's timezone in the session."""
+    data = request.json
+    tz_name = data.get('timezone')
+    
+    if tz_name in pytz.all_timezones:
+        session['user_timezone'] = tz_name
+        logger.info(f"User timezone updated to: {tz_name}")
+        return jsonify({"success": True, "message": f"Timezone set to {tz_name}."})
+    else:
+        logger.warning(f"Attempted to set invalid timezone: {tz_name}")
+        return jsonify({"success": False, "error": "Invalid timezone specified."}), 400
 
 def _prepare_date_for_display_iso(date_str: Optional[str], context_info: str = "") -> Optional[str]:
     if not date_str or date_str == "N/A":
@@ -191,6 +246,7 @@ def view_allocations():
     filter_course = request.args.get('filter_course', '').strip()
     filter_host_str = request.args.get('filter_host', '').strip().lower()
     filter_number_str = request.args.get('filter_number', '').strip()
+    filter_extend = request.args.get('filter_extend', '')
     try:
         page = int(request.args.get('page', 1))
         page = max(1, page)
@@ -202,9 +258,18 @@ def view_allocations():
     if filter_tag_input: 
         mongo_query['tag'] = {'$regex': re.escape(filter_tag_input), '$options': 'i'}
 
+    if filter_extend == 'yes':
+        mongo_query['extend'] = 'true'
+    elif filter_extend == 'no':
+        # Find documents where extend is not 'true'
+        # This includes documents where it is 'false', null, or non-existent
+        mongo_query['extend'] = {'$ne': 'true'}
+    # If filter_extend is empty, we don't add it to the query, so all are shown.
+
     current_filter_params = {
         'filter_tag': filter_tag_input, 'filter_vendor': filter_vendor, 'filter_course': filter_course,
-        'filter_host': filter_host_str, 'filter_number': filter_number_str
+        'filter_host': filter_host_str, 'filter_number': filter_number_str,
+        'filter_extend': filter_extend
     }
     pagination_link_args = current_filter_params.copy()
 

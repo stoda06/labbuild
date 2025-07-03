@@ -13,15 +13,17 @@ from dashboard.trainer_report_generator import fetch_trainer_pod_data, create_tr
 # This is the crucial import from the new file we created
 from ..report_generator import get_full_report_data, generate_excel_in_memory
 from flask import (
-    Blueprint, request, redirect, url_for, flash, jsonify
+    Blueprint, request, redirect, url_for, flash, jsonify, Response
 )
 from pymongo.errors import PyMongoError
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from ..extensions import alloc_collection, db
-from ..utils import update_power_state_in_db
+from ..utils import update_power_state_in_db, get_next_monday_date_str
 from ..tasks import run_labbuild_task
+from ..trainer_report_generator import fetch_trainer_pod_data, create_trainer_report_in_memory
+from ..report_generator import get_full_report_data, generate_excel_in_memory
 from db_utils import delete_from_database
 
 bp = Blueprint('allocation_actions', __name__, url_prefix='/allocations')
@@ -234,62 +236,106 @@ def toggle_power():
 
 @bp.route('/teardown-item', methods=['POST'])
 def teardown_item():
-    """Handles teardown/delete actions from the allocations page."""
-    # Logic moved from original app.py
+    """
+    Handles teardown/delete actions.
+    MODIFIED: Returns JSON for AJAX calls and redirects for non-AJAX.
+    """
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    
     try:
         tag = request.form.get('tag'); host = request.form.get('host'); vendor = request.form.get('vendor'); course = request.form.get('course')
         pod_num_str = request.form.get('pod_number'); class_num_str = request.form.get('class_number'); delete_level = request.form.get('delete_level')
-        if not delete_level or not tag: flash("Missing delete level or tag.", "danger"); return redirect(url_for('main.view_allocations'))
+        if not delete_level or not tag:
+            msg = "Missing delete level or tag."
+            if is_ajax: return jsonify({"success": False, "message": msg}), 400
+            flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
+            
         pod_num = int(pod_num_str) if pod_num_str else None; class_num = int(class_num_str) if class_num_str else None
 
-        # --- Handle DB Deletion Levels ---
+        # --- Handle DB-Only Deletion ---
         if delete_level.endswith('_db'):
-            logger.info(f"DB delete request: Level='{delete_level}', Tag='{tag}'")
+            logger.info(f"AJAX DB delete request: Level='{delete_level}', Tag='{tag}'")
             success, item_desc = False, "Unknown"
             try:
                 if delete_level == 'tag_db': success = delete_from_database(tag=tag); item_desc = f"Tag '{tag}'"
-                elif delete_level == 'course_db': success = delete_from_database(tag=tag, course_name=course); item_desc = f"Course '{course}' in Tag '{tag}'"
-                elif delete_level == 'class_db': success = delete_from_database(tag=tag, course_name=course, class_number=class_num); item_desc = f"Class {class_num} in '{course}'/'{tag}'"
-                elif delete_level == 'pod_db': success = delete_from_database(tag=tag, course_name=course, pod_number=pod_num, class_number=class_num); item_desc = f"Pod {pod_num}" + (f" (Class {class_num})" if class_num else "") + f" in '{course}'/'{tag}'"
-                else: flash("Invalid DB delete level.", "warning"); return redirect(url_for('main.view_allocations'))
-                flash(f"Removed DB entry for {item_desc}." if success else f"Failed DB removal for {item_desc}.", 'success' if success else 'danger')
-            except Exception as e_db: flash(f"Error during DB delete: {e_db}", 'danger'); logger.error(f"DB delete error: {e_db}", exc_info=True)
-            query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
-            return redirect(url_for('main.view_allocations', **query_params))
-        # --- Handle Full Teardown ---
+                elif delete_level == 'course_db': success = delete_from_database(tag=tag, course_name=course); item_desc = f"Course '{course}'"
+                elif delete_level == 'class_db': success = delete_from_database(tag=tag, course_name=course, class_number=class_num); item_desc = f"Class {class_num}"
+                elif delete_level == 'pod_db': success = delete_from_database(tag=tag, course_name=course, pod_number=pod_num, class_number=class_num); item_desc = f"Pod {pod_num}"
+                else:
+                     if is_ajax: return jsonify({"success": False, "message": "Invalid DB delete level."}), 400
+                     flash("Invalid DB delete level.", "warning"); return redirect(url_for('main.view_allocations'))
+                
+                message = f"Removed DB entry for {item_desc}." if success else f"Failed DB removal for {item_desc}."
+                flash(message, 'success' if success else 'danger')
+                return jsonify({"success": success, "message": message, "action": "remove"})
+            except Exception as e_db: 
+                message = f"Error during DB delete: {e_db}"
+                flash(message, 'danger'); logger.error(f"DB delete error: {e_db}", exc_info=True)
+                return jsonify({"success": False, "message": message}), 500
+        
+        # --- Handle Full Infrastructure Teardown ---
         elif delete_level in ['class', 'pod']:
-            if not all([vendor, course, host]): flash("Vendor, Course, Host required for infrastructure teardown.", "danger"); return redirect(url_for('main.view_allocations'))
+            if not all([vendor, course, host]):
+                msg = "Vendor, Course, Host required for infrastructure teardown."
+                if is_ajax: return jsonify({"success": False, "message": msg}), 400
+                flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
+
             args_list, item_desc = [], ""
             if delete_level == 'class' and vendor.lower() == 'f5' and class_num is not None: args_list = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-cn', str(class_num)]; item_desc = f"F5 Class {class_num}"
             elif delete_level == 'pod' and pod_num is not None:
                 args_list = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
                 item_desc = f"Pod {pod_num}"
                 if vendor.lower() == 'f5' and class_num is not None: args_list.extend(['-cn', str(class_num)]); item_desc += f" (Class {class_num})"
-            else: flash("Invalid teardown level or missing identifiers.", "danger"); return redirect(url_for('main.view_allocations'))
+            
             if args_list:
                 thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True); thread.start()
-                flash(f"Submitted infrastructure teardown for {item_desc}.", 'info')
-            else: flash("Failed build teardown command.", "danger")
-        else: flash(f"Unsupported teardown level: '{delete_level}'.", "warning")
-    except Exception as e: logger.error(f"Error processing teardown/delete request: {e}", exc_info=True); flash(f"Error processing request: {e}", 'danger')
+                message = f"Submitted infrastructure teardown for {item_desc}. The item will be removed from the list upon completion."
+                flash(message, 'info')
+                return jsonify({"success": True, "message": message, "action": "remove"})
+            else:
+                msg = "Failed to build teardown command."
+                if is_ajax: return jsonify({"success": False, "message": msg}), 400
+                flash(msg, "danger")
+        else:
+            msg = f"Unsupported teardown level: '{delete_level}'."
+            if is_ajax: return jsonify({"success": False, "message": msg}), 400
+            flash(msg, "warning")
+
+    except Exception as e:
+        logger.error(f"Error processing teardown/delete request: {e}", exc_info=True)
+        message = f"Error processing request: {e}"
+        if is_ajax: return jsonify({"success": False, "message": message}), 500
+        flash(message, 'danger')
+    
+    # Fallback redirect for non-AJAX or unexpected errors
     query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
     return redirect(url_for('main.view_allocations', **query_params))
 
 
 @bp.route('/teardown-tag', methods=['POST'])
 def teardown_tag():
-    """Handles teardown of an entire tag from the allocations page."""
-    # Logic moved from original app.py
-    from collections import defaultdict # Needed here
+    """
+    Handles teardown of an entire tag.
+    MODIFIED: Now returns a JSON response for AJAX calls.
+    """
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     tag = request.form.get('tag')
-    if not tag: flash("Tag identifier is missing.", "danger"); return redirect(url_for('main.view_allocations'))
+    
+    if not tag:
+        msg = "Tag identifier is missing."
+        if is_ajax: return jsonify({"success": False, "message": msg}), 400
+        flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
+    
     logger.info(f"Initiating FULL teardown for Tag: '{tag}'")
-    tasks_to_run = [] # List of ([args_list], description) tuples
+    tasks_to_run = []
 
     try:
-        if db is None or alloc_collection is None: raise Exception("DB unavailable.")
+        if db is None or alloc_collection is None: raise ConnectionError("DB unavailable.")
         tag_doc = alloc_collection.find_one({"tag": tag})
-        if not tag_doc: flash(f"Tag '{tag}' not found.", "warning"); return redirect(url_for('main.view_allocations'))
+        if not tag_doc:
+            msg = f"Tag '{tag}' not found."
+            if is_ajax: return jsonify({"success": False, "message": msg}), 404
+            flash(msg, "warning"); return redirect(url_for('main.view_allocations'))
 
         courses_in_tag = tag_doc.get("courses", [])
         if not isinstance(courses_in_tag, list): courses_in_tag = []
@@ -298,6 +344,7 @@ def teardown_tag():
             if not isinstance(course, dict): continue
             course_name, vendor, pod_details = course.get("course_name"), course.get("vendor"), course.get("pod_details", [])
             if not course_name or not vendor or not isinstance(pod_details, list): continue
+            
             items_by_host = defaultdict(lambda: {"pods": set(), "classes": set()})
             for pd in pod_details:
                 if not isinstance(pd, dict): continue
@@ -308,22 +355,43 @@ def teardown_tag():
                 elif pod_num is not None: items_by_host[host]["pods"].add(pod_num)
 
             for host, items in items_by_host.items():
-                for class_num in sorted(list(items["classes"])): args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-cn', str(class_num)]; desc = f"Tag '{tag}', Course '{course_name}', Class '{class_num}'"; tasks_to_run.append((args, desc))
+                for class_num in sorted(list(items["classes"])):
+                    args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-cn', str(class_num)]
+                    tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Class '{class_num}'"})
                 if items["pods"]:
-                    for pod_num in sorted(list(items["pods"])): args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]; desc = f"Tag '{tag}', Course '{course_name}', Pod '{pod_num}'"; tasks_to_run.append((args, desc))
+                    for pod_num in sorted(list(items["pods"])):
+                        args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
+                        tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Pod '{pod_num}'"})
 
-        if not tasks_to_run: flash(f"No teardown tasks found for Tag '{tag}'.", "warning")
-        else:
-            logger.info(f"Submitting {len(tasks_to_run)} tasks for Tag '{tag}' sequentially...")
-            def run_sequential_tasks(tasks):
-                for i, (args, desc) in enumerate(tasks): logger.info(f"Starting task {i+1}/{len(tasks)}: {desc}"); run_labbuild_task(args); logger.info(f"Finished task {i+1}/{len(tasks)}: {desc}")
-                logger.info(f"All teardown tasks submitted for Tag '{tag}'.")
-            thread = threading.Thread(target=run_sequential_tasks, args=(tasks_to_run,), daemon=True); thread.start()
-            flash(f"Submitted {len(tasks_to_run)} teardown tasks for Tag '{tag}'.", "info")
-    except Exception as e: logger.error(f"Error processing teardown Tag '{tag}': {e}", exc_info=True); flash(f"Error submitting teardown Tag '{tag}': {e}", 'danger')
-
-    query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
-    return redirect(url_for('main.view_allocations', **query_params))
+        if not tasks_to_run:
+            message = f"No teardown tasks found for Tag '{tag}'."
+            if is_ajax: return jsonify({"success": True, "message": message}) # Success, but nothing to do
+            flash(message, "warning"); return redirect(url_for('main.view_allocations'))
+            
+        logger.info(f"Submitting {len(tasks_to_run)} tasks for Tag '{tag}' sequentially...")
+        
+        def run_sequential_tasks(tasks):
+            for i, task_info in enumerate(tasks):
+                args = task_info['args']
+                desc = task_info['description']
+                logger.info(f"Starting task {i+1}/{len(tasks)}: {desc}")
+                run_labbuild_task(args)
+                logger.info(f"Finished task {i+1}/{len(tasks)}: {desc}")
+            logger.info(f"All teardown tasks submitted for Tag '{tag}'.")
+            
+        thread = threading.Thread(target=run_sequential_tasks, args=(tasks_to_run,), daemon=True)
+        thread.start()
+        
+        message = f"Submitted {len(tasks_to_run)} teardown tasks for Tag '{tag}'. The group will be removed upon completion."
+        flash(message, "info")
+        return jsonify({"success": True, "message": message, "action": "remove"})
+        
+    except (ConnectionError, Exception) as e:
+        logger.error(f"Error processing teardown Tag '{tag}': {e}", exc_info=True)
+        message = f"Error submitting teardown for Tag '{tag}': {e}"
+        if is_ajax: return jsonify({"success": False, "message": message}), 500
+        flash(message, 'danger')
+        return redirect(url_for('main.view_allocations'))
 
 
 @bp.route('/update-summary', methods=['POST'])
@@ -395,94 +463,51 @@ def update_allocation_summary():
 @bp.route('/toggle-tag-extend', methods=['POST'])
 def toggle_tag_extend():
     """
-    Toggles the 'extend' field (string "true"/"false") for a given tag
-    in the 'currentallocation' collection based on the current state provided
-    in the form submission.
-
-    Redirects back to the allocations page, preserving any active filters
-    and pagination settings.
+    Toggles the 'extend' field for a given tag.
+    MODIFIED: Now returns a JSON response for AJAX calls.
     """
     tag_name = request.form.get('tag_name')
-    # Get the status *as sent from the form* (state *before* the click)
-    # Default to 'false' string if the input is missing, for safety.
     current_status_str = request.form.get('current_extend_status', 'false')
+    logger.info(f"AJAX toggle request for tag: '{tag_name}', current status: '{current_status_str}'")
 
-    # --- Preserve Filters & Pagination for Redirect ---
-    # Collect all relevant query parameters that might have been passed back
-    # from the allocations page form submission.
-    redirect_args = {}
-    for key in ['filter_tag', 'filter_vendor', 'filter_course', 'filter_host', 'filter_number', 'page', 'per_page']:
-        # Use request.form for POST data, fallback to request.args for GET params if needed
-        # Form submission usually puts everything in request.form for POST
-        value = request.form.get(key)
-        if value is not None: # Only include params that are present
-             # Clean up filter keys if they have the prefix from the form
-             clean_key = key.replace('filter_', '')
-             redirect_args[clean_key] = value
-
-    logger.info(f"Received toggle request for tag: '{tag_name}', current extend status from form: '{current_status_str}'")
-    logger.debug(f"Redirect args collected: {redirect_args}")
-
-    # --- Input Validation ---
     if not tag_name:
-        flash("Tag name missing for toggle operation.", "danger")
-        return redirect(url_for('main.view_allocations', **redirect_args))
-
-    # --- Database Check ---
+        return jsonify({"success": False, "message": "Tag name missing."}), 400
     if alloc_collection is None:
-        flash("Allocation database collection is unavailable.", "danger")
         logger.error("alloc_collection is None in toggle_tag_extend.")
-        return redirect(url_for('main.view_allocations', **redirect_args))
+        return jsonify({"success": False, "message": "Database service unavailable."}), 503
 
-    # --- Determine the NEW status (opposite of current) ---
     try:
-        # Convert received string status to boolean for logical flipping
         current_status_bool = current_status_str.lower() == 'true'
-        # The new state is the opposite boolean
         new_status_bool = not current_status_bool
-        # Convert the NEW state back to the STRING format ("true" or "false")
-        # This must match the data type expected by DB queries/other logic.
         new_status_str = "true" if new_status_bool else "false"
     except Exception as e:
         logger.error(f"Error determining new status for tag '{tag_name}': {e}")
-        flash("Internal error processing status toggle.", "danger")
-        return redirect(url_for('main.view_allocations', **redirect_args))
+        return jsonify({"success": False, "message": "Internal error processing status."}), 500
 
     logger.info(f"Attempting to update tag '{tag_name}' extend status to: '{new_status_str}'")
-
-    # --- Perform Database Update ---
     try:
         result = alloc_collection.update_one(
-            {"tag": tag_name}, # Filter: Find the document by tag name
-            {"$set": {"extend": new_status_str}} # Update: Set the 'extend' field
+            {"tag": tag_name},
+            {"$set": {"extend": new_status_str}}
         )
-
-        # --- Check Update Result and Provide Feedback ---
-        logger.debug(f"MongoDB update result for tag '{tag_name}': Matched={result.matched_count}, Modified={result.modified_count}")
-
         if result.matched_count == 0:
-            flash(f"Tag '{tag_name}' not found in database.", "warning")
-            logger.warning(f"Tag '{tag_name}' not found during extend toggle update.")
-        elif result.modified_count == 0:
-             # Occurs if the document was found but the value was already the target value.
-             flash(f"Tag '{tag_name}' extend status was not changed (already set to '{new_status_str}'?).", "info")
-             logger.warning(f"Tag '{tag_name}' matched but extend status not modified. Value might already be '{new_status_str}'.")
-        else:
-            # Success Case
-            new_status_display = "NO REUSE (Locked)" if new_status_str == "true" else "ALLOW REUSE (Unlocked)"
-            flash(f"Tag '{tag_name}' updated. Pod reuse policy set to: {new_status_display}.", "success")
-            logger.info(f"Successfully toggled extend status for tag '{tag_name}' to '{new_status_str}'.")
+            return jsonify({"success": False, "message": f"Tag '{tag_name}' not found."}), 404
+        
+        new_status_display = "NO REUSE (Locked)" if new_status_str == "true" else "ALLOW REUSE (Unlocked)"
+        flash(f"Tag '{tag_name}' updated. Pod reuse policy set to: {new_status_display}.", "success")
+        return jsonify({
+            "success": True, 
+            "message": f"Tag '{tag_name}' updated.",
+            "new_status": new_status_str,
+            "new_title": "Toggle Pod Reuse (Currently Extended)" if new_status_bool else "Toggle Pod Reuse (Not Extended)"
+        })
 
     except PyMongoError as e:
         logger.error(f"Database error toggling extend status for tag '{tag_name}': {e}", exc_info=True)
-        flash("Database error updating tag status.", "danger")
+        return jsonify({"success": False, "message": "Database error updating tag status."}), 500
     except Exception as e:
         logger.error(f"Unexpected error toggling extend status for tag '{tag_name}': {e}", exc_info=True)
-        flash("An unexpected error occurred.", "danger")
-
-    # --- Redirect back to the allocations page, preserving filters & pagination ---
-    # The **redirect_args unpacks the dictionary into keyword arguments for url_for
-    return redirect(url_for('main.view_allocations', **redirect_args))
+        return jsonify({"success": False, "message": "An unexpected server error occurred."}), 500
 
 
 @bp.route('/bulk-toggle-power', methods=['POST'])

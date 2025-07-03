@@ -1,21 +1,12 @@
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
 # labbuild/constants.py
 """
 Central location for constants used across the application.
 This is a clean, reorganized version to prevent import errors.
 """
 
-# --- Imports (Combined from both files) ---
-from enum import Enum
-from collections import namedtuple
-from openpyxl.styles import PatternFill, Border, Side, Alignment
-import logging
 
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
 # ==============================================================================
 # DATABASE AND CORE CONSTANTS
 # ==============================================================================
@@ -31,7 +22,7 @@ INTERIM_ALLOCATION_COLLECTION = "interimallocation"
 BUILD_RULES_COLLECTION = "build_rules"
 TRAINER_EMAIL_COLLECTION = "trainer_emails"
 SUBSEQUENT_POD_MEMORY_FACTOR = 0.5
-
+LOCATIONS_COLLECTION = "locations"
 # ==============================================================================
 # EXCEL REPORT: GENERAL & LAYOUT CONSTANTS
 # ==============================================================================

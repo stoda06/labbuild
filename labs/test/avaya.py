@@ -2,16 +2,14 @@
 
 import argparse
 import re
-import pexpect
-from pymongo import MongoClient
-from tabulate import tabulate
 import socket
 import ssl
 import sys
-
+import pexpect
+from pymongo import MongoClient
+from tabulate import tabulate
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
-from prettytable import PrettyTable, ALL
 
 VERBOSE = False
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -33,15 +31,25 @@ HOST_TO_VCENTER = {
     "optimus": 5,
 }
 
-
-def strip_ansi(text):
-    return ANSI_ESCAPE.sub('', text)
-
-
 def log(msg):
     if VERBOSE:
         print(f"[DEBUG] {msg}")
 
+def strip_ansi(text):
+    return ANSI_ESCAPE.sub('', text)
+
+def resolve_ip(ip_template, pod):
+    if "+X" in ip_template:
+        base = ip_template.replace("+X", "")
+        parts = base.split(".")
+        if len(parts) != 4:
+            log(f"Invalid IP template after +X removal: {ip_template}")
+            return ip_template
+        parts[-1] = str(int(parts[-1]) + pod)
+        ip_template = ".".join(parts)
+
+    log(f"IP after +X resolution: {ip_template}")
+    return ip_template
 
 def get_course_components(course_name, pod=None):
     try:
@@ -62,43 +70,21 @@ def get_course_components(course_name, pod=None):
             name = c.get("component_name")
             ip = c.get("podip")
             port = c.get("podport")
-            
-            # Resolve dynamic fields with pod number
             if name and ip and port:
-                resolved_ip = resolve_ip(ip, pod, "") if pod is not None else ip
+                resolved_ip = resolve_ip(ip, pod) if pod is not None else ip
                 components.append((name, resolved_ip, port))
                 log(f"Component parsed for pod {pod}: {name}, IP: {resolved_ip}, Port: {port}")
             else:
-                skipped.append(c) 
-        #print(f"Skipped -> {skipped}")
+                skipped.append(c)
         return components, skipped
     except Exception as e:
         print(f"❌ MongoDB error: {e}")
         return [], []
 
-
-def resolve_ip(ip_template, pod, host):
-    if "+X" in ip_template:
-        base = ip_template.replace("+X", "")
-        parts = base.split(".")
-        if len(parts) != 4:
-            log(f"Invalid IP template after +X removal: {ip_template}")
-            return ip_template
-        parts[-1] = str(int(parts[-1]) + pod)
-        ip_template = ".".join(parts)
-
-    if host.lower() == "hotshot" and ip_template.startswith("172.30."):
-        ip_template = ip_template.replace("172.30.", "172.26.", 1)
-        log(f"IP remapped to {ip_template} for host hotshot")
-
-    log(f"IP after +X resolution: {ip_template}")
-    return ip_template
-
-
 def get_vm_power_map(si, pod):
     try:
         content = si.RetrieveContent()
-        rp_name = f"pa-pod{pod}"
+        rp_name = f"av-pod{pod}"
         container_view = content.viewManager.CreateContainerView(
             content.rootFolder, [vim.ResourcePool], True)
         for rp in container_view.view:
@@ -110,18 +96,10 @@ def get_vm_power_map(si, pod):
         return {}
 
 def run_ssh_checks(pod, components, host, power_map):
-    from tabulate import tabulate
-    import re
-    import pexpect
-
-    RED = '\033[91m'
-    ENDC = '\033[0m'
-
-    host_fqdn = f"pavr{pod}.us" if host.lower() == "hotshot" else f"pavr{pod}"
+    host_fqdn = f"avvr{pod}.us" if host.lower() == "hotshot" else f"avvr{pod}"
     print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) via SSH...")
 
     results = []
-
     try:
         child = pexpect.spawn(f"ssh {host_fqdn}", timeout=30)
         child.expect(["[>#\$]"], timeout=10)
@@ -133,10 +111,8 @@ def run_ssh_checks(pod, components, host, power_map):
 
         print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
 
-        for component, raw_ip, port in components:
-            ip = resolve_ip(raw_ip, pod, host)
+        for component, ip, port in components:
             status = "UNKNOWN"
-
             if port.lower() == "arping":
                 subnet = ".".join(ip.split(".")[:3])
                 child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
@@ -174,105 +150,26 @@ def run_ssh_checks(pod, components, host, power_map):
         print(f"\n📊 Network Test Summary for Pod {pod}")
         headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
         formatted_rows = []
-
         for row in results:
             if row[4] in ["DOWN", "FILTERED"]:
                 formatted_rows.append([f"{RED}{cell}{ENDC}" for cell in row])
             else:
                 formatted_rows.append(row)
-
         print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
 
-    # Show powered off VMs if any component failed
-    any_failures = any(row[4] in ["DOWN", "FILTERED"] for row in results)
-
-    if any_failures:
-        powered_off_vms = [
-            [vm, "POWERED OFF"]
-            for vm, state in power_map.items()
-            if state == vim.VirtualMachinePowerState.poweredOff
-        ]
-
-        if powered_off_vms:
-            print(f"\n🔌 VM Power State Summary for Pod {pod} (Resource Pool: pa-pod{pod})")
-            print(tabulate(
-                powered_off_vms,
-                headers=["VM Name", "Power State"],
-                tablefmt="fancy_grid"
-            ))
+    if any(row[4] in ["DOWN", "FILTERED"] for row in results):
+        powered_off = [[vm, "POWERED OFF"]
+                       for vm, state in power_map.items()
+                       if state == vim.VirtualMachinePowerState.poweredOff]
+        if powered_off:
+            print(f"\n🔌 VM Power State Summary for Pod {pod} (Resource Pool: av-pod{pod})")
+            print(tabulate(powered_off, headers=["VM Name", "Power State"], tablefmt="fancy_grid"))
         else:
             print(f"\n🔌 All VMs in Pod {pod} are powered ON")
 
-    return results
-
-
-def cortex_vcenter_checks(start, end, vcenter_number):
-    ssl._create_default_https_context = ssl._create_unverified_context
-    socket.setdefaulttimeout(10)
-
-    vcenter_ip = f'vcenter-appliance-{vcenter_number}.rededucation.com'
-    user = 'administrator@vcenter.rededucation.com'
-    password = 'pWAR53fht786123$'
-
-    try:
-        si = SmartConnect(host=vcenter_ip, user=user, pwd=password)
-        print(f"✅ Connected to vCenter: {vcenter_ip}")
-    except Exception as e:
-        print(f"❌ Failed to connect to vCenter: {e}")
-        return
-
-    try:
-        content = si.RetrieveContent()
-        vms = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True).view
-    except Exception as e:
-        print(f"❌ Failed to retrieve VMs: {e}")
-        Disconnect(si)
-        return
-
-    table = PrettyTable(['VM', 'System Name', 'Domain', 'Workgroup'])
-    table.hrules = ALL
-    rebooted = []
-
-    for i in range(start, end + 1):
-        vm_name = f'pa-cortex-endpoint-a-{i}'
-        matched_vm = next((vm for vm in vms if vm.name == vm_name), None)
-        if not matched_vm:
-            print(f"⚠️ VM {vm_name} not found.")
-            continue
-
-        sys_name, domain, workgroup = "Unknown", "Unknown", "Unknown"
-        if matched_vm.guest.toolsRunningStatus == 'guestToolsRunning':
-            sys_name = matched_vm.guest.hostName or "VMware Tools not running"
-            try:
-                for stack in matched_vm.guest.ipStack:
-                    if hasattr(stack, 'dnsConfig') and stack.dnsConfig and stack.dnsConfig.domainName:
-                        domain = stack.dnsConfig.domainName
-                        break
-                if domain == "Unknown":
-                    workgroup = "Its in Workgroup"
-            except:
-                pass
-        else:
-            try:
-                matched_vm.RebootGuest()
-            except:
-                matched_vm.ResetVM_Task()
-            rebooted.append(vm_name)
-
-        table.add_row([vm_name, sys_name, domain, workgroup])
-
-    print("\n🧠 Cortex VM Summary")
-    print(table)
-
-    if rebooted:
-        print(f"\n🔁 Rebooted VMs: {', '.join(rebooted)}")
-
-    Disconnect(si)
-    print("🔌 Disconnected from vCenter.")
-
 def main(argv=None):
     global VERBOSE
-    parser = argparse.ArgumentParser(description="PA Pod Network Checker")
+    parser = argparse.ArgumentParser(description="AV Pod Network Checker")
     parser.add_argument("-g", "--course", required=True, help="Course name")
     parser.add_argument("--host", required=True, help="Target host label")
     parser.add_argument("-s", "--start", type=int, required=True, help="Start pod number")
@@ -282,14 +179,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
-    host_key = args.host.lower()
-    vcenter_number = HOST_TO_VCENTER.get(host_key)
-
+    vcenter_number = HOST_TO_VCENTER.get(args.host.lower())
     if not vcenter_number:
         print(f"❌ Host '{args.host}' is not mapped to a vCenter.")
         return
 
-    # Connect to vCenter
     ssl._create_default_https_context = ssl._create_unverified_context
     try:
         si = SmartConnect(
@@ -303,20 +197,12 @@ def main(argv=None):
 
     for pod in range(args.start, args.end + 1):
         print(f"\n📘 Fetching components for course: {args.course} (Pod {pod})")
-        components, skipped_components = get_course_components(args.course, pod)
+        components, skipped = get_course_components(args.course, pod)
+        if skipped:
+            skipped_summary = [f"{c.get('component_name', 'unknown')} ({c.get('base_vm', 'unknown')})"
+                               for c in skipped if isinstance(c, dict)]
+            print(f"⚠️ Pod {pod}: Skipped components (missing podip/podport): {', '.join(skipped_summary)}")
 
-        if skipped_components:
-            skipped_display = []
-            for comp in skipped_components:
-                if isinstance(comp, dict):
-                    name = comp.get("component_name", "unknown")
-                    base = comp.get("base_vm", "unknown")
-                    skipped_display.append(f"{name} ({base})")
-                else:
-                    skipped_display.append(comp)  # fallback if old format
-
-            print(f"⚠️ Pod {pod}: Skipped components (missing podip/podport): {', '.join(skipped_display)}")
-        
         if args.component:
             selected_components = [c.strip() for c in args.component.split(',')]
             original_count = len(components)
@@ -332,7 +218,6 @@ def main(argv=None):
         run_ssh_checks(pod, components, args.host, power_map)
 
     Disconnect(si)
-
 
 if __name__ == "__main__":
     main()

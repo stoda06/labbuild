@@ -142,8 +142,14 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!emailsContainer) return;
             emailsContainer.innerHTML = '<p class="text-center"><span class="spinner-border spinner-border-sm"></span> Loading email previews from server...</p>';
 
+            const prepareUrl = emailModal.dataset.preparePreviewsUrl;
+            if (!prepareUrl) {
+                emailsContainer.innerHTML = '<p class="text-danger">Error: The URL for preparing email previews is missing.</p>';
+                return;
+            }
+
             try {
-                const response = await fetch('/prepare-email-previews', {
+                const response = await fetch(prepareUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ all_review_items: allReviewData })
@@ -159,13 +165,24 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let allEmailsHtml = `<div class="d-flex justify-content-end mb-3"><button class="btn btn-warning btn-sm me-2" id="sendAllTestsBtn"><i class="fas fa-vial"></i> Send All Tests</button><button class="btn btn-success btn-sm" id="sendAllEmailsBtn"><i class="fas fa-mail-bulk"></i> Send All Real</button></div>`;
                 data.previews.forEach(preview => {
+                    // --- NEW: Create a warning span if email is not found ---
+                    const emailWarningHtml = !preview.trainer_email_found
+                        ? `<span class="text-warning ms-2" title="This trainer does not have an active email configured in settings.">
+                               <i class="fas fa-exclamation-triangle"></i> No Email Configured
+                           </span>`
+                        : '';
+                    // --- END NEW ---
+                    
                     allEmailsHtml += `
                         <div class="trainer-email-section mb-4 p-3 border rounded" data-key="${preview.key}" data-payload='${JSON.stringify(preview.payload_items)}'>
                             <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h5 class="mb-0">To: ${preview.trainer_name} (for ${preview.sf_course_code})</h5>
+                                <h5 class="mb-0">
+                                    To: ${preview.trainer_name} (for ${preview.sf_course_code})
+                                    ${emailWarningHtml}
+                                </h5>
                                 <div class="btn-group">
                                     <button class="btn btn-sm btn-outline-warning send-test-email-btn"><i class="fas fa-vial"></i> Test</button>
-                                    <button class="btn btn-sm btn-primary send-one-email-btn"><i class="fas fa-paper-plane"></i> Send</button>
+                                    <button class="btn btn-sm btn-primary send-one-email-btn" ${!preview.trainer_email_found ? 'disabled' : ''}><i class="fas fa-paper-plane"></i> Send</button>
                                 </div>
                             </div>
                             <div class="mb-2">
@@ -194,9 +211,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     const templateData = previewData.template_data;
                     const nl2br = (str) => (str || '').toString().replace(/\n/g, '<br>');
                     
+                    const labAccessMessage = templateData.lab_access_url_message || '';
+                    
                     body.innerHTML = `
                         <p>Dear ${previewData.trainer_name},</p>
                         <p>Here are the details for your course allocation (${templateData.original_sf_course_code}):</p>
+                        ${labAccessMessage ? `<p><strong>${labAccessMessage}</strong></p>` : ''}
                         <table>
                             <thead><tr><th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th><th>Course Name</th><th>Start/End Pod</th><th>Username</th><th>Password</th><th>Students</th><th>Vendor Pods</th><th>Version</th><th>Virtual Host</th><th>vCenter</th><th>RAM (GB)</th></tr></thead>
                             <tbody>
@@ -276,7 +296,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (realSendBtn || testSendBtn) {
                     const button = realSendBtn || testSendBtn;
                     const isTest = !!testSendBtn;
-                    const endpoint = isTest ? "/send-test-email" : "/send-trainer-email";
+                    const endpoint = isTest ? "/email-actions/send-test-email" : "/email-actions/send-trainer-email";
                     const section = button.closest('.trainer-email-section');
                     const trainerName = section.querySelector('h5').textContent.split('(')[0].replace('To: ', '').trim();
                     const subject = section.querySelector('.email-subject-input').value;
@@ -294,7 +314,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 } else if (sendAllRealBtn || sendAllTestsBtn) {
                     const isTest = !!sendAllTestsBtn;
-                    const buttonToClickSelector = isTest ? '.send-test-email-btn:not(.btn-success)' : '.send-one-email-btn:not(.btn-success)';
+                    const buttonToClickSelector = isTest ? '.send-test-email-btn:not(.btn-success)' : '.send-one-email-btn:not(:disabled):not(.btn-success)';
                     const actionName = isTest ? "test emails" : "real emails";
                     const bulkButton = sendAllRealBtn || sendAllTestsBtn;
 

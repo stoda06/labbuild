@@ -219,6 +219,90 @@ def delete_from_database(tag: str, course_name: Optional[str] = None, pod_number
     except PyMongoError as e: logger.error(f"DB delete error (PyMongoError): {e}", exc_info=True); return False
     except Exception as e: logger.error(f"DB delete error: {e}", exc_info=True); return False
 
+def get_test_params_by_tag(tag: str) -> Optional[Dict[str, Any]]:
+    """
+    Queries the current allocations collection by tag to retrieve parameters for the test suite.
+
+    Args:
+        tag: The allocation tag string.
+
+    Returns:
+        A dictionary containing test parameters, or None on failure.
+    """
+    try:
+        with mongo_client() as client:
+            if not client:
+                logger.error("Get Test Params: DB connection failed.")
+                return None
+            
+            db = client[DB_NAME]
+            collection = db[ALLOCATION_COLLECTION]
+            
+            logger.debug(f"Searching for tag '{tag}' in collection '{ALLOCATION_COLLECTION}'.")
+            doc = collection.find_one({"tag": tag})
+
+            if not doc:
+                logger.warning(f"Tag '{tag}' not found in current allocations.")
+                return None
+
+            if not doc.get('courses'):
+                logger.warning(f"Document for tag '{tag}' has no 'courses' array.")
+                return None
+            
+            # Assume we always work with the first course in the list
+            course_info = doc['courses'][0]
+            vendor = course_info.get('vendor')
+            course_name = course_info.get('course_name') # <-- Get the course name
+            
+            if not vendor or not course_name:
+                logger.warning(f"Course in tag '{tag}' is missing a 'vendor' or 'course_name' field.")
+                return None
+            
+            # --- THIS IS THE CORRECTED LINE ---
+            params = {'vendor': vendor.lower(), 'group': course_name}
+            # --- END OF CORRECTION ---
+            
+            pod_details = course_info.get('pod_details', [])
+            if not pod_details:
+                logger.warning(f"No pod details found for course in tag '{tag}'.")
+                return None
+
+            if vendor.lower() == 'f5':
+                # F5 structure parsing
+                class_details = pod_details[0]
+                params['host'] = class_details.get('host')
+                params['class_number'] = class_details.get('class_number')
+                pod_numbers = [p.get('pod_number') for p in class_details.get('pods', []) if p.get('pod_number') is not None]
+                if not pod_numbers:
+                    logger.warning(f"No pods found for F5 class in tag '{tag}'.")
+                    return None
+                params['start_pod'] = min(pod_numbers)
+                params['end_pod'] = max(pod_numbers)
+            else:
+                # Non-F5 structure parsing
+                params['host'] = pod_details[0].get('host')
+                pod_numbers = [p.get('pod_number') for p in pod_details if p.get('pod_number') is not None]
+                if not pod_numbers:
+                    logger.warning(f"No pods found for tag '{tag}'.")
+                    return None
+                params['start_pod'] = min(pod_numbers)
+                params['end_pod'] = max(pod_numbers)
+                params['class_number'] = None
+            
+            # Final validation of extracted parameters
+            if not params.get('host') or params.get('start_pod') is None or params.get('end_pod') is None:
+                logger.error(f"Could not extract all required test parameters (host, pods) for tag '{tag}'.")
+                return None
+
+            return params
+
+    except PyMongoError as e:
+        logger.error(f"Get Test Params error (PyMongoError): {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Get Test Params error: {e}", exc_info=True)
+        return None
+
 def get_prtg_url(tag: str, course_name: str, pod_number: Optional[int] = None, class_number: Optional[int] = None) -> Optional[str]:
     """Retrieve the PRTG monitor URL from the allocation collection."""
     try:
