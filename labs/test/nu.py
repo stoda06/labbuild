@@ -1,5 +1,3 @@
-# --- START OF FILE labs/test/nu.py ---
-
 #!/usr/bin/env python3.10
 
 import argparse, re, pexpect, sys, threading
@@ -134,7 +132,6 @@ def run_ssh_checks(pod, components, host, print_lock):
             print(f"\n❌ SSH to {host_fqdn} failed: {e}")
         results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED'})
 
-    # Print summary table inside lock
     with print_lock:
         print(f"\n📊 Network & Cluster Check Summary for Pod {pod}")
         headers=["Component", "Component IP", "NU Pod", "Port", "Status"]
@@ -165,7 +162,6 @@ def main(argv=None, print_lock=None):
         selected = [c.strip() for c in args.component.split(',')]
         components = [c for c in components if c[0] in selected]
     
-    # THIS IS THE CORRECTED SYNTAX
     if not components:
         with print_lock:
             print(f"❌ No usable components found. Exiting.")
@@ -180,4 +176,3 @@ def main(argv=None, print_lock=None):
 
 if __name__ == "__main__":
     main()
-# --- END OF FILE labs/test/nu.py ---

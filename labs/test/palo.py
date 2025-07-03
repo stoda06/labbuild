@@ -1,5 +1,3 @@
-# --- START OF FILE labs/test/palo.py ---
-
 #!/usr/bin/env python3.10
 
 import argparse
@@ -10,22 +8,19 @@ from tabulate import tabulate
 import socket
 import ssl
 import sys
-import threading # Import threading
+import threading
 
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
-from prettytable import PrettyTable, ALL
+# --- MODIFIED ---
+from db_utils import get_vcenter_by_host
 
 VERBOSE = False
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 RED = '\033[91m'
 ENDC = '\033[0m'
 
-HOST_TO_VCENTER = {
-    "cliffjumper": 1, "hydra": 1, "unicron": 1, "apollo": 2, "nightbird": 2,
-    "ultramagnus": 2, "hotshot": 3, "ps01": 4, "ps02": 4, "ps03": 4,
-    "shockwave": 5, "optimus": 5,
-}
+# REMOVED HOST_TO_VCENTER
 
 def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
 def log(msg):
@@ -87,7 +82,6 @@ def get_vm_power_map(si, pod):
 def run_ssh_checks(pod, components, host, power_map, print_lock):
     host_fqdn = f"pavr{pod}.us" if host.lower() == "hotshot" else f"pavr{pod}"
     
-    # This list will be returned with structured data
     check_results = []
     
     with print_lock:
@@ -120,7 +114,6 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
                 match = re.search(rf"{port}/tcp\s+(\w+)", child.before.decode(errors="ignore").lower())
                 status = match.group(1).upper() if match else "DOWN"
             
-            # Append structured result
             check_results.append({'pod': pod, 'component': component, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
 
         child.sendline("exit"); child.expect(pexpect.EOF, timeout=10); child.close()
@@ -128,10 +121,8 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
     except Exception as e:
         with print_lock:
             print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
-        # Add a failure record for the whole pod
         check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'port': 22, 'status': 'FAILED', 'host': host_fqdn})
     
-    # Use the lock to print the summary table for this pod
     with print_lock:
         if check_results:
             print(f"\n📊 Network Test Summary for Pod {pod}")
@@ -149,12 +140,11 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
             else:
                 print(f"\n🔌 All VMs in Pod {pod} are powered ON")
 
-    return check_results # Return the structured data
+    return check_results
 
-# The main function now accepts a lock and returns the results
 def main(argv=None, print_lock=None):
     if print_lock is None:
-        print_lock = threading.Lock() # Fallback for standalone execution
+        print_lock = threading.Lock()
 
     global VERBOSE
     parser = argparse.ArgumentParser(description="PA Pod Network Checker")
@@ -167,19 +157,28 @@ def main(argv=None, print_lock=None):
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
-    host_key = args.host.lower()
-    vcenter_number = HOST_TO_VCENTER.get(host_key)
-    if not vcenter_number: print(f"❌ Host '{args.host}' is not mapped to a vCenter."); return []
+    # --- MODIFIED: Dynamic vCenter Lookup ---
+    vcenter_fqdn = get_vcenter_by_host(args.host)
+    if not vcenter_fqdn:
+        with print_lock:
+            print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
+        return []
 
     try:
         ssl._create_default_https_context = ssl._create_unverified_context
-        si = SmartConnect(host=f"vcenter-appliance-{vcenter_number}.rededucation.com", user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$")
+        si = SmartConnect(host=vcenter_fqdn, user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$")
+        with print_lock:
+            print(f"✅ Connected to vCenter: {vcenter_fqdn}")
     except Exception as e:
-        with print_lock: print(f"❌ Failed to connect to vCenter: {e}"); return []
+        with print_lock:
+            print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
+        return []
+    # --- END MODIFICATION ---
     
     all_pod_results = []
     for pod in range(args.start, args.end + 1):
-        with print_lock: print(f"\n📘 Fetching components for course: {args.course} (Pod {pod})")
+        with print_lock:
+            print(f"\n📘 Fetching components for course: {args.course} (Pod {pod})")
         components, skipped_components = get_course_components(args.course, pod)
         
         if args.component:
@@ -187,15 +186,16 @@ def main(argv=None, print_lock=None):
             components = [c for c in components if c[0] in selected_components]
 
         if not components:
-            with print_lock: print(f"❌ Pod {pod}: No usable components found (or matched filter). Skipping pod."); continue
+            with print_lock:
+                print(f"❌ Pod {pod}: No usable components found (or matched filter). Skipping pod.")
+            continue
         
         power_map = get_vm_power_map(si, pod)
         pod_results = run_ssh_checks(pod, components, args.host, power_map, print_lock)
         all_pod_results.extend(pod_results)
 
     Disconnect(si)
-    return all_pod_results # Return all structured results
+    return all_pod_results
 
 if __name__ == "__main__":
     main()
-# --- END OF FILE labs/test/palo.py ---

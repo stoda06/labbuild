@@ -1,5 +1,3 @@
-# --- START OF FILE labs/test/avaya.py ---
-
 #!/usr/bin/env python3.10
 
 import argparse, re, socket, ssl, sys, pexpect, threading
@@ -7,15 +5,13 @@ from pymongo import MongoClient
 from tabulate import tabulate
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
+# --- MODIFIED ---
+from db_utils import get_vcenter_by_host
 
 VERBOSE = False
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 RED, ENDC = '\033[91m', '\033[0m'
-HOST_TO_VCENTER = {
-    "cliffjumper": 1, "hydra": 1, "unicron": 1, "apollo": 2, "nightbird": 2,
-    "ultramagnus": 2, "hotshot": 3, "ps01": 4, "ps02": 4, "ps03": 4,
-    "shockwave": 5, "optimus": 5,
-}
+# REMOVED HOST_TO_VCENTER
 
 def log(msg, print_lock):
     if VERBOSE:
@@ -145,20 +141,23 @@ def main(argv=None, print_lock=None):
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
-    vcenter_number = HOST_TO_VCENTER.get(args.host.lower())
-    # THIS IS THE CORRECTED SYNTAX
-    if not vcenter_number:
+    # --- MODIFIED: Dynamic vCenter Lookup ---
+    vcenter_fqdn = get_vcenter_by_host(args.host)
+    if not vcenter_fqdn:
         with print_lock:
-            print(f"❌ Host '{args.host}' is not mapped to a vCenter.")
+            print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
         return []
 
     try:
         ssl._create_default_https_context = ssl._create_unverified_context
-        si = SmartConnect(host=f"vcenter-appliance-{vcenter_number}.rededucation.com", user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$")
+        si = SmartConnect(host=vcenter_fqdn, user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$")
+        with print_lock:
+            print(f"✅ Connected to vCenter: {vcenter_fqdn}")
     except Exception as e:
         with print_lock:
-            print(f"❌ Failed to connect to vCenter: {e}")
+            print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
+    # --- END MODIFICATION ---
     
     all_results = []
     for pod in range(args.start, args.end + 1):
@@ -183,4 +182,3 @@ def main(argv=None, print_lock=None):
 
 if __name__ == "__main__":
     main()
-# --- END OF FILE labs/test/avaya.py ---

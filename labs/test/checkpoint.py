@@ -1,5 +1,3 @@
-# --- START OF FILE labs/test/checkpoint.py ---
-
 #!/usr/bin/env python3.10
 
 from pyVim.connect import SmartConnect, Disconnect
@@ -7,18 +5,15 @@ from pyVmomi import vim
 from tabulate import tabulate
 import ssl, argparse, sys, pexpect, concurrent.futures, threading
 from pymongo import MongoClient
+# --- MODIFIED ---
+from db_utils import get_vcenter_by_host
 
 context = ssl._create_unverified_context()
 
-VCENTER_MAP = {
-    "cliffjumper": "vcenter-appliance-1", "hydra": "vcenter-appliance-1", "unicron": "vcenter-appliance-1",
-    "apollo": "vcenter-appliance-2", "nightbird": "vcenter-appliance-2", "ultramagnus": "vcenter-appliance-2",
-    "hotshot": "vcenter-appliance-3", "ps01": "vcenter-appliance-4", "ps02": "vcenter-appilance-4",
-    "ps03": "vcenter-appliance-4", "shockwave": "vcenter-appliance-5", "optimus": "vcenter-appliance-5",
-}
+# REMOVED VCENTER_MAP
+
 RED = '\033[91m'
 END = '\033[0m'
-
 
 def threaded_fn_test_cp(pod, vcenter_host, group, verbose, print_lock):
     try:
@@ -27,7 +22,8 @@ def threaded_fn_test_cp(pod, vcenter_host, group, verbose, print_lock):
         Disconnect(si)
         return pod, result, power_map
     except Exception as e:
-        with print_lock: print(f"❌ Error connecting to vCenter for pod {pod}: {e}")
+        with print_lock:
+            print(f"❌ Error connecting to vCenter for pod {pod}: {e}")
         return pod, [], {}
 
 def compare_vms_with_components(pod, vms_in_pool, course_name, print_lock):
@@ -36,27 +32,32 @@ def compare_vms_with_components(pod, vms_in_pool, course_name, print_lock):
         db = client["labbuild_db"]; collection = db["temp_courseconfig"]
         course_doc = collection.find_one({"course_name": course_name})
         if not course_doc or "components" not in course_doc:
-            with print_lock: print(f"❌ Unable to fetch components for course '{course_name}'")
+            with print_lock:
+                print(f"❌ Unable to fetch components for course '{course_name}'")
             return
         expected_vms = [comp.get("clone_name", "").replace("{X}", str(pod)) for comp in course_doc["components"] if "{X}" in comp.get("clone_name", "")]
         vm_set, expected_set = set(vms_in_pool), set(expected_vms)
         missing, extra = expected_set - vm_set, vm_set - expected_set
         if not missing and not extra:
-            with print_lock: print(f"\n✅ All expected components are present for Pod {pod}")
+            with print_lock:
+                print(f"\n✅ All expected components are present for Pod {pod}")
             return
         diff_rows = [["Missing from pool", name] for name in sorted(missing)] + [["Unexpected in pool", name] for name in sorted(extra)]
         with print_lock:
             print(f"\n📌 VM vs Component Check for Pod {pod}")
             print(tabulate(diff_rows, headers=["Status", "VM Name"], tablefmt="fancy_grid"))
     except Exception as e:
-        with print_lock: print(f"❌ Error during VM comparison for pod {pod}: {e}")
+        with print_lock:
+            print(f"❌ Error during VM comparison for pod {pod}: {e}")
 
 def get_entity_by_name(content, name, vimtype):
     container = content.viewManager.CreateContainerView(content.rootFolder, vimtype, True)
     for entity in container.view:
         if entity.name == name:
-            container.Destroy(); return entity
-    container.Destroy(); return None
+            container.Destroy()
+            return entity
+    container.Destroy()
+    return None
 
 def get_permissions_for_user(entity, username): return [perm for perm in entity.permission if username.lower() in perm.principal.lower()]
 def get_role_name(content, role_id):
@@ -73,7 +74,9 @@ def get_vms_count_in_resource_pool(resource_pool, verbose, print_lock):
                 for name, power in results: print(f"   - {name} [{power}]")
         return results
     except Exception as e:
-        with print_lock: print(f"⚠️ Failed to retrieve VMs: {e}"); return []
+        with print_lock:
+            print(f"⚠️ Failed to retrieve VMs: {e}")
+        return []
 
 def check_entity_permissions_and_vms(pod, content, entity_name, entity_type, username, verbose, print_lock):
     result_rows, vm_names, vm_power_map = [], [], {}
@@ -109,15 +112,20 @@ def fetch_course_config(pod, group, verbose, print_lock):
         db = client["labbuild_db"]; collection = db["temp_courseconfig"]
         course = collection.find_one({"course_name": group})
         if not course or "components" not in course:
-            with print_lock: print(f"❌ No components found for course '{group}'"); return [], []
+            with print_lock:
+                print(f"❌ No components found for course '{group}'")
+            return [], []
         components = []
         for c in course["components"]:
             if c.get("podip") and c.get("podport"): components.append((c["component_name"], c["podip"], c["podport"]))
             elif verbose:
-                with print_lock: print(f"⚠️ Skipping incomplete component config: {c.get('component_name', 'UNKNOWN')}")
+                with print_lock:
+                    print(f"⚠️ Skipping incomplete component config: {c.get('component_name', 'UNKNOWN')}")
         return components, []
     except Exception as e:
-        with print_lock: print(f"❌ MongoDB query failed: {e}"); return [], []
+        with print_lock:
+            print(f"❌ MongoDB query failed: {e}")
+        return [], []
 
 def resolve_pod_ip(ip_raw, pod):
     if "+X" in ip_raw:
@@ -128,7 +136,8 @@ def resolve_pod_ip(ip_raw, pod):
 def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
     host = f"cpvr{pod}.us" if host_key == "hotshot" else f"cpvr{pod}"
     if verbose:
-        with print_lock: print(f"\n🔐 Connecting to {host} via SSH...")
+        with print_lock:
+            print(f"\n🔐 Connecting to {host} via SSH...")
     
     check_results = []
     try:
@@ -137,7 +146,6 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
         if i == 0:
             child.sendline("yes")
             child.expect(r"vr:~#")
-        # THIS IS THE CORRECTED SYNTAX
         elif i == 1:
             if verbose:
                 with print_lock:
@@ -176,7 +184,6 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
         check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host, 'port': 22, 'status': 'FAILED', 'host': host})
         return check_results
 
-    # Print summary inside the lock
     with print_lock:
         if check_results:
             print(f"\n📊 Network Test Summary for Pod {pod}")
@@ -205,24 +212,23 @@ def main(argv=None, print_lock=None):
     parser.add_argument("-c", "--component", help="Test specific components.")
     args = parser.parse_args(argv)
 
-    host_key = args.host.lower()
-    if host_key not in VCENTER_MAP:
+    # --- MODIFIED: Dynamic vCenter Lookup ---
+    vcenter_fqdn = get_vcenter_by_host(args.host)
+    if not vcenter_fqdn:
         with print_lock:
-            print(f"❌ Host '{args.host}' is not recognized.")
+            print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
         sys.exit(1)
     
-    vcenter_host = VCENTER_MAP[host_key]
     pod_range, power_states = list(range(args.start, args.end + 1)), {}
     all_check_results = []
     
     with print_lock:
-        print(f"\n🌐 Connecting to vCenter: {vcenter_host}")
-    
+        print(f"\n🌐 Connecting to vCenter: {vcenter_fqdn}")
+    # --- END MODIFICATION ---
+
     full_table_data = []
-    # This script uses nested thread pools, which is a bit complex but should be okay.
-    # The outer pool is in commands.py, this is an inner one.
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(threaded_fn_test_cp, pod, vcenter_host, args.group, args.verbose, print_lock) for pod in pod_range]
+        futures = [executor.submit(threaded_fn_test_cp, pod, vcenter_fqdn, args.group, args.verbose, print_lock) for pod in pod_range]
         for future in concurrent.futures.as_completed(futures):
             pod, table_rows, power_map = future.result()
             full_table_data.extend(table_rows)
@@ -243,7 +249,7 @@ def main(argv=None, print_lock=None):
                     with print_lock:
                         print(f"   - No matching components found for pod {pod}. Skipping network checks for this pod.")
                     continue
-            future = executor.submit(perform_network_checks_over_ssh, pod, components, ignore_list, host_key, power_states.get(pod, {}), args.verbose, print_lock)
+            future = executor.submit(perform_network_checks_over_ssh, pod, components, ignore_list, args.host, power_states.get(pod, {}), args.verbose, print_lock)
             futures.append(future)
         
         for future in concurrent.futures.as_completed(futures):
@@ -253,4 +259,3 @@ def main(argv=None, print_lock=None):
 
 if __name__ == "__main__":
     main()
-# --- END OF FILE labs/test/checkpoint.py ---

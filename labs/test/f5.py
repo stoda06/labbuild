@@ -5,17 +5,14 @@ from pymongo import MongoClient
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 from tabulate import tabulate
+# --- MODIFIED ---
+from db_utils import get_vcenter_by_host
 
 VERBOSE = False
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 RED, ENDC = '\033[91m', '\033[0m'
-HOST_ABBR = {"nightbird": "ni", "cliffjumper": "cl", "ultramagnus": "ul", "unicron": "un", "hotshot": "ho"}
-VCENTER_MAP = {
-    "cliffjumper": "vcenter-appliance-1", "hydra": "vcenter-appliance-1", "unicron": "vcenter-appliance-1",
-    "apollo": "vcenter-appliance-2", "nightbird": "vcenter-appliance-2", "ultramagnus": "vcenter-appliance-2",
-    "hotshot": "vcenter-appliance-3", "ps01": "vcenter-appliance-4", "ps02": "vcenter-appliance-4",
-    "ps03": "vcenter-appliance-4", "shockwave": "vcenter-appliance-5", "optimus": "vcenter-appliance-5",
-}
+
+# REMOVED HOST_ABBR and VCENTER_MAP
 
 def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
 def log(msg, print_lock):
@@ -183,21 +180,23 @@ def main(argv=None, print_lock=None):
             print(f"❌ No usable components found (or matched filter). Exiting.")
         return []
 
-    vcenter_host = VCENTER_MAP.get(args.host.lower())
-    if not vcenter_host:
+    # --- MODIFIED: Dynamic vCenter Lookup ---
+    vcenter_fqdn = get_vcenter_by_host(args.host)
+    if not vcenter_fqdn:
         with print_lock:
-            print(f"❌ Host '{args.host}' not in VCENTER_MAP.")
+            print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
         return []
         
     try:
         ssl._create_default_https_context = ssl._create_unverified_context
-        si = SmartConnect(host=f"{vcenter_host}.rededucation.com", user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$")
+        si = SmartConnect(host=vcenter_fqdn, user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$")
         with print_lock:
-            print(f"✅ Connected to vCenter: {vcenter_host}.rededucation.com")
+            print(f"✅ Connected to vCenter: {vcenter_fqdn}")
     except Exception as e:
         with print_lock:
-            print(f"❌ Failed to connect to vCenter: {e}")
+            print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
+    # --- END MODIFICATION ---
     
     power_map = get_vm_power_map_for_class(args.classnum, si, print_lock)
     all_results = []
