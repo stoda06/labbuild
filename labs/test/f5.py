@@ -5,14 +5,11 @@ from pymongo import MongoClient
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 from tabulate import tabulate
-# --- MODIFIED ---
 from db_utils import get_vcenter_by_host
 
 VERBOSE = False
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 RED, ENDC = '\033[91m', '\033[0m'
-
-# REMOVED HOST_ABBR and VCENTER_MAP
 
 def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
 def log(msg, print_lock):
@@ -29,12 +26,14 @@ def resolve_ip(ip_template, pod, host_label, print_lock):
                 log(f"IP after '+X' resolution: {ip_template}", print_lock)
             except ValueError: log(f"Invalid integer in last octet for '+X': {ip_template}", print_lock)
     if "X" in ip_template: ip_template = ip_template.replace("X", str(pod)); log(f"IP after 'X' substitution: {ip_template}", print_lock)
-    if host_label == "hotshot":
+    # --- MODIFIED ---
+    if host_label in ["hotshot", "trypticon"]:
         parts = ip_template.split(".")
         if len(parts) == 4 and parts[0] == "172":
             new_ip = ".".join(["172", "26", parts[2], parts[3]])
-            log(f"Adjusted IP from 172.{parts[1]} to 172.26 -> {new_ip}", print_lock)
+            log(f"Adjusted IP from 172.{parts[1]} to 172.26 for host {host_label} -> {new_ip}", print_lock)
             return new_ip
+    # --- END MODIFICATION ---
     return ip_template
 
 def get_course_groups(course_name, print_lock):
@@ -150,7 +149,9 @@ def main(argv=None, print_lock=None):
     parser.add_argument("-c", "--component", help="Test specific components (comma-separated list).")
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
-    ssh_target = f"f5vr{args.classnum}.us" if args.host.lower() == "hotshot" else f"f5vr{args.classnum}"
+    # --- MODIFIED ---
+    ssh_target = f"f5vr{args.classnum}.us" if args.host.lower() in ["hotshot", "trypticon"] else f"f5vr{args.classnum}"
+    # --- END MODIFICATION ---
     
     with print_lock:
         print(f"[INFO] Connecting to: {ssh_target}")
@@ -180,7 +181,6 @@ def main(argv=None, print_lock=None):
             print(f"❌ No usable components found (or matched filter). Exiting.")
         return []
 
-    # --- MODIFIED: Dynamic vCenter Lookup ---
     vcenter_fqdn = get_vcenter_by_host(args.host)
     if not vcenter_fqdn:
         with print_lock:
@@ -196,7 +196,6 @@ def main(argv=None, print_lock=None):
         with print_lock:
             print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
-    # --- END MODIFICATION ---
     
     power_map = get_vm_power_map_for_class(args.classnum, si, print_lock)
     all_results = []

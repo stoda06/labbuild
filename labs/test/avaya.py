@@ -5,13 +5,11 @@ from pymongo import MongoClient
 from tabulate import tabulate
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
-# --- MODIFIED ---
 from db_utils import get_vcenter_by_host
 
 VERBOSE = False
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 RED, ENDC = '\033[91m', '\033[0m'
-# REMOVED HOST_TO_VCENTER
 
 def log(msg, print_lock):
     if VERBOSE:
@@ -72,7 +70,9 @@ def get_vm_power_map(si, pod, print_lock):
         return {}
 
 def run_ssh_checks(pod, components, host, power_map, print_lock):
-    host_fqdn = f"avvr{pod}.us" if host.lower() == "hotshot" else f"avvr{pod}"
+    # --- MODIFIED ---
+    host_fqdn = f"avvr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"avvr{pod}"
+    # --- END MODIFICATION ---
     results = []
     with print_lock:
         print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) via SSH...")
@@ -141,7 +141,6 @@ def main(argv=None, print_lock=None):
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
-    # --- MODIFIED: Dynamic vCenter Lookup ---
     vcenter_fqdn = get_vcenter_by_host(args.host)
     if not vcenter_fqdn:
         with print_lock:
@@ -157,7 +156,6 @@ def main(argv=None, print_lock=None):
         with print_lock:
             print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
-    # --- END MODIFICATION ---
     
     all_results = []
     for pod in range(args.start, args.end + 1):

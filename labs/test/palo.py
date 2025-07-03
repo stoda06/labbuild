@@ -12,15 +12,12 @@ import threading
 
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
-# --- MODIFIED ---
 from db_utils import get_vcenter_by_host
 
 VERBOSE = False
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 RED = '\033[91m'
 ENDC = '\033[0m'
-
-# REMOVED HOST_TO_VCENTER
 
 def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
 def log(msg):
@@ -62,9 +59,11 @@ def resolve_ip(ip_template, pod, host):
                 ip_template = ".".join(parts)
             except ValueError:
                 log(f"Invalid integer in last octet for '+X': {base}")
-    if host.lower() == "hotshot" and ip_template.startswith("172.30."):
+    # --- MODIFIED ---
+    if host.lower() in ["hotshot", "trypticon"] and ip_template.startswith("172.30."):
         ip_template = ip_template.replace("172.30.", "172.26.", 1)
-        log(f"IP remapped to {ip_template} for host hotshot")
+        log(f"IP remapped to {ip_template} for host {host.lower()}")
+    # --- END MODIFICATION ---
     return ip_template
 
 def get_vm_power_map(si, pod):
@@ -80,7 +79,9 @@ def get_vm_power_map(si, pod):
         print(f"⚠️ Could not fetch VMs for pod {pod}: {e}"); return {}
 
 def run_ssh_checks(pod, components, host, power_map, print_lock):
-    host_fqdn = f"pavr{pod}.us" if host.lower() == "hotshot" else f"pavr{pod}"
+    # --- MODIFIED ---
+    host_fqdn = f"pavr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"pavr{pod}"
+    # --- END MODIFICATION ---
     
     check_results = []
     
@@ -157,7 +158,6 @@ def main(argv=None, print_lock=None):
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
-    # --- MODIFIED: Dynamic vCenter Lookup ---
     vcenter_fqdn = get_vcenter_by_host(args.host)
     if not vcenter_fqdn:
         with print_lock:
@@ -173,7 +173,6 @@ def main(argv=None, print_lock=None):
         with print_lock:
             print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
-    # --- END MODIFICATION ---
     
     all_pod_results = []
     for pod in range(args.start, args.end + 1):

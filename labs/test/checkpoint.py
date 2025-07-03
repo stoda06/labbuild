@@ -5,12 +5,9 @@ from pyVmomi import vim
 from tabulate import tabulate
 import ssl, argparse, sys, pexpect, concurrent.futures, threading
 from pymongo import MongoClient
-# --- MODIFIED ---
 from db_utils import get_vcenter_by_host
 
 context = ssl._create_unverified_context()
-
-# REMOVED VCENTER_MAP
 
 RED = '\033[91m'
 END = '\033[0m'
@@ -134,7 +131,9 @@ def resolve_pod_ip(ip_raw, pod):
     return ip_raw
 
 def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
-    host = f"cpvr{pod}.us" if host_key == "hotshot" else f"cpvr{pod}"
+    # --- MODIFIED ---
+    host = f"cpvr{pod}.us" if host_key in ["hotshot", "trypticon"] else f"cpvr{pod}"
+    # --- END MODIFICATION ---
     if verbose:
         with print_lock:
             print(f"\n🔐 Connecting to {host} via SSH...")
@@ -212,7 +211,6 @@ def main(argv=None, print_lock=None):
     parser.add_argument("-c", "--component", help="Test specific components.")
     args = parser.parse_args(argv)
 
-    # --- MODIFIED: Dynamic vCenter Lookup ---
     vcenter_fqdn = get_vcenter_by_host(args.host)
     if not vcenter_fqdn:
         with print_lock:
@@ -224,8 +222,7 @@ def main(argv=None, print_lock=None):
     
     with print_lock:
         print(f"\n🌐 Connecting to vCenter: {vcenter_fqdn}")
-    # --- END MODIFICATION ---
-
+    
     full_table_data = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(threaded_fn_test_cp, pod, vcenter_fqdn, args.group, args.verbose, print_lock) for pod in pod_range]
