@@ -1,5 +1,3 @@
-# --- START OF FILE labbuild.py ---
-
 #!/usr/bin/env python3
 """
 Lab Build Management Tool - Entry Point
@@ -119,10 +117,10 @@ def main():
     test_parser = subparsers.add_parser("test", help="Run test suite for labs", parents=[f5_parser])
     test_parser.add_argument("-t", "--tag", help="Run tests for a specific allocation by tag name.")
     test_parser.add_argument("-v", "--vendor", help="Vendor name. Use alone to test all pods for that vendor.")
-    test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod number (required if not using --tag or vendor-only mode).")
-    test_parser.add_argument("-e", "--end_pod", type=int, help="End pod number (required if not using --tag or vendor-only mode).")
-    test_parser.add_argument("-H", "--host", help="ESXi host name (required if not using --tag or vendor-only mode).")
-    test_parser.add_argument("-g", "--group", help="Course group/section (required if not using --tag or vendor-only mode).")
+    test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod/class number (for manual or vendor-wide range tests).")
+    test_parser.add_argument("-e", "--end_pod", type=int, help="End pod/class number (for manual or vendor-wide range tests).")
+    test_parser.add_argument("-H", "--host", help="ESXi host name (optional, used to filter manual range tests).")
+    test_parser.add_argument("-g", "--group", help="Course group/section (optional, used to filter manual range tests).")
     test_parser.add_argument("-c", "--component", help="Test specific component(s), or '?' to list available.")
     test_parser.add_argument("-x", "--exclude", help="Exclude pods/classes from vendor-wide test. E.g., '1-5,10,22-25'")
     test_parser.set_defaults(func=test_environment)
@@ -349,5 +347,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# --- END OF FILE labbuild.py ---

@@ -1,5 +1,3 @@
-# --- START OF FILE labs/test/test_utils.py ---
-
 import logging
 import re
 from typing import Set, List, Dict, Any, Optional
@@ -74,6 +72,74 @@ def group_non_f5_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     start_pod = pod_numbers[i+1]
                     
     return final_jobs
+
+def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filter: Optional[str] = None, group_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Queries allocations for a specific vendor and number range (pods or classes).
+    Generates a list of test jobs, automatically determining course and host.
+    User-provided host and group are used as filters.
+    """
+    jobs = []
+    raw_jobs = [] # For non-F5 grouping
+    logger.info(f"Searching for jobs for {vendor} in range {start_num}-{end_num} (Host: {host_filter or 'any'}, Group: {group_filter or 'any'})")
+    with mongo_client() as client:
+        if not client:
+            logger.error("Cannot get test jobs: DB connection failed.")
+            return []
+
+        db = client[DB_NAME]
+        collection = db[ALLOCATION_COLLECTION]
+        
+        allocations = collection.find({"courses.vendor": vendor.lower()})
+
+        for alloc in allocations:
+            tag = alloc.get("tag")
+            for course in alloc.get("courses", []):
+                if course.get("vendor", "").lower() != vendor.lower():
+                    continue
+                
+                course_name = course.get("course_name")
+                if group_filter and course_name != group_filter:
+                    continue
+                
+                if vendor.lower() == 'f5':
+                    for pod_detail in course.get("pod_details", []):
+                        class_num = pod_detail.get("class_number")
+                        host = pod_detail.get("host")
+                        if class_num is None or host is None: continue
+                        
+                        if not (start_num <= class_num <= end_num): continue
+                        if host_filter and host.lower() != host_filter.lower(): continue
+
+                        pod_numbers = [p.get('pod_number') for p in pod_detail.get('pods', []) if p.get('pod_number') is not None]
+                        if not pod_numbers: continue
+
+                        job = {
+                            "vendor": vendor.lower(), "tag": tag, "course_name": course_name,
+                            "host": host, "class_number": class_num,
+                            "start_pod": min(pod_numbers), "end_pod": max(pod_numbers)
+                        }
+                        jobs.append(job)
+                else: # Non-F5
+                    for pod_detail in course.get("pod_details", []):
+                        pod_num = pod_detail.get("pod_number")
+                        host = pod_detail.get("host")
+                        if pod_num is None or host is None: continue
+                        
+                        if not (start_num <= pod_num <= end_num): continue
+                        if host_filter and host.lower() != host_filter.lower(): continue
+                        
+                        job = {
+                            "vendor": vendor.lower(), "tag": tag, "course_name": course_name,
+                            "host": host, "pod_number": pod_num
+                        }
+                        raw_jobs.append(job)
+
+    if vendor.lower() != 'f5' and raw_jobs:
+        logger.debug(f"Grouping {len(raw_jobs)} non-F5 jobs into ranges.")
+        return group_non_f5_jobs(raw_jobs)
+
+    return jobs
 
 def get_test_jobs_by_vendor(vendor: str, exclude_set: Set[int]) -> List[Dict[str, Any]]:
     """
@@ -177,5 +243,3 @@ def display_test_jobs_and_confirm(jobs: List[Dict[str, Any]], vendor: str) -> bo
     except (KeyboardInterrupt, EOFError):
         print("\nOperation cancelled by user.")
         return False
-
-# --- END OF FILE labs/test/test_utils.py ---

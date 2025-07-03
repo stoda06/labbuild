@@ -15,7 +15,7 @@ from vcenter_utils import get_vcenter_instance
 from orchestrator import vendor_setup, vendor_teardown, update_monitor_and_database
 from operation_logger import OperationLogger
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
-from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs_and_confirm
+from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs_and_confirm, get_test_jobs_for_range
 from monitor.prtg import PRTGManager
 from constants import DB_NAME, TEMP_COURSE_CONFIG_COLLECTION
 
@@ -82,11 +82,11 @@ def _execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading
 
 def test_environment(args_dict, operation_logger=None):
     """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
-    thread_count = args_dict.get('thread', 4) # Get thread count from args
+    thread_count = args_dict.get('thread', 10) # Get thread count from args
     
     # --- Mode 1: Vendor-wide test mode ---
     is_vendor_mode = (args_dict.get('vendor') and not args_dict.get('tag') and
-                      args_dict.get('start_pod') is None and args_dict.get('host') is None)
+                      args_dict.get('start_pod') is None and args_dict.get('end_pod') is None)
     if is_vendor_mode:
         vendor = args_dict['vendor']
         logger.info(f"Vendor-wide test mode for '{vendor}' with {thread_count} threads.")
@@ -116,7 +116,6 @@ def test_environment(args_dict, operation_logger=None):
                     results = future.result()
                     # A result is a list of check-dictionaries
                     for res in results:
-                        # ***** THIS IS THE CORRECTED LINE *****
                         if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
                             all_failures.append(res)
                 except Exception as e:
@@ -147,7 +146,6 @@ def test_environment(args_dict, operation_logger=None):
 
         return [{"status": "completed"}]
 
-
     # --- Mode 2: Component listing request ---
     if args_dict.get('component') == '?':
         course_name = args_dict.get('group')
@@ -176,7 +174,7 @@ def test_environment(args_dict, operation_logger=None):
             print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-    # --- Mode 3: Tag-based or Manual single-job test mode ---
+    # --- Mode 3: Tag-based test mode ---
     if args_dict.get('tag'):
         tag = args_dict.get('tag')
         logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
@@ -192,26 +190,86 @@ def test_environment(args_dict, operation_logger=None):
 
             args_dict.update(test_params)
             logger.info(f"Successfully fetched parameters for tag '{tag}': {test_params}")
+            print_lock = threading.Lock()
+            return _execute_single_test_worker(args_dict, print_lock)
+
         except Exception as e:
             err_msg = f"An unexpected error occurred while fetching parameters for tag '{tag}': {e}"
             logger.error(err_msg, exc_info=True); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
+    # --- Mode 4: Manual test mode with range ---
+    is_manual_range_mode = args_dict.get('start_pod') is not None and args_dict.get('end_pod') is not None
+    if is_manual_range_mode:
+        logger.info("Manual test mode invoked with pod/class range.")
+        if not args_dict.get('vendor'):
+            err_msg = "Missing required argument for manual test: --vendor"
+            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
 
-    # This section now handles the single-job manual execution
-    required_args = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
-    missing_args = [arg for arg in required_args if args_dict.get(arg) is None]
-    if args_dict.get('vendor', '').lower() == 'f5' and args_dict.get('class_number') is None:
-        missing_args.append('class_number')
-    if missing_args:
-        err_msg = f"Missing required arguments for test: {', '.join(missing_args)}. Provide them manually, use a valid --tag, or use vendor-only mode (-v <vendor>)."
-        logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-        return [{"status": "failed", "error": err_msg}]
+        # Query the database to get a definitive list of jobs based on the provided range and filters
+        jobs = get_test_jobs_for_range(
+            vendor=args_dict['vendor'],
+            start_num=args_dict['start_pod'],
+            end_num=args_dict['end_pod'],
+            host_filter=args_dict.get('host'),
+            group_filter=args_dict.get('group')
+        )
 
-    # Execute the single test job using the same worker but without the thread pool
-    print_lock = threading.Lock() # Create a dummy lock for single execution
-    results = _execute_single_test_worker(args_dict, print_lock)
-    return results
+        if not jobs:
+            err_msg = "No matching allocations found in the database for the specified criteria."
+            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
+
+        # Confirm with the user before running the discovered jobs
+        if not display_test_jobs_and_confirm(jobs, args_dict['vendor']):
+            return [{"status": "cancelled"}]
+
+        # Execute these jobs using the same parallel execution logic as vendor-wide mode
+        all_failures = []
+        print_lock = threading.Lock()
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            future_to_job = {}
+            for job in jobs:
+                job_args_dict = job.copy()
+                job_args_dict["group"] = job.get("course_name")
+                job_args_dict["component"] = args_dict.get("component")
+                future = executor.submit(_execute_single_test_worker, job_args_dict, print_lock)
+                future_to_job[future] = job
+            
+            for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
+                try:
+                    results = future.result()
+                    for res in results:
+                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
+                            all_failures.append(res)
+                except Exception as e:
+                    job_info = future_to_job[future]
+                    logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
+                    all_failures.append({'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
+                                         'status': 'EXCEPTION', 'error': str(e)})
+
+        if all_failures:
+            print("\n" + "="*80)
+            print("                       CONSOLIDATED ERROR REPORT")
+            print("="*80)
+            headers = ["Pod/Class", "Component", "IP Address", "Port", "Status/Error"]
+            error_table_data = []
+            for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
+                pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
+                status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
+                error_table_data.append([pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'), fail.get('port', 'N/A'), status])
+            print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
+            print("="*80)
+        else:
+            print("\n✅ All tests completed successfully with no reported failures.")
+
+        return [{"status": "completed"}]
+    
+    # --- Fallback Error ---
+    err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod."
+    logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
+    return [{"status": "failed", "error": err_msg}]
     
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
@@ -916,5 +974,3 @@ def manage_environment(args_dict: Dict[str, Any], operation_logger: OperationLog
     all_results.extend(task_results) # Combine submission errors with task results
     logger.info(f"VM management ({operation_arg}) tasks submitted/completed.")
     return all_results
-
-# --- END OF FILE commands.py ---
