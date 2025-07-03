@@ -79,8 +79,10 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
     Generates a list of test jobs, automatically determining course and host.
     User-provided host and group are used as filters.
     """
-    jobs = []
-    raw_jobs = [] # For non-F5 grouping
+    raw_jobs = []
+    # --- THIS IS THE CORRECTED LOGIC ---
+    f5_job_collector = {} # Key: (vendor, course, host, class_num), Value: {base_info, set_of_pods}
+
     logger.info(f"Searching for jobs for {vendor} in range {start_num}-{end_num} (Host: {host_filter or 'any'}, Group: {group_filter or 'any'})")
     with mongo_client() as client:
         if not client:
@@ -107,39 +109,46 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                         class_num = pod_detail.get("class_number")
                         host = pod_detail.get("host")
                         if class_num is None or host is None: continue
-                        
-                        if not (start_num <= class_num <= end_num): continue
                         if host_filter and host.lower() != host_filter.lower(): continue
 
-                        pod_numbers = [p.get('pod_number') for p in pod_detail.get('pods', []) if p.get('pod_number') is not None]
-                        if not pod_numbers: continue
-
-                        job = {
-                            "vendor": vendor.lower(), "tag": tag, "course_name": course_name,
-                            "host": host, "class_number": class_num,
-                            "start_pod": min(pod_numbers), "end_pod": max(pod_numbers)
-                        }
-                        jobs.append(job)
-                else: # Non-F5
+                        matching_pods = [
+                            p.get('pod_number') for p in pod_detail.get('pods', [])
+                            if p.get('pod_number') is not None and start_num <= p.get('pod_number') <= end_num
+                        ]
+                        
+                        if matching_pods:
+                            job_key = (vendor.lower(), course_name, host, class_num)
+                            if job_key not in f5_job_collector:
+                                f5_job_collector[job_key] = {
+                                    "base": { "vendor": vendor.lower(), "tag": tag, "course_name": course_name, "host": host, "class_number": class_num },
+                                    "pods": set()
+                                }
+                            f5_job_collector[job_key]["pods"].update(matching_pods)
+                else:
                     for pod_detail in course.get("pod_details", []):
                         pod_num = pod_detail.get("pod_number")
                         host = pod_detail.get("host")
                         if pod_num is None or host is None: continue
-                        
                         if not (start_num <= pod_num <= end_num): continue
                         if host_filter and host.lower() != host_filter.lower(): continue
                         
-                        job = {
-                            "vendor": vendor.lower(), "tag": tag, "course_name": course_name,
-                            "host": host, "pod_number": pod_num
-                        }
-                        raw_jobs.append(job)
+                        raw_jobs.append({ "vendor": vendor.lower(), "tag": tag, "course_name": course_name, "host": host, "pod_number": pod_num })
+
+    # Finalize jobs from collectors
+    final_jobs = []
+    for key, collected_job in f5_job_collector.items():
+        if collected_job["pods"]:
+            job = collected_job["base"]
+            job["start_pod"] = min(collected_job["pods"])
+            job["end_pod"] = max(collected_job["pods"])
+            final_jobs.append(job)
 
     if vendor.lower() != 'f5' and raw_jobs:
         logger.debug(f"Grouping {len(raw_jobs)} non-F5 jobs into ranges.")
-        return group_non_f5_jobs(raw_jobs)
+        final_jobs.extend(group_non_f5_jobs(raw_jobs))
 
-    return jobs
+    return final_jobs
+    # --- END CORRECTION ---
 
 def get_test_jobs_by_vendor(vendor: str, exclude_set: Set[int]) -> List[Dict[str, Any]]:
     """

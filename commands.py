@@ -74,10 +74,21 @@ def _execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading
             with print_lock:
                 print(f"Vendor '{vendor}' is not yet supported for testing.")
             return [{'status': 'failed', 'error': f"Unsupported vendor: {vendor}"}]
+    # --- THIS IS THE CORRECTED EXCEPTION HANDLING ---
     except Exception as e:
         with print_lock:
             logger.error(f"Test worker for {vendor} pod {start}-{end} failed: {e}", exc_info=True)
-        return [{'status': 'failed', 'error': str(e)}]
+        # Return a dictionary with more context for better reporting
+        return [{
+            'pod': start,
+            'class_number': args_dict.get('class_number'),
+            'component': 'Module Execution',
+            'ip': host,
+            'port': 'N/A',
+            'status': 'CRASHED',
+            'error': str(e)
+        }]
+    # --- END CORRECTION ---
 
 
 def test_environment(args_dict, operation_logger=None):
@@ -269,8 +280,8 @@ def test_environment(args_dict, operation_logger=None):
     # --- Fallback Error ---
     err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod."
     logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-    return [{"status": "failed", "error": err_msg}]
-    
+    return [{"status": "failed", "error": err_msg}] 
+
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
 def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
