@@ -485,7 +485,7 @@ def add_monitor(pod_config, db_client, prtg_server=None):
         # Determine base IP based on host (example logic, adjust if needed)
         host_short = pod_config.get("host_fqdn", "").split(".")[0]
         # Default base IP for all palo courses (adjust if needed)
-        base_ip = "172.26.7.100" if host_short.lower() == "hotshot" else "172.30.7.100"
+        base_ip = "172.26.7.100" if host_short.lower() in ("hotshot","trypticon") else "172.30.7.100"
 
         parts = base_ip.split('.')
         base_last_octet = int(parts[3])
