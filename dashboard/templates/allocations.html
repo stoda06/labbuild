@@ -206,9 +206,35 @@
                 </tbody>
             </table>
         </div>
-        {% if total_pages > 1 %}<nav aria-label="Allocation pagination" class="p-3 pagination-controls">{# ...
-            pagination HTML ... #}</nav>{% endif %}
-        {% else %}
+        {% if total_pages > 1 %}
+        <nav aria-label="Allocation pagination" class="p-3 pagination-controls">
+            <ul class="pagination pagination-sm justify-content-center mb-0">
+                {# Previous Page Link #}
+                <li class="page-item {{ 'disabled' if current_page == 1 else '' }}">
+                    <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page-1, **pagination_args) }}">Previous</a>
+                </li>
+
+                {# Page Number Links #}
+                {% set page_window = 2 %}
+                {% for page_num in range(1, total_pages + 1) %}
+                    {% if page_num == 1 or page_num == total_pages or (page_num >= current_page - page_window and page_num <= current_page + page_window) %}
+                        <li class="page-item {{ 'active' if page_num == current_page else '' }}">
+                            <a class="page-link" href="{{ url_for('main.view_allocations', page=page_num, **pagination_args) }}">{{ page_num }}</a>
+                        </li>
+                    {% elif page_num == 2 and current_page > page_window + 2 %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% elif page_num == total_pages - 1 and current_page < total_pages - page_window - 1 %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% endif %}
+                {% endfor %}
+
+                {# Next Page Link #}
+                <li class="page-item {{ 'disabled' if current_page == total_pages else '' }}">
+                    <a class="page-link" href="{{ url_for('main.view_allocations', page=current_page+1, **pagination_args) }}">Next</a>
+                </li>
+            </ul>
+        </nav>
+        {% endif %}
         <p class="p-3 text-muted">No allocations found {% if current_filters.values()|select|list %} matching your
             filter criteria. <a href="{{ url_for('main.view_allocations') }}">Clear filters</a>? {% else %} in the
             database.{% endif %}</p>
