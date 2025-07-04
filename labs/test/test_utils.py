@@ -7,6 +7,12 @@ from db_utils import mongo_client, DB_NAME, ALLOCATION_COLLECTION
 
 logger = logging.getLogger('labbuild.test.utils')
 
+# Color constants
+CYAN = '\033[96m'
+YELLOW = '\033[93m'
+GREEN = '\033[92m'
+ENDC = '\033[0m'
+
 def parse_exclude_string(exclude_str: Optional[str]) -> Set[int]:
     """Parses a string like '1-5,8,10-12' into a set of integers."""
     if not exclude_str:
@@ -80,7 +86,6 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
     User-provided host and group are used as filters.
     """
     raw_jobs = []
-    # --- THIS IS THE CORRECTED LOGIC ---
     f5_job_collector = {} # Key: (vendor, course, host, class_num), Value: {base_info, set_of_pods}
 
     logger.info(f"Searching for jobs for {vendor} in range {start_num}-{end_num} (Host: {host_filter or 'any'}, Group: {group_filter or 'any'})")
@@ -148,7 +153,6 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
         final_jobs.extend(group_non_f5_jobs(raw_jobs))
 
     return final_jobs
-    # --- END CORRECTION ---
 
 def get_test_jobs_by_vendor(vendor: str, exclude_set: Set[int]) -> List[Dict[str, Any]]:
     """
@@ -217,38 +221,34 @@ def get_test_jobs_by_vendor(vendor: str, exclude_set: Set[int]) -> List[Dict[str
 
     return jobs
 
-def display_test_jobs_and_confirm(jobs: List[Dict[str, Any]], vendor: str) -> bool:
-    """Displays a table of jobs and asks for user confirmation to proceed."""
+def display_test_jobs(jobs: List[Dict[str, Any]], vendor: str):
+    """Displays a colorful table of jobs to be tested without confirmation."""
     if not jobs:
-        print(f"No testable allocations found for vendor '{vendor}' (after exclusions).")
-        return False
+        return
 
     is_f5 = vendor.lower() == 'f5'
-    headers = ["Tag", "Course Name", "Host", "Class Number", "Pod Range"] if is_f5 else ["Tag", "Course Name", "Host", "Pod Range"]
+    
+    # Colorize headers
+    if is_f5:
+        headers = [f"{CYAN}Tag{ENDC}", f"{CYAN}Course Name{ENDC}", f"{CYAN}Host{ENDC}", f"{CYAN}Class Number{ENDC}", f"{CYAN}Pod Range{ENDC}"]
+    else:
+        headers = [f"{CYAN}Tag{ENDC}", f"{CYAN}Course Name{ENDC}", f"{CYAN}Host{ENDC}", f"{CYAN}Pod Range{ENDC}"]
+    
     table_data = []
 
     # Sort for predictable output
     sort_key = lambda x: (x.get('tag', ''), x.get('class_number', 0), x.get('start_pod', 0))
     for job in sorted(jobs, key=sort_key):
-        pod_range = f"{job['start_pod']}-{job['end_pod']}"
+        pod_range = f"{GREEN}{job['start_pod']}-{job['end_pod']}{ENDC}"
+        tag = f"{YELLOW}{job['tag']}{ENDC}"
+        
         if is_f5:
-            table_data.append([job['tag'], job['course_name'], job['host'], job['class_number'], pod_range])
+            table_data.append([tag, job['course_name'], job['host'], job['class_number'], pod_range])
         else:
-            table_data.append([job['tag'], job['course_name'], job['host'], pod_range])
+            table_data.append([tag, job['course_name'], job['host'], pod_range])
 
     print("\n" + "="*80)
     print(f"The following allocations for vendor '{vendor.upper()}' will be tested:")
     print("="*80)
-    print(tabulate(table_data, headers=headers, tablefmt="fancy_grid"))
+    print(tabulate(table_data, headers=headers, tablefmt="fancy_grid", disable_numparse=True))
     print("="*80)
-
-    try:
-        confirm = input("Proceed with these tests? (y/N): ").lower().strip()
-        if confirm == 'y':
-            return True
-        else:
-            print("Operation cancelled by user.")
-            return False
-    except (KeyboardInterrupt, EOFError):
-        print("\nOperation cancelled by user.")
-        return False

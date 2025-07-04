@@ -1,5 +1,3 @@
-# --- START OF FILE commands.py ---
-
 import logging
 import sys
 import argparse
@@ -15,7 +13,7 @@ from vcenter_utils import get_vcenter_instance
 from orchestrator import vendor_setup, vendor_teardown, update_monitor_and_database
 from operation_logger import OperationLogger
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
-from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs_and_confirm, get_test_jobs_for_range
+from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range
 from monitor.prtg import PRTGManager
 from constants import DB_NAME, TEMP_COURSE_CONFIG_COLLECTION
 
@@ -74,11 +72,9 @@ def _execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading
             with print_lock:
                 print(f"Vendor '{vendor}' is not yet supported for testing.")
             return [{'status': 'failed', 'error': f"Unsupported vendor: {vendor}"}]
-    # --- THIS IS THE CORRECTED EXCEPTION HANDLING ---
     except Exception as e:
         with print_lock:
             logger.error(f"Test worker for {vendor} pod {start}-{end} failed: {e}", exc_info=True)
-        # Return a dictionary with more context for better reporting
         return [{
             'pod': start,
             'class_number': args_dict.get('class_number'),
@@ -88,13 +84,12 @@ def _execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading
             'status': 'CRASHED',
             'error': str(e)
         }]
-    # --- END CORRECTION ---
 
 
 def test_environment(args_dict, operation_logger=None):
     """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
-    thread_count = args_dict.get('thread', 10) # Get thread count from args
-    
+    thread_count = args_dict.get('thread', 10)
+
     # --- Mode 1: Vendor-wide test mode ---
     is_vendor_mode = (args_dict.get('vendor') and not args_dict.get('tag') and
                       args_dict.get('start_pod') is None and args_dict.get('end_pod') is None)
@@ -105,14 +100,16 @@ def test_environment(args_dict, operation_logger=None):
         exclude_set = parse_exclude_string(args_dict.get('exclude'))
         jobs = get_test_jobs_by_vendor(vendor, exclude_set)
         
-        if not jobs or not display_test_jobs_and_confirm(jobs, vendor):
-            return [{"status": "cancelled"}]
+        if not jobs:
+            print(f"\nNo testable allocations found for vendor '{vendor}' (after exclusions).")
+            return [{"status": "completed_no_tasks"}]
+
+        display_test_jobs(jobs, vendor)
 
         all_failures = []
         print_lock = threading.Lock()
 
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
-            # Prepare jobs for submission
             future_to_job = {}
             for job in jobs:
                 job_args_dict = job.copy()
@@ -121,11 +118,9 @@ def test_environment(args_dict, operation_logger=None):
                 future = executor.submit(_execute_single_test_worker, job_args_dict, print_lock)
                 future_to_job[future] = job
             
-            # Process results as they complete with a progress bar
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
                 try:
                     results = future.result()
-                    # A result is a list of check-dictionaries
                     for res in results:
                         if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
                             all_failures.append(res)
@@ -135,7 +130,6 @@ def test_environment(args_dict, operation_logger=None):
                     all_failures.append({'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
                                          'status': 'EXCEPTION', 'error': str(e)})
 
-        # --- Final Consolidated Error Report ---
         if all_failures:
             print("\n" + "="*80)
             print("                       CONSOLIDATED ERROR REPORT")
@@ -144,7 +138,6 @@ def test_environment(args_dict, operation_logger=None):
             error_table_data = []
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                # Color the status red
                 status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
                 error_table_data.append([
                     pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'),
@@ -218,7 +211,6 @@ def test_environment(args_dict, operation_logger=None):
             logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-        # Query the database to get a definitive list of jobs based on the provided range and filters
         jobs = get_test_jobs_for_range(
             vendor=args_dict['vendor'],
             start_num=args_dict['start_pod'],
@@ -229,14 +221,12 @@ def test_environment(args_dict, operation_logger=None):
 
         if not jobs:
             err_msg = "No matching allocations found in the database for the specified criteria."
-            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-            return [{"status": "failed", "error": err_msg}]
+            logger.warning(err_msg)
+            print(f"\nInfo: {err_msg}")
+            return [{"status": "completed_no_tasks"}]
 
-        # Confirm with the user before running the discovered jobs
-        if not display_test_jobs_and_confirm(jobs, args_dict['vendor']):
-            return [{"status": "cancelled"}]
+        display_test_jobs(jobs, args_dict['vendor'])
 
-        # Execute these jobs using the same parallel execution logic as vendor-wide mode
         all_failures = []
         print_lock = threading.Lock()
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
@@ -280,7 +270,7 @@ def test_environment(args_dict, operation_logger=None):
     # --- Fallback Error ---
     err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod."
     logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-    return [{"status": "failed", "error": err_msg}] 
+    return [{"status": "failed", "error": err_msg}]
 
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace

@@ -314,7 +314,7 @@ def main():
             # Normal processing
             total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "success")
             total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "failed")
-            total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") in ["skipped", "cancelled"])
+            total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") in ["skipped", "cancelled", "completed_no_tasks"])
 
             if total_failure > 0: overall_status = "completed_with_errors"
             elif total_success > 0: overall_status = "completed"
