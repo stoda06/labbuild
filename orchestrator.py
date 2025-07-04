@@ -210,7 +210,7 @@ def vendor_setup(
         return [{"identifier": "config_error", "status": "failed", "error_message": "Missing vendor_shortcode"}]
 
     # Extract common args from dict
-    tag = args_dict.get('tag', 'untagged')
+    tag = args_dict.get('tag')
     course_name = args_dict.get('course')
     rebuild = args_dict.get('re_build', False)
     full_clone = args_dict.get('full', False)
@@ -552,7 +552,7 @@ def vendor_teardown(
         return [{"identifier": "config_error", "status": "failed", "error_message": "Missing vendor_shortcode"}]
 
     # Extract common args from dict
-    tag = args_dict.get('tag', 'untagged')
+    tag = args_dict.get('tag')
     course_name_arg = args_dict.get('course')
     course_name = course_config.get("course_name", course_name_arg) # Use config name if available
     thread_count = args_dict.get('thread', 4)

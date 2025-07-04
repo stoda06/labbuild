@@ -225,7 +225,7 @@ def main():
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument('-g', '--course', required=True, help='Course name or "?".')
     common_parser.add_argument('--host', help='Target host.')
-    common_parser.add_argument('-t', '--tag', default="untagged", help='Tag.')
+    common_parser.add_argument('-t', '--tag', required=True, help='A unique tag for the allocation group (mandatory).')
     common_parser.add_argument('-th', '--thread', type=int, default=4, help='Concurrency thread count.')
     common_parser.add_argument('-v', '--vendor', required=True, help='Vendor code (e.g., pa, cp, f5). Required.')
 

@@ -77,9 +77,10 @@ def build_args_from_form(form_data):
         # --- Basic Validation ---
         error_msg = None
         vendor_val = form_data.get('vendor')
-        if not vendor_val:
+        if not form_data.get('tag'):
+            error_msg = "Tag (-t) is required."
+        elif not form_data.get('vendor'):
             error_msg = "Vendor (-v) is required."
-
         elif command == 'manage' and not form_data.get('operation'):
              error_msg = "Manage operation (-o) is required for 'manage' command."
 
@@ -131,6 +132,9 @@ def build_args_from_dict(data: dict) -> tuple[Optional[List[str]], Optional[str]
     if not command:
         logger.error("API Error: 'command' field is missing.")
         return None, "'command' field is required."
+    
+    if not data.get('tag'):
+        return None, "'tag' field is required."
 
     args = [command] # Command first
 

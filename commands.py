@@ -184,7 +184,7 @@ def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogg
     course_arg = args_dict.get('course')
     vendor_arg = args_dict.get('vendor')
     host_arg = args_dict.get('host')
-    tag_arg = args_dict.get('tag', 'untagged') # Default already handled by argparse, but good practice here too
+    tag_arg = args_dict.get('tag') # Default already handled by argparse, but good practice here too
     thread_arg = int(args_dict.get('thread', 4)) # Use default from labbuild.py if not present
     # Handle potential None before int conversion for range/class/memory
     start_pod_arg_str = args_dict.get('start_pod')
@@ -533,7 +533,7 @@ def teardown_environment(args_dict: Dict[str, Any], operation_logger: OperationL
     course_arg = args_dict.get('course')
     vendor_arg = args_dict.get('vendor')
     host_arg = args_dict.get('host')
-    tag_arg = args_dict.get('tag', 'untagged')
+    tag_arg = args_dict.get('tag')
     start_pod_arg_str = args_dict.get('start_pod')
     start_pod_arg = int(start_pod_arg_str) if start_pod_arg_str is not None else None
     end_pod_arg_str = args_dict.get('end_pod')
