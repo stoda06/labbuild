@@ -235,6 +235,7 @@
             </ul>
         </nav>
         {% endif %}
+        {% else %}
         <p class="p-3 text-muted">No allocations found {% if current_filters.values()|select|list %} matching your
             filter criteria. <a href="{{ url_for('main.view_allocations') }}">Clear filters</a>? {% else %} in the
             database.{% endif %}</p>
