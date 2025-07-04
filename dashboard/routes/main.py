@@ -240,7 +240,6 @@ def view_allocations():
     """
     current_theme = request.cookies.get('theme', 'light')
 
-    # ... (Filter and Pagination parameter logic is unchanged) ...
     filter_tag_input = request.args.get('filter_tag', '').strip()
     filter_vendor = request.args.get('filter_vendor', '').strip()
     filter_course = request.args.get('filter_course', '').strip()
@@ -261,10 +260,7 @@ def view_allocations():
     if filter_extend == 'yes':
         mongo_query['extend'] = 'true'
     elif filter_extend == 'no':
-        # Find documents where extend is not 'true'
-        # This includes documents where it is 'false', null, or non-existent
         mongo_query['extend'] = {'$ne': 'true'}
-    # If filter_extend is empty, we don't add it to the query, so all are shown.
 
     current_filter_params = {
         'filter_tag': filter_tag_input, 'filter_vendor': filter_vendor, 'filter_course': filter_course,
@@ -285,9 +281,6 @@ def view_allocations():
                 tag_name = tag_doc.get("tag", "Unknown Tag")
                 is_extended_tag = str(tag_doc.get("extend", "false")).lower() == "true"
                 
-                # --- THIS IS THE CORRECTED LOGIC ---
-                # Iterate through all courses and pods, adding them to a flat list.
-                # The grouping will happen later, based only on the tag.
                 for course_alloc in tag_doc.get("courses", []):
                     vendor = course_alloc.get("vendor", "")
                     if filter_vendor and not re.match(f'^{re.escape(filter_vendor)}$', vendor, re.I): continue
@@ -311,24 +304,33 @@ def view_allocations():
                         else:
                             item.update({"type": "pod", "number": pod_detail.get("pod_number"), "pod_number": pod_detail.get("pod_number")})
                         
-                        # Apply number filter
                         if number_filter_int is not None:
-                            nested_pod_numbers = {p.get("pod_number") for p in item.get("nested_pods", []) if p.get("pod_number") is not None}
-                            if item.get("number") != number_filter_int and not (is_f5_class_entry and number_filter_int in nested_pod_numbers):
-                                continue # Skip if number doesn't match
+                            nested_pod_numbers = set()
+                            for p in item.get("nested_pods", []):
+                                try:
+                                    if p.get("pod_number") is not None: nested_pod_numbers.add(int(p.get("pod_number")))
+                                except (ValueError, TypeError):
+                                    pass
+                            
+                            item_number_val = None
+                            try:
+                                if item.get("number") is not None: item_number_val = int(item.get("number"))
+                            except (ValueError, TypeError):
+                                pass
+
+                            if item_number_val != number_filter_int and not (is_f5_class_entry and number_filter_int in nested_pod_numbers):
+                                continue
                         
                         all_items_matching_filters.append(item)
         except PyMongoError as e_mongo:
             flash("Error fetching data from database.", "danger")
 
-    # --- Group the flat list into a nested structure for rendering ---
     grouped_by_tag = defaultdict(list)
     for item in all_items_matching_filters:
         grouped_by_tag[item['tag']].append(item)
 
     final_groups = []
     for tag, items in grouped_by_tag.items():
-        # Use the metadata from the VERY FIRST item in the list for the summary display
         first_item = items[0]
         summary = {
             "tag": tag,
@@ -338,12 +340,24 @@ def view_allocations():
             "trainer_name": first_item.get('trainer_name', 'N/A'),
             "apm_username": first_item.get('apm_username', 'N/A'),
             "apm_password": first_item.get('apm_password', 'N/A'),
-            "course_names": sorted(list({item['course_name'] for item in items})) # Get all unique course names
+            "course_names": sorted(list({item['course_name'] for item in items}))
         }
         
-        # Calculate Pod Range for Summary
-        all_pod_numbers = {item['pod_number'] for item in items if item.get('pod_number') is not None}
-        all_class_numbers = {item['class_number'] for item in items if item.get('class_number') is not None}
+        all_pod_numbers = set()
+        all_class_numbers = set()
+        
+        for item in items:
+            try:
+                if item.get('pod_number') is not None:
+                    all_pod_numbers.add(int(item['pod_number']))
+            except (ValueError, TypeError):
+                logger.warning(f"Could not convert pod_number '{item.get('pod_number')}' to int for tag '{tag}'.")
+            
+            try:
+                if item.get('class_number') is not None:
+                    all_class_numbers.add(int(item['class_number']))
+            except (ValueError, TypeError):
+                logger.warning(f"Could not convert class_number '{item.get('class_number')}' to int for tag '{tag}'.")
         
         pod_range_str = ""
         if all_pod_numbers:
@@ -357,15 +371,25 @@ def view_allocations():
         
         summary['pod_range_display'] = " | ".join(filter(None, [class_range_str, pod_range_str]))
         
-        # Sort details within the group
-        items.sort(key=lambda item: (item.get('class_number') or 9999, -1 if item.get('type') == 'f5_class' else (item.get('pod_number') or 9999)))
+        # --- THIS IS THE FIX ---
+        # Helper function to safely convert values to integers for sorting
+        def safe_int(value, default=9999):
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                return default
+
+        # Apply safe conversion in the sort key
+        items.sort(key=lambda item: (
+            safe_int(item.get('class_number'), 9999), 
+            -1 if item.get('type') == 'f5_class' else safe_int(item.get('pod_number'), 9999)
+        ))
+        # --- END OF FIX ---
 
         final_groups.append({"summary": summary, "details": items})
 
-    # Sort final groups by tag name
     final_groups.sort(key=lambda g: g['summary']['tag'].lower())
         
-    # Paginate the final list of groups
     total_groups_matching_filters = len(final_groups)
     total_pages = math.ceil(total_groups_matching_filters / groups_per_page) if groups_per_page > 0 else 1
     page = max(1, min(page, total_pages))
