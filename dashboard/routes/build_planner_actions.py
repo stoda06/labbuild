@@ -962,7 +962,7 @@ def execute_scheduled_builds():
                 f"Schedule Option = {schedule_option}")
 
     schedule_start_time_str: Optional[str] = None
-    stagger_minutes: int = 30
+    stagger_minutes: int = 3
 
     if schedule_option in ['now', 'staggered']:
         # Always apply a short auto-stagger when 'now' is chosen
@@ -979,7 +979,7 @@ def execute_scheduled_builds():
             if stagger_minutes < 1:
                 stagger_minutes = 1
         except (ValueError, TypeError):
-            stagger_minutes = 30
+            stagger_minutes = 3
 
     if not confirmed_plan_json:
         flash("No confirmed build plan received to schedule.", "danger")
