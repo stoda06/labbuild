@@ -1,7 +1,7 @@
 {# dashboard/templates/trainer_pod_review.html #}
 {% extends 'base.html' %}
 
-{% block title %}Review Trainer Pod Allocation{% endblock %}
+{% block title %}Review Trainer Pod Groups{% endblock %}
 
 {% block head %}
     {{ super() }}
@@ -11,7 +11,7 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1>Review Trainer Pod Allocation (Batch ID: {{ batch_review_id }})</h1>
+   <h1>Review Trainer Pod Groups (Batch ID: {{ batch_review_id }})</h1>
    <a href="javascript:history.back()" 
       onclick="return confirm('Are you sure? Changes on this page will be lost, returning to student assignments.');" 
       class="btn btn-sm btn-outline-secondary">
@@ -20,90 +20,74 @@
 </div>
 
 <div class="card">
-    <div class="card-header">Step 2: Assign or Skip Trainer Pods</div>
+    <div class="card-header">Step 2: Assign or Skip Trainer Pod Groups</div>
     <div class="card-body">
-        {% if courses_and_trainer_pods %}
-            <p>For each course, decide if a trainer pod should be built. Adjust host/pod if necessary.</p>
+        {% if trainer_build_proposals %}
+            <p>The following Trainer Pod groups have been consolidated. Decide if each group should be built and adjust assignments if necessary.</p>
             <div class="table-responsive">
                 <table class="table table-sm table-striped table-bordered review-table" id="trainerReviewTable">
                     <thead class="table-light">
                         <tr>
-                            <th class="col-sf-code">SF Course Code</th>
+                            <th class="col-trainer-build-toggle">Build Group?</th>
                             <th class="col-lb-course">LabBuild Course</th>
-                            <th class="col-vendor">Vendor</th>
-                            <th class="col-trainer-build-toggle">Build Trainer?</th>
-                            <th class="col-interactive-assignments-trainer">Trainer Pod Assignment</th>
-                            <th class="col-total-interactive-memory">Est. Mem (GB)</th> 
+                            <th class="col-tag">Tag</th>
+                            <th class="col-pods-needed">Pods Needed</th>
+                            <th class="col-interactive-assignments-trainer">Proposed Assignment(s)</th>
+                            <th class="col-total-interactive-memory">Total Est. Mem (GB)</th> 
                         </tr>
                     </thead>
                     <tbody>
-                        {# --- MODIFICATION START: Simplified loop and data access --- #}
-                        {# The loop now iterates over each combined 'item' and accesses keys directly #}
-                        {% for item in courses_and_trainer_pods %}
-                            <tr class="trainer-data-row" 
-                                data-interim-doc-id="{{ item._id }}"
-                                data-labbuild-course="{{ item.trainer_labbuild_course or '' }}" 
-                                data-memory-one-pod="{{ item.trainer_memory_gb_one_pod | default(0.0) }}"
-                                data-sf-course-code-trainer="{{ item.sf_course_code }}-TP"
-                                data-vendor="{{ item.vendor | lower if item.vendor else '' }}">
+                        {% for group in trainer_build_proposals %}
+                            <tr class="trainer-group-row" 
+                                data-group-id="{{ group.group_id }}"
+                                data-labbuild-course="{{ group.labbuild_course or '' }}" 
+                                data-memory-one-pod="{{ group.memory_gb_one_pod | default(0.0) }}"
+                                data-tag="{{ group.tag }}"
+                                data-vendor="{{ group.vendor | lower if group.vendor else '' }}"
+                                data-num-pods="{{ group.num_pods }}"
+                                data-sf-codes-in-group="{{ group.sf_codes_in_group | join(',') }}"
+                                data-sf-course-types-in-group="{{ group.sf_course_types_in_group | join(',') }}">
 
-                                <td class="col-sf-code" title="{{ item.sf_course_code }}">
-                                    <strong>{{ item.sf_course_code }}</strong>
-                                    <small class="d-block text-muted">{{ item.sf_trainer_name }}</small>
-                                </td>
-                                <td class="col-lb-course" title="{{ item.trainer_labbuild_course or 'N/A' }}">{{ item.trainer_labbuild_course or 'N/A' }}</td>
-                                <td class="col-vendor">{{ item.vendor | upper if item.vendor else 'N/A'}}</td>
-                                
                                 <td class="col-trainer-build-toggle">
                                     <div class="form-check d-flex justify-content-center">
-                                        <input class="form-check-input build-trainer-checkbox" type="checkbox" 
-                                               value="yes" id="build_trainer_{{ loop.index0 }}"
-                                               {% if not item.trainer_assignment_warning or "capacity" in (item.trainer_assignment_warning or "") %}
-                                                   checked 
-                                               {% endif %}
-                                               {% if item.trainer_assignment_warning and "Disabled by Rule" in item.trainer_assignment_warning %}
-                                                   disabled title="{{item.trainer_assignment_warning}}"
-                                               {% endif %}>
+                                        <input class="form-check-input build-group-checkbox" type="checkbox" 
+                                               id="build_group_{{ loop.index0 }}" checked>
                                     </div>
                                 </td>
-
+                                <td class="col-lb-course" title="{{ group.labbuild_course or 'N/A' }}">{{ group.labbuild_course or 'N/A' }}</td>
+                                <td class="col-tag"><code>{{ group.tag }}</code></td>
+                                <td class="col-pods-needed text-center">{{ group.num_pods }}</td>
+                                
                                 <td class="col-interactive-assignments-trainer interactive-assignments-cell">
-                                    <div class="assignment-sub-row {% if item.trainer_assignment_warning and 'Disabled by Rule' in item.trainer_assignment_warning %}disabled-inputs{% endif %}">
-                                        <select name="host_assignment_tp_{{ loop.index0 }}" 
-                                                class="form-select form-select-sm sub-host-select">
+                                    {# This now loops through potentially multiple assignments if a group is split across hosts #}
+                                    {% for sub_row_data in group.assignments %}
+                                    <div class="assignment-sub-row">
+                                        <select name="host_assignment_tp_{{ loop.index0 }}" class="form-select form-select-sm sub-host-select">
                                             <option value="">-- Host --</option>
-                                            {% set assigned_host = item.trainer_assignment.host if item.trainer_assignment else '' %}
                                             {% for host_name_opt_tp in all_hosts %}
-                                            <option value="{{ host_name_opt_tp }}" {% if assigned_host == host_name_opt_tp %}selected{% endif %}>
+                                            <option value="{{ host_name_opt_tp }}" {% if sub_row_data.host == host_name_opt_tp %}selected{% endif %}>
                                                 {{ host_name_opt_tp }}
                                             </option>
                                             {% endfor %}
                                         </select>
-                                        <input type="number" name="start_pod_tp_{{ loop.index0 }}" 
-                                               class="form-control form-control-sm sub-pod-input start-pod-input" 
-                                               value="{{ item.trainer_assignment.start_pod if item.trainer_assignment else '1' }}" min="1" placeholder="Pod #">
-                                        <input type="number" name="end_pod_tp_{{ loop.index0 }}" 
-                                               class="form-control form-control-sm sub-pod-input end-pod-input" 
-                                               value="{{ item.trainer_assignment.start_pod if item.trainer_assignment else '1' }}" min="1" readonly 
-                                               title="End pod is same as start for a single trainer pod">
-                                        {% if item.trainer_assignment_warning and "Disabled by Rule" not in item.trainer_assignment_warning %}
-                                            <span class="error-icon-container" title="{{item.trainer_assignment_warning}}">
-                                                <i class="fas fa-exclamation-triangle"></i>
-                                            </span>
-                                        {% endif %}
+                                        <input type="number" class="form-control form-control-sm sub-pod-input start-pod-input" 
+                                               value="{{ sub_row_data.start_pod }}" min="1" placeholder="Start">
+                                        <input type="number" class="form-control form-control-sm sub-pod-input end-pod-input" 
+                                               value="{{ sub_row_data.end_pod }}" min="1" placeholder="End">
                                     </div>
-                                     {% if item.trainer_assignment_warning and "Disabled by Rule" in item.trainer_assignment_warning %}
-                                        <small class="text-muted fst-italic">{{item.trainer_assignment_warning}}</small>
+                                    {% else %}
+                                        <div class="text-danger">No assignment proposed.</div>
+                                    {% endfor %}
+                                    {% if group.warning %}
+                                        <small class="text-warning fst-italic d-block mt-1">{{group.warning}}</small>
                                     {% endif %}
                                 </td>
+
                                 <td class="col-total-interactive-memory text-end">
-                                    <span class="total-course-memory-display">
-                                        {% if item.trainer_assignment_warning and "Disabled by Rule" in item.trainer_assignment_warning %}N/A{% else %}0.00{% endif %}
-                                    </span> GB
+                                    <span class="total-course-memory-display">0.00</span> GB
                                 </td> 
                             </tr>
                         {% endfor %}
-                        {# --- MODIFICATION END --- #}
                     </tbody>
                 </table>
             </div>
@@ -124,16 +108,13 @@
                 </form>
             </div>
         {% else %}
-            <div class="alert alert-warning"> No course data available for trainer pod allocation. Batch ID: {{ batch_review_id or "Unknown" }}</div>
-             <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary">Back to Upcoming Courses</a>
+            <div class="alert alert-info">No trainer pods were proposed for this build batch.</div>
+            <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-secondary">Back to Upcoming Courses</a>
         {% endif %}
     </div> 
 </div> 
 
 {# Embedded data for JavaScript #}
-<script id="courseMemoryDataTrainer" type="application/json">
-    {{ course_configs_for_memory | tojson | safe }}
-</script>
 <script id="memoryFactorDataTrainer" type="application/json">
     {{ {"factor": subsequent_pod_memory_factor} | tojson | safe }}
 </script>

@@ -7,136 +7,134 @@ document.addEventListener('DOMContentLoaded', function() {
         return;
     }
 
-    let COURSE_MEMORY_STORE_TP = [];
+    // --- Load embedded data ---
     let MEMORY_FACTOR_TP = 0.5;
-
     try {
-        COURSE_MEMORY_STORE_TP = JSON.parse(document.getElementById('courseMemoryDataTrainer')?.textContent || '[]');
         MEMORY_FACTOR_TP = JSON.parse(document.getElementById('memoryFactorDataTrainer')?.textContent || '{"factor":0.5}').factor;
     } catch (e) {
-        console.error("Error parsing embedded trainer review data:", e);
+        console.error("Error parsing memory factor data:", e);
     }
 
-    function getLabbuildCourseMemoryTP(lbCourseName) {
-        if (!lbCourseName || !COURSE_MEMORY_STORE_TP.length) return 0;
-        const config = COURSE_MEMORY_STORE_TP.find(c => c.course_name === lbCourseName);
-        if (config) {
-            const memValStr = config.memory_gb_per_pod !== undefined ? String(config.memory_gb_per_pod) : String(config.memory);
-            const parsedMem = parseFloat(memValStr);
-            return !isNaN(parsedMem) && parsedMem >= 0 ? parsedMem : 0;
-        }
-        return 0;
-    }
+    // --- Helper to calculate memory for a single row (which represents a group) ---
+    function calculateGroupMemory(groupRowEl) {
+        const memoryDisplayEl = groupRowEl.querySelector('.total-course-memory-display');
+        const buildCheckbox = groupRowEl.querySelector('.build-group-checkbox');
+        if (!memoryDisplayEl || !buildCheckbox) return;
 
-    function calculateAndDisplayTrainerPodMemory(trainerRowEl) {
-        const memoryDisplayEl = trainerRowEl.querySelector('.total-course-memory-display');
-        const startPodInput = trainerRowEl.querySelector('.start-pod-input');
-        const endPodInput = trainerRowEl.querySelector('.end-pod-input');
-        const buildCheckbox = trainerRowEl.querySelector('.build-trainer-checkbox');
-
-        if (!memoryDisplayEl || !startPodInput || !endPodInput) return;
-        
-        // If the build checkbox is unchecked or disabled, show N/A
-        if (!buildCheckbox || !buildCheckbox.checked) {
+        if (!buildCheckbox.checked) {
             memoryDisplayEl.textContent = 'N/A';
             return;
         }
 
-        const memoryPerPod = parseFloat(trainerRowEl.dataset.memoryOnePod);
-        startPodInput.classList.toggle('is-invalid', isNaN(parseInt(startPodInput.value, 10)) || parseInt(startPodInput.value, 10) < 1);
-        
-        if (startPodInput.classList.contains('is-invalid') || isNaN(memoryPerPod) || memoryPerPod <= 0) {
+        const memoryPerPod = parseFloat(groupRowEl.dataset.memoryOnePod);
+        if (isNaN(memoryPerPod) || memoryPerPod <= 0) {
             memoryDisplayEl.textContent = '0.00';
             return;
         }
-        // For a single trainer pod, memory is just the base memory. No factor applied.
-        memoryDisplayEl.textContent = memoryPerPod.toFixed(2);
-    }
 
-    function toggleTrainerInputs(trainerRowElement, enable) {
-        const subRow = trainerRowElement.querySelector('.assignment-sub-row');
-        const hostSelect = trainerRowElement.querySelector('.sub-host-select');
-        const startPodInput = trainerRowElement.querySelector('.start-pod-input');
+        let totalPodsInGroup = 0;
+        let isRowValid = true;
+
+        groupRowEl.querySelectorAll('.assignment-sub-row').forEach(subRow => {
+            const startPodInput = subRow.querySelector('.start-pod-input');
+            const endPodInput = subRow.querySelector('.end-pod-input');
+            const startVal = parseInt(startPodInput.value, 10);
+            const endVal = parseInt(endPodInput.value, 10);
+
+            startPodInput.classList.toggle('is-invalid', isNaN(startVal) || startVal < 1);
+            if (isNaN(startVal) || startVal < 1) isRowValid = false;
+
+            endPodInput.classList.toggle('is-invalid', isNaN(endVal) || endVal < 1 || endVal < startVal);
+            if (isNaN(endVal) || endVal < 1 || endVal < startVal) isRowValid = false;
+
+            if (isRowValid) {
+                totalPodsInGroup += (endVal - startVal + 1);
+            }
+        });
+
+        if (!isRowValid) {
+            memoryDisplayEl.textContent = '0.00';
+            return;
+        }
         
-        if (subRow) subRow.classList.toggle('disabled-inputs', !enable);
-        if (hostSelect) hostSelect.disabled = !enable;
-        if (startPodInput) startPodInput.disabled = !enable;
-
-        calculateAndDisplayTrainerPodMemory(trainerRowElement);
+        // Use the total number of pods from all assignment segments for the calculation
+        const totalMemory = totalPodsInGroup > 0
+            ? (memoryPerPod + (totalPodsInGroup - 1) * memoryPerPod * MEMORY_FACTOR_TP)
+            : 0;
+            
+        memoryDisplayEl.textContent = totalMemory.toFixed(2);
     }
     
-    trainerReviewTable.querySelectorAll('tbody tr.trainer-data-row').forEach(trainerRow => {
-        const buildCheckbox = trainerRow.querySelector('.build-trainer-checkbox');
-        const startPodInput = trainerRow.querySelector('.start-pod-input');
-        const endPodInput = trainerRow.querySelector('.end-pod-input'); 
-        const hostSelect = trainerRow.querySelector('.sub-host-select');
+    // --- Helper to enable/disable inputs for a row ---
+    function toggleGroupInputs(groupRowEl, enable) {
+        groupRowEl.querySelectorAll('.sub-host-select, .sub-pod-input').forEach(input => {
+            input.disabled = !enable;
+        });
+        calculateGroupMemory(groupRowEl);
+    }
+
+    // --- Main initialization loop for each group row ---
+    trainerReviewTable.querySelectorAll('tbody tr.trainer-group-row').forEach(groupRow => {
+        const buildCheckbox = groupRow.querySelector('.build-group-checkbox');
         
-        if (buildCheckbox && !buildCheckbox.disabled) {
+        if (buildCheckbox) {
             buildCheckbox.addEventListener('change', function() {
-                toggleTrainerInputs(trainerRow, this.checked);
+                toggleGroupInputs(groupRow, this.checked);
             });
         }
         
-        if (startPodInput && endPodInput) {
-            startPodInput.addEventListener('input', function() {
-                if (!startPodInput.disabled) {
-                    endPodInput.value = this.value; // Keep end pod in sync with start
-                    calculateAndDisplayTrainerPodMemory(trainerRow);
-                }
+        groupRow.querySelectorAll('.sub-pod-input, .sub-host-select').forEach(input => {
+            input.addEventListener('input', () => {
+                calculateGroupMemory(groupRow);
             });
-        }
-
-        if (hostSelect) {
-             hostSelect.addEventListener('change', () => {
-                 if (!hostSelect.disabled) calculateAndDisplayTrainerPodMemory(trainerRow);
-             });
-        }
-
-        // Initial setup on page load
-        if(buildCheckbox) {
-            toggleTrainerInputs(trainerRow, buildCheckbox.checked);
-        }
+        });
+        
+        // Initial state setup
+        toggleGroupInputs(groupRow, buildCheckbox.checked);
     });
 
+    // --- Form submission logic ---
     const finalizeAndProceedFormElement = document.getElementById('finalizeAndProceedForm');
     if (finalizeAndProceedFormElement) {
         finalizeAndProceedFormElement.addEventListener('submit', function(event) {
             const finalTrainerAssignments = [];
             let isFormValid = true;
 
-            document.querySelectorAll('#trainerReviewTable tbody tr.trainer-data-row').forEach(trainerRow => {
+            document.querySelectorAll('#trainerReviewTable tbody tr.trainer-group-row').forEach(groupRow => {
                 if (!isFormValid) return;
 
-                const buildCheckbox = trainerRow.querySelector('.build-trainer-checkbox');
-                const sfTrainerCode = trainerRow.dataset.sfCourseCodeTrainer;
-                
+                const buildCheckbox = groupRow.querySelector('.build-group-checkbox');
                 let assignmentPayload = {
-                    interim_doc_id: trainerRow.dataset.interimDocId,
+                    group_id: groupRow.dataset.groupId,
                     build_trainer: buildCheckbox.checked,
-                    labbuild_course: trainerRow.dataset.labbuildCourse,
-                    memory_gb_one_pod: parseFloat(trainerRow.dataset.memoryOnePod),
+                    tag: groupRow.dataset.tag,
+                    labbuild_course: groupRow.dataset.labbuildCourse,
+                    vendor: groupRow.dataset.vendor,
+                    num_pods: parseInt(groupRow.dataset.numPods, 10),
+                    sf_codes_in_group: (groupRow.dataset.sfCodesInGroup || "").split(','),
+                    sf_course_types_in_group: (groupRow.dataset.sfCourseTypesInGroup || "").split(','),
+                    memory_gb_one_pod: parseFloat(groupRow.dataset.memoryOnePod),
                     interactive_assignments: [],
-                    error_message: trainerRow.querySelector('.error-icon-container')?.title || null
+                    error_message: groupRow.querySelector('.text-warning')?.textContent || null
                 };
 
-                if (buildCheckbox.disabled) {
-                    assignmentPayload.build_trainer = false;
-                    assignmentPayload.error_message = trainerRow.querySelector('.error-icon-container')?.title || "Disabled by rule";
-                } else if (buildCheckbox.checked) {
-                    const hostSelect = trainerRow.querySelector('.sub-host-select');
-                    const startPodInput = trainerRow.querySelector('.start-pod-input');
-                    calculateAndDisplayTrainerPodMemory(trainerRow);
-                    
-                    if (!hostSelect.value) {
-                        alert(`Host not selected for Trainer Pod: ${sfTrainerCode}.`);
-                        hostSelect.focus(); isFormValid = false; return;
-                    }
-                    if (startPodInput.classList.contains('is-invalid')) {
-                        alert(`Invalid pod number for Trainer Pod: ${sfTrainerCode}.`);
-                        startPodInput.focus(); isFormValid = false; return;
-                    }
-                    const podValue = parseInt(startPodInput.value, 10);
-                    assignmentPayload.interactive_assignments = [{ host: hostSelect.value, start_pod: podValue, end_pod: podValue }];
+                if (buildCheckbox.checked) {
+                    groupRow.querySelectorAll('.assignment-sub-row').forEach(subRow => {
+                        const hostSelect = subRow.querySelector('.sub-host-select');
+                        const startPodInput = subRow.querySelector('.start-pod-input');
+                        const endPodInput = subRow.querySelector('.end-pod-input');
+                        
+                        if (!hostSelect.value || startPodInput.classList.contains('is-invalid') || endPodInput.classList.contains('is-invalid')) {
+                            alert(`Invalid host or pod range for group: ${assignmentPayload.tag}`);
+                            isFormValid = false;
+                        } else {
+                            assignmentPayload.interactive_assignments.push({
+                                host: hostSelect.value,
+                                start_pod: parseInt(startPodInput.value, 10),
+                                end_pod: parseInt(endPodInput.value, 10)
+                            });
+                        }
+                    });
                 }
                 
                 finalTrainerAssignments.push(assignmentPayload);
@@ -146,11 +144,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 event.preventDefault(); return;
             }
             
-            const finalTrainerAssignmentsInput = document.getElementById('finalTrainerAssignmentsInput');
-            if (finalTrainerAssignmentsInput) {
-                finalTrainerAssignmentsInput.value = JSON.stringify(finalTrainerAssignments);
+            const finalInput = document.getElementById('finalTrainerAssignmentsInput');
+            if (finalInput) {
+                finalInput.value = JSON.stringify(finalTrainerAssignments);
             } else {
-                console.error("Hidden input #finalTrainerAssignmentsInput not found."); event.preventDefault(); return;
+                event.preventDefault();
+                console.error("Hidden input #finalTrainerAssignmentsInput not found!");
             }
         });
     }

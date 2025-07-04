@@ -61,58 +61,65 @@ def _generate_apm_data_for_plan(
         # Fallback to the LabBuild course name if no specific rule matches
         return lb_course_name or "unknown-version"
 
+    def get_expanded_pods(assignments, vendor):
+        expanded_pods = set()
+        for asgn in assignments:
+            s, e = asgn.get("start_pod"), asgn.get("end_pod")
+            if s is not None and e is not None:
+                for pod_num in range(int(s), int(e) + 1):
+                    if vendor == 'nu':
+                        start_logical = (pod_num - 1) * 4 + 1
+                        end_logical = pod_num * 4
+                        for logical_pod in range(start_logical, end_logical + 1):
+                            expanded_pods.add(logical_pod)
+                    else:
+                        expanded_pods.add(pod_num)
+        return expanded_pods
+    
     # --- Step 1: Build the desired state from the build plan ---
     desired_apm_state = defaultdict(lambda: {"all_pod_numbers": set()})
+    
     for item in final_plan_items:
-        sf_code = item.get("original_sf_course_code") or item.get("sf_course_code")
-        vendor = (item.get("vendor", "xx") or "xx").lower()
-        if not sf_code: continue
+        # --- REVISED LOGIC to correctly distinguish doc types ---
+        is_trainer_group_doc = item.get("sf_trainer_name") == "Trainer Pods"
         
-        def get_expanded_pods(assignments):
-            expanded_pods = set()
-            for asgn in assignments:
-                s, e = asgn.get("start_pod"), asgn.get("end_pod")
-                if s is not None and e is not None:
-                    for pod_num in range(int(s), int(e) + 1):
-                        if vendor == 'nu':
-                            start_logical = (pod_num - 1) * 4 + 1
-                            end_logical = pod_num * 4
-                            for logical_pod in range(start_logical, end_logical + 1):
-                                expanded_pods.add(logical_pod)
-                        else:
-                            expanded_pods.add(pod_num)
-            return expanded_pods
+        if is_trainer_group_doc:
+            # --- This is a consolidated trainer pod document ---
+            key_tp = item.get("sf_course_code") # This is the tag, e.g., "CCSA-R81.20-Trainer Pod"
+            if not key_tp: continue
 
-        # Process student pods
-        if item.get("assignments"):
-            if "details" not in desired_apm_state[sf_code]:
-                # --- HIGHLIGHTED MODIFICATION: Store correct source fields ---
-                desired_apm_state[sf_code]["details"] = {
-                    "trainer": item.get("sf_trainer_name", "N/A"),
-                    "type": item.get("sf_course_type", "Course"),
-                    "lb_course_name": item.get("final_labbuild_course", item.get("labbuild_course", "N/A")),
-                    "sf_course_code": sf_code,
-                    "vendor": vendor
-                }
-                # --- END MODIFICATION ---
-            student_pods = get_expanded_pods(item.get("assignments", []))
-            desired_apm_state[sf_code]["all_pod_numbers"].update(student_pods)
-        
-        # Process trainer pods
-        if item.get("trainer_assignment"):
-            key_tp = f"{sf_code}-TP"
             if "details" not in desired_apm_state[key_tp]:
-                # --- HIGHLIGHTED MODIFICATION: Store correct source fields ---
+                # --- THIS IS THE FIX: Use the new field to build the description ---
+                course_types_str = ", ".join(item.get("related_student_course_types", ["Trainer Setup"]))
                 desired_apm_state[key_tp]["details"] = {
                     "trainer": "Trainer Pods",
-                    "type": item.get("sf_course_type", "Trainer Setup"),
-                    "lb_course_name": item.get("trainer_labbuild_course", "N/A"),
-                    "sf_course_code": sf_code,
-                    "vendor": vendor
+                    "type": course_types_str, # Use the collected course types
+                    "lb_course_name": item.get("final_labbuild_course", "N/A"),
+                    "sf_course_code": key_tp,
+                    "vendor": item.get("vendor", "xx").lower()
                 }
-                # --- END MODIFICATION ---
-            trainer_pods = get_expanded_pods(item.get("trainer_assignment", []))
+            
+            # Add all pods from the trainer assignments
+            trainer_pods = get_expanded_pods(item.get("assignments", []), item.get("vendor"))
             desired_apm_state[key_tp]["all_pod_numbers"].update(trainer_pods)
+
+        else:
+            # --- This is a student document ---
+            sf_code = item.get("original_sf_course_code") or item.get("sf_course_code")
+            vendor = (item.get("vendor", "xx") or "xx").lower()
+            if not sf_code: continue
+
+            if item.get("assignments"):
+                if "details" not in desired_apm_state[sf_code]:
+                    desired_apm_state[sf_code]["details"] = {
+                        "trainer": item.get("sf_trainer_name", "N/A"),
+                        "type": item.get("sf_course_type", "Course"),
+                        "lb_course_name": item.get("final_labbuild_course", item.get("labbuild_course", "N/A")),
+                        "sf_course_code": sf_code,
+                        "vendor": vendor
+                    }
+                student_pods = get_expanded_pods(item.get("assignments", []), vendor)
+                desired_apm_state[sf_code]["all_pod_numbers"].update(student_pods)
 
     # --- Step 2: Finalize the desired state with passwords, ranges, and correct version ---
     final_desired_state: Dict[str, Dict[str, Any]] = {}

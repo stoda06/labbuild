@@ -151,13 +151,18 @@ def _generate_email_previews(all_review_items: List[Dict[str, Any]]) -> List[Dic
         # Format date display
         start_date_str, end_date_str = first_item.get("start_date"), first_item.get("end_date")
         date_range_display, end_day_abbr = "N/A", "N/A"
+        
         try:
-            start_dt = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
-            end_dt = datetime.datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
-            start_day, end_day = start_dt.strftime("%a"), end_dt.strftime("%a")
-            date_range_display = f"{start_day}-{end_day}" if start_day != end_day else start_day
-            end_day_abbr = end_day
-        except (ValueError, TypeError):
+            # Check if strings are not None or empty before trying to process them
+            if start_date_str and end_date_str:
+                start_dt = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+                end_dt = datetime.datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
+                start_day, end_day = start_dt.strftime("%a"), end_dt.strftime("%a")
+                date_range_display = f"{start_day}-{end_day}" if start_day != end_day else start_day
+                end_day_abbr = end_day
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning(f"Could not parse dates for email preview for SF Code {sf_code}: {e}")
+            # Keep default 'N/A' values if parsing fails
             pass
 
         # Assemble the final data object for this email

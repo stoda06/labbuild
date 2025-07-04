@@ -37,6 +37,92 @@ bp = Blueprint('build_planner_actions', __name__, url_prefix='/build-planner')
 logger = logging.getLogger('dashboard.routes.build_planner')
 
 
+def _propose_assignments(
+    num_pods_to_allocate: int,
+    hosts_to_try: List[str],
+    memory_per_pod: float,
+    vendor_code: str,
+    start_pod_suggestion: int,
+    pods_assigned_in_this_batch: Dict[str, set],
+    db_locked_pods: Dict[str, set],
+    current_host_capacities_gb: Dict[str, float]
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    assignments: List[Dict[str, Any]] = []
+    warning_message: Optional[str] = None
+    
+    if num_pods_to_allocate <= 0: return [], None
+    if memory_per_pod <= 0: return [], "Memory for LabBuild course is 0, cannot allocate."
+    
+    # Flatten host list in case it's nested
+    flat_hosts_list = []
+    if isinstance(hosts_to_try, list):
+        for item in hosts_to_try:
+            if isinstance(item, str): flat_hosts_list.append(item)
+            elif isinstance(item, list): flat_hosts_list.extend([str(sub_item) for sub_item in item if isinstance(sub_item, str)])
+    elif isinstance(hosts_to_try, str): flat_hosts_list.append(hosts_to_try)
+    
+    unavailable_pods = db_locked_pods.get(vendor_code, set()).union(pods_assigned_in_this_batch.get(vendor_code, set()))
+    
+    # Try to find one contiguous block on the best host first
+    for host_target in flat_hosts_list:
+        candidate_start_pod = start_pod_suggestion
+        attempts = 0
+        while attempts < 1000: # Safety break for infinite loops
+            attempts += 1
+            potential_range = range(candidate_start_pod, candidate_start_pod + num_pods_to_allocate)
+            first_conflict = next((p for p in potential_range if p in unavailable_pods), -1)
+            
+            if first_conflict == -1:
+                # Found a contiguous block
+                start_pod, end_pod = potential_range.start, potential_range.stop - 1
+                memory_needed = memory_per_pod + (num_pods_to_allocate - 1) * memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+                host_capacity = current_host_capacities_gb.get(host_target, 0.0)
+                
+                if host_capacity >= memory_needed:
+                    assignments.append({"host": host_target, "start_pod": start_pod, "end_pod": end_pod})
+                    for i in range(start_pod, end_pod + 1): pods_assigned_in_this_batch[vendor_code].add(i)
+                    current_host_capacities_gb[host_target] -= memory_needed
+                    return assignments, None # Ideal assignment found
+                break # Stop searching on this host if it doesn't have memory
+            else:
+                candidate_start_pod = first_conflict + 1
+    
+    # If no ideal contiguous block was found, fall back to splitting across hosts
+    warning_message = "Could not find a single host with enough capacity for a contiguous block. Splitting assignment."
+    pods_left_to_assign = num_pods_to_allocate
+    for host_target in flat_hosts_list:
+        if pods_left_to_assign <= 0: break
+        
+        while pods_left_to_assign > 0:
+            search_start_pod = start_pod_suggestion
+            while search_start_pod in unavailable_pods: search_start_pod += 1
+            
+            # Find the largest possible contiguous block on this host
+            potential_block_size = 0
+            for i in range(pods_left_to_assign):
+                if (search_start_pod + i) in unavailable_pods: break
+                potential_block_size += 1
+
+            if potential_block_size > 0:
+                mem_needed = memory_per_pod + (potential_block_size - 1) * memory_per_pod * SUBSEQUENT_POD_MEMORY_FACTOR
+                if current_host_capacities_gb.get(host_target, 0.0) >= mem_needed:
+                    start_pod, end_pod = search_start_pod, search_start_pod + potential_block_size - 1
+                    assignments.append({"host": host_target, "start_pod": start_pod, "end_pod": end_pod})
+                    current_host_capacities_gb[host_target] -= mem_needed
+                    for i in range(start_pod, end_pod + 1): unavailable_pods.add(i)
+                    pods_left_to_assign -= potential_block_size
+                else:
+                    break # Not enough memory on this host for this block, try next host
+            else:
+                break # No free pods on this host starting from suggestion, try next host
+
+    if pods_left_to_assign > 0:
+        warn_final = f"Could not allocate all pods; {pods_left_to_assign} remain unassigned."
+        warning_message = (warning_message + " " if warning_message else "") + warn_final
+
+    return assignments, warning_message.strip() if warning_message else None
+
+
 @bp.route('/build-row', methods=['POST'])
 def build_row():
     """Handles 'Build' action from the upcoming courses page."""
@@ -699,58 +785,150 @@ def prepare_trainer_pods():
         if not isinstance(student_plan_data, list): raise ValueError
     except (json.JSONDecodeError, ValueError):
         flash("Error processing submitted student assignments.", "danger")
-        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+        return redirect(url_for('build_planner_actions.intermediate_build_review', batch_review_id=batch_review_id))
 
+    # This now returns the full, updated documents from the database
     confirmed_student_courses, err = _update_finalized_student_assignments(batch_review_id, student_plan_data)
     if err:
-        flash(err, "danger"); return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
-
-    confirmed_student_courses.sort(key=lambda x: (x.get('vendor', 'zzz'), x.get('sf_start_date', '')))
+        flash(err, "danger"); return redirect(url_for('build_planner_actions.intermediate_build_review', batch_review_id=batch_review_id))
 
     prep_data, err = _prepare_data_for_trainer_logic(confirmed_student_courses)
     if err:
-        flash(err, "danger"); return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+        flash(err, "danger"); return redirect(url_for('build_planner_actions.intermediate_build_review', batch_review_id=batch_review_id))
 
+    # Group student courses by LabBuild Course Name
+    grouped_by_lb_course = defaultdict(list)
+    for course in confirmed_student_courses:
+        lb_course = course.get("final_labbuild_course")
+        if lb_course:
+            grouped_by_lb_course[lb_course].append(course)
+    
+    trainer_build_proposals = []
+    
     batch_trainer_state = {
         "working_host_caps_gb": prep_data["working_host_caps_gb"],
-        "taken_pods_vendor": prep_data["taken_pods_vendor"],
-        "lb_courses_on_host": prep_data["lb_courses_on_host"],
-        "vendor_pod_cursors": defaultdict(lambda: 100)
+        "pods_assigned": prep_data["taken_pods_vendor"],
+        "lb_courses_on_host": prep_data["lb_courses_on_host"]
     }
-    
-    trainer_updates_for_db = []
-    display_items_for_template = []
-    
-    for student_doc in confirmed_student_courses:
-        trainer_payload, trainer_display_data = _propose_trainer_pod_for_course(student_doc, prep_data, batch_trainer_state)
-        trainer_updates_for_db.append({"_id": student_doc["_id"], "payload": trainer_payload})
-        student_doc.update(trainer_payload)
-        display_items_for_template.append(student_doc)
 
-    if not _save_trainer_proposals(trainer_updates_for_db, batch_review_id):
-        return redirect(url_for('actions.intermediate_build_review', batch_review_id=batch_review_id))
+    for lb_course, courses_in_group in grouped_by_lb_course.items():
+        num_pods_needed = len(courses_in_group)
+        if num_pods_needed == 0: continue
+
+        first_course_in_group = courses_in_group[0]
+        vendor = first_course_in_group.get("vendor", "").lower()
+        sf_codes_in_group = sorted(list({c['sf_course_code'] for c in courses_in_group}))
+        
+        # --- REVISED: Get course types directly from the confirmed student documents ---
+        course_types_in_group = sorted(list(set(
+            c.get('sf_course_type', 'N/A') for c in courses_in_group if c.get('sf_course_type')
+        )))
+
+        group_tag = f"{lb_course}-Trainer Pod"
+        tp_rules = _find_all_matching_rules(prep_data["build_rules"], vendor, group_tag, "trainer")
+        is_disabled = any(r.get("actions", {}).get("disable_trainer_pod") for r in tp_rules)
+
+        if is_disabled:
+            logger.info(f"Trainer pod build for '{lb_course}' is disabled by a build rule.")
+            continue
+
+        eff_actions_tp = {}
+        for r in tp_rules:
+            for k in ["host_priority", "start_pod_number"]:
+                if k not in eff_actions_tp and k in r.get("actions", {}):
+                    eff_actions_tp[k] = r["actions"][k]
+
+        mem_per_pod = _get_memory_for_course_local(lb_course, {c['course_name']: c for c in prep_data["course_configs_for_mem"]})
+        
+        hosts_to_try = eff_actions_tp.get("host_priority", prep_data["all_hosts_dd"])
+        
+        assignments, warn = _propose_assignments(
+            num_pods_to_allocate=num_pods_needed,
+            hosts_to_try=hosts_to_try,
+            memory_per_pod=mem_per_pod,
+            vendor_code=vendor,
+            start_pod_suggestion=max(1, int(eff_actions_tp.get('start_pod_number', 100))),
+            pods_assigned_in_this_batch=batch_trainer_state["pods_assigned"],
+            db_locked_pods={},
+            current_host_capacities_gb=batch_trainer_state["working_host_caps_gb"]
+        )
+
+        trainer_build_proposals.append({
+            "group_id": str(ObjectId()),
+            "labbuild_course": lb_course,
+            "tag": group_tag,
+            "vendor": vendor,
+            "num_pods": num_pods_needed,
+            "sf_codes_in_group": sf_codes_in_group,
+            "sf_course_types_in_group": course_types_in_group,
+            "memory_gb_one_pod": mem_per_pod,
+            "assignments": assignments,
+            "warning": warn
+        })
 
     return render_template(
         'trainer_pod_review.html',
-        courses_and_trainer_pods=display_items_for_template,
+        trainer_build_proposals=trainer_build_proposals,
         batch_review_id=batch_review_id,
         current_theme=current_theme,
         all_hosts=prep_data["all_hosts_dd"],
-        course_configs_for_memory=prep_data["course_configs_for_mem"],
         subsequent_pod_memory_factor=SUBSEQUENT_POD_MEMORY_FACTOR
     )
 
 @bp.route('/finalize-and-display-plan', methods=['POST'])
 def finalize_and_display_build_plan():
     """
-    Receives final trainer decisions, updates the DB, and then calls the
-    refactored helper to display the final build/teardown plan.
-    This is the entry point after the "trainer pod review" page.
+    Receives final trainer decisions, CREATES NEW interim documents for them,
+    and then calls the helper to display the final build/teardown plan.
     """
     batch_review_id = request.form.get('batch_review_id')
     final_trainer_plan_json = request.form.get('final_trainer_assignments_for_review')
-    logger.info(f"Finalizing plan for Batch ID: {batch_review_id}")
 
+    # --- Helper to create new interim docs for confirmed trainer builds ---
+    def _create_finalized_trainer_assignments(batch_id, trainer_assignments_data):
+        if not trainer_assignments_data:
+            return True, "No trainer assignments to create."
+        
+        docs_to_insert = []
+        try:
+            for trainer_group_data in trainer_assignments_data:
+                if not trainer_group_data.get('build_trainer', False):
+                    continue
+
+                related_types = trainer_group_data.get("sf_course_types_in_group", ["Trainer Pod Group"])
+                # Filter out any empty strings that might have been collected
+                filtered_types = [t for t in related_types if t]
+                final_course_type = ", ".join(filtered_types) if filtered_types else "Trainer Pod Group"
+
+                new_doc = {
+                    "_id": ObjectId(),
+                    "batch_review_id": batch_id,
+                    "created_at": datetime.datetime.now(pytz.utc),
+                    "sf_course_code": trainer_group_data.get("tag"),
+                    "sf_course_type": final_course_type, # <-- USE THE NEW VARIABLE
+                    "sf_trainer_name": "Trainer Pods",
+                    "final_labbuild_course": trainer_group_data.get("labbuild_course"),
+                    "vendor": trainer_group_data.get("vendor"),
+                    "status": "trainer_confirmed",
+                    "assignments": trainer_group_data.get("interactive_assignments", []),
+                    "trainer_assignment_warning": trainer_group_data.get("error_message"),
+                    "memory_gb_one_pod": trainer_group_data.get("memory_gb_one_pod"),
+                    "related_student_courses": trainer_group_data.get("sf_codes_in_group", []),
+                    "related_student_course_types": trainer_group_data.get("sf_course_types_in_group", [])
+                }
+                docs_to_insert.append(new_doc)
+            
+            if docs_to_insert and interim_alloc_collection is not None:
+                result = interim_alloc_collection.insert_many(docs_to_insert)
+                logger.info(f"Inserted {len(result.inserted_ids)} new trainer pod group documents for batch '{batch_id}'.")
+            
+            return True, None
+        except Exception as e:
+            logger.error(f"Error creating finalized trainer assignments in interim DB: {e}", exc_info=True)
+            return False, "Error saving finalized trainer assignments."
+        
+
+    # --- Main route execution ---
     if not batch_review_id or not final_trainer_plan_json:
         flash("Session ID or final plan missing.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
@@ -759,56 +937,13 @@ def finalize_and_display_build_plan():
         trainer_plan_data = json.loads(final_trainer_plan_json)
     except json.JSONDecodeError:
         flash("Error processing final trainer assignments.", "danger")
-        # Redirect back to the trainer pod review page
         return redirect(url_for('build_planner_actions.prepare_trainer_pods', batch_review_id=batch_review_id))
 
-    # This is a private helper within this route's context
-    def _update_finalized_trainer_assignments(batch_id, trainer_assignments_data):
-        if not trainer_assignments_data:
-            return True, "No trainer assignments to update."
-        update_ops: List[UpdateOne] = []
-        try:
-            if interim_alloc_collection is None:
-                return False, "Database service unavailable."
-            for trainer_data in trainer_assignments_data:
-                doc_id_str = trainer_data.get('interim_doc_id')
-                build_trainer = trainer_data.get('build_trainer', False)
-                if not doc_id_str:
-                    logger.warning("Missing 'interim_doc_id' in trainer data.")
-                    continue
-
-                payload: Dict[str, Any] = {"updated_at": datetime.datetime.now(pytz.utc)}
-                if build_trainer:
-                    payload.update({
-                        "trainer_labbuild_course": trainer_data.get("labbuild_course"),
-                        "trainer_memory_gb_one_pod": trainer_data.get("memory_gb_one_pod"),
-                        "trainer_assignment": trainer_data.get("interactive_assignments", []),
-                        "trainer_assignment_warning": trainer_data.get("error_message"),
-                        "status": "trainer_confirmed"
-                    })
-                else:
-                    payload.update({
-                        "trainer_assignment": None,
-                        "status": "trainer_skipped_by_user",
-                        "trainer_assignment_warning": "Build skipped by user."
-                    })
-                update_ops.append(UpdateOne({"_id": ObjectId(doc_id_str), "batch_review_id": batch_id}, {"$set": payload}))
-
-            if update_ops:
-                result = interim_alloc_collection.bulk_write(update_ops)
-                logger.info(f"Updated {result.modified_count} trainer assignments in interim (batch '{batch_id}').")
-            return True, None
-        except Exception as e:
-            logger.error(f"Error saving finalized trainer assignments to interim DB: {e}", exc_info=True)
-            return False, "Error saving finalized trainer assignments."
-
-    # First, save the user's final decisions for trainer pods
-    success, error = _update_finalized_trainer_assignments(batch_review_id, trainer_plan_data)
+    success, error = _create_finalized_trainer_assignments(batch_review_id, trainer_plan_data)
     if not success:
         flash(error, "danger")
         return redirect(url_for('build_planner_actions.prepare_trainer_pods', batch_review_id=batch_review_id))
 
-    # Now, call the main rendering helper, ensuring APM data is regenerated
     return _prepare_and_render_final_review(batch_review_id, regenerate_apm=True)
 
 @bp.route('/execute-scheduled-builds', methods=['POST'])
@@ -1103,8 +1238,8 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
     # --- Nested Helper: Process final plan for display ---
     def _process_plan_for_display(final_plan_docs):
         """
-        Processes the final plan for display, grouping all student builds
-        together, followed by all trainer builds that were not skipped.
+        Processes the final plan for display, correctly identifying and separating
+        student builds from the consolidated trainer pod groups.
         """
         student_items: List[Dict] = []
         trainer_items: List[Dict] = []
@@ -1114,59 +1249,62 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
             sf_code = doc.get("sf_course_code")
             vendor = doc.get("vendor")
             logger.debug(f"[_process_plan_for_display] Processing doc for SF Code: {sf_code}")
+            
+            # --- REVISED LOGIC: Mutually exclusive check ---
+            is_trainer_doc = isinstance(sf_code, str) and sf_code.endswith("-Trainer Pod")
 
-            # --- Student Part ---
-            # All courses have a student part, so always create and add it.
-            student_item = {
-                "type": "Student Build",
-                "sf_course_code": sf_code,
-                "original_sf_course_code": sf_code,
-                "labbuild_course": doc.get("final_labbuild_course"),
-                "sf_course_type": doc.get("sf_course_type"),
-                "vendor": vendor,
-                "start_date": doc.get("sf_start_date"),
-                "end_date": doc.get("sf_end_date"),
-                "location": doc.get("location", "Virtual"),
-                "assignments": doc.get("assignments", []),
-                "status_note": doc.get("student_assignment_warning"),
-                "sf_trainer_name": doc.get("sf_trainer_name"),
-                "f5_class_number": doc.get("f5_class_number"),
-                "sf_pax_count": doc.get("sf_pax_count"),
-                "effective_pods_req_student": doc.get("effective_pods_req"),
-                "memory_gb_one_pod": doc.get("memory_gb_one_pod"),
-                "apm_username": doc.get("student_apm_username"),
-                "apm_password": doc.get("student_apm_password"),
-            }
-            student_items.append(student_item)
-            logger.debug(f"[_process_plan_for_display] Added student item. APM User: {student_item.get('apm_username')}")
-
-            # --- Trainer Part (Conditional) ---
-            # Only create a trainer item if an assignment exists.
-            # Skipped items will have an empty or null 'trainer_assignment'.
-            if doc.get("trainer_assignment"):
-                trainer_sfc_display = sf_code + "-TP"
-                
+            if is_trainer_doc:
+                # --- This is a CONSOLIDATED TRAINER POD document ---
                 trainer_item = {
                     "type": "Trainer Build",
-                    "sf_course_code": trainer_sfc_display,
+                    "sf_course_code": sf_code, 
+                    "original_sf_course_code": ", ".join(doc.get("related_student_courses", [])),
+                    "labbuild_course": doc.get("final_labbuild_course"),
+                    "vendor": vendor,
+                    "assignments": doc.get("assignments", []),
+                    "status_note": doc.get("trainer_assignment_warning"),
+                    # Use generic/fixed values for display consistency
+                    "sf_trainer_name": "N/A", 
+                    "start_date": None,
+                    "end_date": None,
+                    "location": "N/A",
+                    "f5_class_number": None,
+                    # APM logic now uses the tag as the code, so it's stored in student fields
+                    "apm_username": doc.get("student_apm_username"),
+                    "apm_password": doc.get("student_apm_password"),
+                }
+                trainer_items.append(trainer_item)
+                logger.debug(f"Added CONSOLIDATED TRAINER item for tag '{sf_code}'.")
+
+            else:
+                # --- This is a STUDENT build document ---
+                student_item = {
+                    "type": "Student Build",
+                    "sf_course_code": sf_code,
                     "original_sf_course_code": sf_code,
-                    "labbuild_course": doc.get("trainer_labbuild_course") or "N/A",
+                    "labbuild_course": doc.get("final_labbuild_course"),
+                    "sf_course_type": doc.get("sf_course_type"),
                     "vendor": vendor,
                     "start_date": doc.get("sf_start_date"),
                     "end_date": doc.get("sf_end_date"),
                     "location": doc.get("location", "Virtual"),
-                    "assignments": doc.get("trainer_assignment") or [],
-                    "status_note": doc.get("trainer_assignment_warning"),
+                    "assignments": doc.get("assignments", []),
+                    "status_note": doc.get("student_assignment_warning"),
                     "sf_trainer_name": doc.get("sf_trainer_name"),
                     "f5_class_number": doc.get("f5_class_number"),
-                    "apm_username": doc.get("trainer_apm_username"),
-                    "apm_password": doc.get("trainer_apm_password"),
+                    "sf_pax_count": doc.get("sf_pax_count"),
+                    "effective_pods_req_student": doc.get("effective_pods_req"),
+                    "memory_gb_one_pod": doc.get("memory_gb_one_pod"),
+                    "apm_username": doc.get("student_apm_username"),
+                    "apm_password": doc.get("student_apm_password"),
                 }
-                trainer_items.append(trainer_item)
-                logger.debug(f"[_process_plan_for_display] Added trainer item. APM User: {trainer_item.get('apm_username')}")
-
-        # Combine the lists, with all student items first, followed by trainer items.
-        return student_items + trainer_items
+                student_items.append(student_item)
+                logger.debug(f"Added STUDENT item for course '{sf_code}'.")
+        
+        # Combine the lists, ensuring a consistent sort order.
+        all_items = student_items + trainer_items
+        all_items.sort(key=lambda x: (x.get('start_date') is None, x.get('start_date', 'z'), x['sf_course_code']))
+        return all_items
 
     # --- Nested Helper: Sanitize data for JSON embedding ---
     def _sanitize_for_json(data):
