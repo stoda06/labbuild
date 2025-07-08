@@ -1,104 +1,47 @@
 import logging
 import sys
 import argparse
-import threading
 from typing import Optional, Dict, List, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
-from tabulate import tabulate
-
+from concurrent.futures import ThreadPoolExecutor
 from utils import wait_for_tasks
+
+# Import local utilities and helpers
 from config_utils import fetch_and_prepare_course_config, extract_components, get_host_by_name
 from vcenter_utils import get_vcenter_instance
+# Pass args_dict down to orchestrator functions
 from orchestrator import vendor_setup, vendor_teardown, update_monitor_and_database
 from operation_logger import OperationLogger
+# Import the new function from db_utils
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
-from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker
 from monitor.prtg import PRTGManager
-from constants import DB_NAME, TEMP_COURSE_CONFIG_COLLECTION
+from constants import DB_NAME
+
+import labs.setup.checkpoint as checkpoint 
+from labs.test import checkpoint as test_checkpoint 
+import labs.manage.vm_operations as vm_operations
 
 logger = logging.getLogger('labbuild.commands')
 
+# --- Constants for return status ---
 COMPONENT_LIST_STATUS = "component_list_displayed"
-RED = '\033[91m'
-ENDC = '\033[0m'
+TEMP_COURSE_CONFIG_COLLECTION = "temp_courseconfig"
 
 def test_environment(args_dict, operation_logger=None):
-    """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
-    thread_count = args_dict.get('thread', 10)
-
-    # --- Mode 1: Vendor-wide test mode ---
-    is_vendor_mode = (args_dict.get('vendor') and not args_dict.get('tag') and
-                      args_dict.get('start_pod') is None and args_dict.get('end_pod') is None)
-    if is_vendor_mode:
-        vendor = args_dict['vendor']
-        logger.info(f"Vendor-wide test mode for '{vendor}' with {thread_count} threads.")
-        
-        exclude_set = parse_exclude_string(args_dict.get('exclude'))
-        jobs = get_test_jobs_by_vendor(vendor, exclude_set)
-        
-        if not jobs:
-            print(f"\nNo testable allocations found for vendor '{vendor}' (after exclusions).")
-            return [{"status": "completed_no_tasks"}]
-
-        display_test_jobs(jobs, vendor)
-
-        all_failures = []
-        print_lock = threading.Lock()
-
-        with ThreadPoolExecutor(max_workers=thread_count) as executor:
-            future_to_job = {}
-            for job in jobs:
-                job_args_dict = job.copy()
-                job_args_dict["group"] = job.get("course_name")
-                job_args_dict["component"] = args_dict.get("component")
-                future = executor.submit(execute_single_test_worker, job_args_dict, print_lock)
-                future_to_job[future] = job
-            
-            for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
-                try:
-                    results = future.result()
-                    for res in results:
-                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
-                            all_failures.append(res)
-                except Exception as e:
-                    job_info = future_to_job[future]
-                    logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
-                    all_failures.append({'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
-                                         'status': 'EXCEPTION', 'error': str(e)})
-
-        if all_failures:
-            print("\n" + "="*80)
-            print("                       CONSOLIDATED ERROR REPORT")
-            print("="*80)
-            headers = ["Pod/Class", "Component", "IP Address", "Port", "Status/Error"]
-            error_table_data = []
-            for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
-                pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
-                error_table_data.append([
-                    pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'),
-                    fail.get('port', 'N/A'), status
-                ])
-            print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
-            print("="*80)
-        else:
-            print("\n✅ All tests completed successfully with no reported failures.")
-
-        return [{"status": "completed"}]
-
-    # --- Mode 2: Component listing request ---
+    """Runs a test suite for a lab, either by tag or by manual parameters."""
+    # --- Check for component listing request ---
     if args_dict.get('component') == '?':
         course_name = args_dict.get('group')
         if not course_name:
             err_msg = "Cannot list components: --group (course name) is required with --component '?'"
-            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
+            logger.error(err_msg)
+            print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
         
         logger.info(f"Listing components for course: {course_name}")
         try:
             with mongo_client() as client:
-                if not client: raise ConnectionError("DB connection failed.")
+                if not client:
+                    raise ConnectionError("DB connection failed.")
                 db = client[DB_NAME]
                 collection = db[TEMP_COURSE_CONFIG_COLLECTION]
                 doc = collection.find_one({"course_name": course_name}, {"components.component_name": 1})
@@ -106,108 +49,132 @@ def test_environment(args_dict, operation_logger=None):
                     print(f"No components found for course: {course_name}")
                     return [{"status": "success", "message": "No components found"}]
                 
-                component_names = sorted([c.get('component_name') for c in doc.get('components', []) if c.get('component_name')])
-                print(f"\nAvailable components for course '{course_name}':\n  - " + "\n  - ".join(component_names))
+                component_names = [c.get('component_name') for c in doc.get('components', []) if c.get('component_name')]
+                
+                print(f"\nAvailable components for course '{course_name}':")
+                for name in sorted(component_names):
+                    print(f"  - {name}")
                 print("\nUse -c with one or more comma-separated names to test specific components.")
                 return [{"status": "success", "message": "Component list displayed"}]
         except Exception as e:
-            err_msg = f"Failed to fetch component list: {e}"; logger.error(err_msg, exc_info=True)
+            err_msg = f"Failed to fetch component list: {e}"
+            logger.error(err_msg, exc_info=True)
             print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-    # --- Mode 3: Tag-based test mode ---
+    # --- Check for tag and fetch parameters ---
     if args_dict.get('tag'):
         tag = args_dict.get('tag')
         logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
         try:
-            if any(k in args_dict for k in ['vendor', 'start_pod', 'host', 'group'] if k != 'tag'):
+            # Warn if conflicting arguments are provided, then ignore them.
+            conflicting_args = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
+            if any(arg in args_dict for arg in conflicting_args if arg != 'tag'):
                 logger.warning(f"Conflicting arguments provided with --tag. Using parameters from tag '{tag}'.")
+                # Clean them up to be safe
+                for arg in conflicting_args:
+                    args_dict.pop(arg, None)
             
             test_params = get_test_params_by_tag(tag)
-            if not test_params:
-                err_msg = f"Could not retrieve valid test parameters for tag '{tag}'."
-                logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-                return [{"status": "failed", "error": err_msg}]
-
             args_dict.update(test_params)
             logger.info(f"Successfully fetched parameters for tag '{tag}': {test_params}")
-            print_lock = threading.Lock()
-            return execute_single_test_worker(args_dict, print_lock)
 
+        except (ValueError, ConnectionError) as e:
+            err_msg = f"Failed to get test parameters for tag '{tag}': {e}"
+            logger.error(err_msg)
+            print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
         except Exception as e:
             err_msg = f"An unexpected error occurred while fetching parameters for tag '{tag}': {e}"
-            logger.error(err_msg, exc_info=True); print(f"Error: {err_msg}", file=sys.stderr)
+            logger.error(err_msg, exc_info=True)
+            print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-    # --- Mode 4: Manual test mode with range ---
-    is_manual_range_mode = args_dict.get('start_pod') is not None and args_dict.get('end_pod') is not None
-    if is_manual_range_mode:
-        logger.info("Manual test mode invoked with pod/class range.")
-        if not args_dict.get('vendor'):
-            err_msg = "Missing required argument for manual test: --vendor"
-            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-            return [{"status": "failed", "error": err_msg}]
-
-        jobs = get_test_jobs_for_range(
-            vendor=args_dict['vendor'],
-            start_num=args_dict['start_pod'],
-            end_num=args_dict['end_pod'],
-            host_filter=args_dict.get('host'),
-            group_filter=args_dict.get('group')
-        )
-
-        if not jobs:
-            err_msg = "No matching allocations found in the database for the specified criteria."
-            logger.warning(err_msg)
-            print(f"\nInfo: {err_msg}")
-            return [{"status": "completed_no_tasks"}]
-
-        display_test_jobs(jobs, args_dict['vendor'])
-
-        all_failures = []
-        print_lock = threading.Lock()
-        with ThreadPoolExecutor(max_workers=thread_count) as executor:
-            future_to_job = {}
-            for job in jobs:
-                job_args_dict = job.copy()
-                job_args_dict["group"] = job.get("course_name")
-                job_args_dict["component"] = args_dict.get("component")
-                future = executor.submit(execute_single_test_worker, job_args_dict, print_lock)
-                future_to_job[future] = job
-            
-            for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
-                try:
-                    results = future.result()
-                    for res in results:
-                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
-                            all_failures.append(res)
-                except Exception as e:
-                    job_info = future_to_job[future]
-                    logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
-                    all_failures.append({'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
-                                         'status': 'EXCEPTION', 'error': str(e)})
-
-        if all_failures:
-            print("\n" + "="*80)
-            print("                       CONSOLIDATED ERROR REPORT")
-            print("="*80)
-            headers = ["Pod/Class", "Component", "IP Address", "Port", "Status/Error"]
-            error_table_data = []
-            for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
-                pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
-                error_table_data.append([pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'), fail.get('port', 'N/A'), status])
-            print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
-            print("="*80)
-        else:
-            print("\n✅ All tests completed successfully with no reported failures.")
-
-        return [{"status": "completed"}]
+    # --- Validate that all necessary arguments are now present ---
+    required_args = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
+    missing_args = [arg for arg in required_args if args_dict.get(arg) is None]
     
-    # --- Fallback Error ---
-    err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod."
-    logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-    return [{"status": "failed", "error": err_msg}]
+    # Special validation for F5
+    if args_dict.get('vendor', '').lower() == 'f5':
+        if args_dict.get('class_number') is None:
+            missing_args.append('class_number')
+
+    if missing_args:
+        err_msg = f"Missing required arguments for test command: {', '.join(missing_args)}. Provide them manually or use a valid --tag."
+        logger.error(err_msg)
+        print(f"Error: {err_msg}", file=sys.stderr)
+        return [{"status": "failed", "error": err_msg}]
+
+    # --- Extract final arguments ---
+    vendor = args_dict["vendor"]
+    start = args_dict["start_pod"]
+    end = args_dict["end_pod"]
+    host = args_dict["host"]
+    group = args_dict["group"]
+    component_arg = args_dict.get("component")
+
+    # --- Execute vendor-specific test script ---
+    logger.info(f"Executing test for vendor '{vendor}' on host '{host}' for group '{group}' (Pods/Class: {start}-{end})")
+
+    if vendor.lower() == "cp":
+        from labs.test import checkpoint
+        checkpoint_args = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
+        if component_arg:
+            checkpoint_args.extend(["-c", component_arg])
+        checkpoint.main(checkpoint_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "pa":
+        from labs.test import palo
+        palo_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        if component_arg:
+            palo_args.extend(["-c", component_arg])
+        palo.main(palo_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "nu":
+        from labs.test import nu
+        nu_args = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+        if component_arg:
+            nu_args.extend(["-c", component_arg])
+        nu.main(nu_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "av":
+        from labs.test import avaya
+        avaya_args = [
+            "-s", str(start),
+            "-e", str(end),
+            "--host", host,
+            "-g", group
+        ]
+        if component_arg:
+            avaya_args.extend(["-c", component_arg])
+        avaya.main(avaya_args)
+        return [{"status": "success", "pod": start}]
+
+    elif vendor.lower() == "f5":
+        classnum = args_dict.get("class_number")
+        # Validation already happened, but this is a final safeguard.
+        if classnum is None:
+            raise ValueError("Internal Error: class_number is missing for F5 test.")
+        from labs.test import f5
+        f5_args = [
+            "-s", str(start),
+            "-e", str(end),
+            "--host", host,
+            "-g", group,
+            "--classnum", str(classnum)
+        ]
+        if component_arg:
+            f5_args.extend(["-c", component_arg])
+        f5.main(f5_args)
+        return [{"status": "success", "pod": start}]
+
+    else:
+        err_msg = f"Vendor '{vendor}' is not yet supported for testing."
+        print(err_msg)
+        return [{"status": "failed", "error": err_msg}]
 
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
@@ -912,3 +879,5 @@ def manage_environment(args_dict: Dict[str, Any], operation_logger: OperationLog
     all_results.extend(task_results) # Combine submission errors with task results
     logger.info(f"VM management ({operation_arg}) tasks submitted/completed.")
     return all_results
+
+# --- END OF FILE commands.py ---
