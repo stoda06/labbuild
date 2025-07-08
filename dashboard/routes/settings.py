@@ -201,8 +201,8 @@ def add_trainer_email():
 
     try:
         # Check for duplicate trainer name
-        if trainer_email_collection.count_documents({"trainer_name": trainer_name}) > 0:
-            flash(f"A trainer with the name '{trainer_name}' already exists.", "warning")
+        if trainer_email_collection.count_documents({"trainer_name": {"$regex": f"^{re.escape(trainer_name)}$", "$options": "i"}}) > 0:
+            flash(f"A trainer with the name '{trainer_name}' already exists (case-insensitive).", "warning")
             return redirect(url_for('.view_trainer_emails'))
         
         new_trainer_doc = {
@@ -242,7 +242,7 @@ def update_trainer_email(trainer_id):
     try:
         # Check if the new name conflicts with another existing trainer
         existing_trainer = trainer_email_collection.find_one({
-            "trainer_name": trainer_name,
+            "trainer_name": {"$regex": f"^{re.escape(trainer_name)}$", "$options": "i"},
             "_id": {"$ne": trainer_oid} # Look for a different document with the same name
         })
         if existing_trainer:

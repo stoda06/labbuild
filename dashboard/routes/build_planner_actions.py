@@ -1251,41 +1251,59 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
             return [], "Error fetching review data."
 
     # --- Nested Helper: Update DB with APM credentials ---
-    def _update_db_with_apm(batch_id, apm_creds_map):
+    def _update_db_with_apm(batch_id, apm_creds_map, apm_commands_map):
         """
-        Updates all interim documents for a given course code with the generated APM credentials.
+        Updates all interim documents for a given course code with the generated APM credentials and commands.
         This now uses UpdateMany to handle split courses like Maestro.
         """
         if not apm_creds_map:
             return True, "No APM credentials to update."
         
         update_ops = []
+        processed_codes_for_commands = set()
+
         for apm_code, creds in apm_creds_map.items():
+            # Prepare the payload with both credentials and commands
+            commands_for_this_code = apm_commands_map.get(apm_code, [])
+            base_payload = {"apm_commands": commands_for_this_code}
+
             if apm_code.endswith("-TP"):
                 # Handle trainer pods
                 sf_code = apm_code[:-3]
-                payload = {"trainer_apm_username": creds.get("username"), "trainer_apm_password": creds.get("password")}
-                # Use UpdateMany to apply trainer creds to all parts of a course (e.g., Maestro)
+                payload = {**base_payload, "trainer_apm_username": creds.get("username"), "trainer_apm_password": creds.get("password")}
                 update_ops.append(UpdateMany(
                     {"batch_review_id": batch_id, "sf_course_code": sf_code},
                     {"$set": payload}
                 ))
+                processed_codes_for_commands.add(apm_code)
             else:
                 # Handle student pods
-                payload = {"student_apm_username": creds.get("username"), "student_apm_password": creds.get("password")}
-                # Use UpdateMany to apply student creds to all parts of a course (e.g., Maestro)
+                payload = {**base_payload, "student_apm_username": creds.get("username"), "student_apm_password": creds.get("password")}
                 update_ops.append(UpdateMany(
                     {"batch_review_id": batch_id, "sf_course_code": apm_code},
                     {"$set": payload}
                 ))
+                processed_codes_for_commands.add(apm_code)
+
+        # Handle commands for codes that didn't have credentials (e.g., pure deletes)
+        for apm_code, commands in apm_commands_map.items():
+            if apm_code in processed_codes_for_commands or not commands:
+                continue
+            
+            payload = {"apm_commands": commands}
+            update_ops.append(UpdateMany(
+                {"batch_review_id": batch_id, "sf_course_code": apm_code},
+                {"$set": payload}
+            ))
+
         try:
             if update_ops and interim_alloc_collection is not None:
                 result = interim_alloc_collection.bulk_write(update_ops)
-                logger.info(f"Updated APM credentials in DB. Matched: {result.matched_count}, Modified: {result.modified_count}")
+                logger.info(f"Updated APM credentials & commands in DB. Matched: {result.matched_count}, Modified: {result.modified_count}")
             return True, None
         except Exception as e:
-            logger.error(f"Error updating interim DB with APM credentials: {e}", exc_info=True)
-            return False, "Database error while saving APM credentials."
+            logger.error(f"Error updating interim DB with APM data: {e}", exc_info=True)
+            return False, "Database error while saving APM data."
 
     # --- Nested Helper: Process final plan for display ---
     def _process_plan_for_display(final_plan_docs):
@@ -1401,40 +1419,44 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                 apm_errors.append("Could not fetch extended allocation tags.")
 
         # Step 2: Call the helper with all required arguments
-        apm_commands, apm_creds_map, gen_errors = generate_apm_helper(
+        commands_by_code, apm_creds_map, gen_errors = generate_apm_helper(
             final_plan_docs, 
             current_apm_entries, 
             extended_apm_codes
         )
-        apm_errors.extend(gen_errors) # Combine any errors
+        
+        # Flatten for the template preview
+        apm_commands = [cmd for cmd_list in commands_by_code.values() for cmd in cmd_list]
+        apm_errors.extend(gen_errors)
 
         if apm_errors:
             flash("Note: Errors occurred during APM data generation: " + " | ".join(apm_errors), "info")
         
-        # Step 3: Update DB with new credentials
-        success, error = _update_db_with_apm(batch_review_id, apm_creds_map)
+        # Update DB with new credentials AND commands
+        success, error = _update_db_with_apm(batch_review_id, apm_creds_map, commands_by_code)
         if not success:
             flash(error, "danger")
         
-        # Re-fetch to get the newly saved APM credentials
+        # Re-fetch to get the newly saved APM data
         final_plan_docs, _ = _fetch_all_plan_data(batch_review_id)
     else:
         # This "view-only" logic remains the same
         logger.info(f"Skipping APM data regeneration for batch '{batch_review_id}'. Displaying existing data.")
         try:
-            # We still need to fetch the data to generate a preview of commands
             current_apm_entries = {}
             extended_apm_codes = set()
             try:
                 apm_list_url = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
                 response = requests.get(apm_list_url, timeout=15); response.raise_for_status()
                 current_apm_entries = response.json()
-            except Exception: pass # Ignore errors for preview
+            except Exception: pass
             if alloc_collection is not None:
                 for doc in alloc_collection.find({"extend": "true"}, {"tag": 1, "_id": 0}):
                     if doc.get("tag"): extended_apm_codes.add(doc.get("tag"))
 
-            apm_commands, _, _ = generate_apm_helper(final_plan_docs, current_apm_entries, extended_apm_codes)
+            commands_by_code_preview, _, _ = generate_apm_helper(final_plan_docs, current_apm_entries, extended_apm_codes)
+            # Flatten for preview
+            apm_commands = [cmd for cmd_list in commands_by_code_preview.values() for cmd in cmd_list]
         except Exception as e:
             logger.warning(f"Could not generate APM command preview for view-only mode: {e}")
             apm_commands = ["# Could not generate command preview."]

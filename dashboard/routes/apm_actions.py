@@ -20,15 +20,18 @@ def _generate_apm_data_for_plan(
     final_plan_items: List[Dict],
     current_apm_entries: Dict[str, Dict[str, Any]],
     extended_apm_codes: Set[str]
-) -> Tuple[List[str], Dict[str, Dict[str, str]], List[str]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, str]], List[str]]:
     """
     Generates APM commands and credentials based on the final build plan.
     Compares the desired state with the current state to generate add, update, and delete commands.
     Includes special logic for Nutanix range expansion and APM versioning.
     """
     logger.info(f"--- APM Data Generation Started for {len(final_plan_items)} plan items ---")
-    apm_commands_delete: List[str] = []
-    apm_commands_add_update: List[str] = []
+    
+    # --- MODIFICATION: Store commands grouped by code ---
+    commands_by_code = defaultdict(list)
+    # --- END MODIFICATION ---
+
     apm_errors: List[str] = []
     apm_credentials_map: Dict[str, Dict[str, str]] = {}
 
@@ -89,11 +92,16 @@ def _generate_apm_data_for_plan(
             if not key_tp: continue
 
             if "details" not in desired_apm_state[key_tp]:
-                # --- THIS IS THE FIX: Use the new field to build the description ---
-                course_types_str = ", ".join(item.get("related_student_course_types", ["Trainer Setup"]))
+                
+                # --- THIS IS THE FIX: Define related_types before using it ---
+                related_types = item.get("related_student_course_types", ["Trainer Setup"])
+                filtered_types = [t for t in related_types if t]
+                final_course_type = ", ".join(filtered_types) if filtered_types else "Trainer Pod Group"
+                # --- END OF FIX ---
+
                 desired_apm_state[key_tp]["details"] = {
                     "trainer": "Trainer Pods",
-                    "type": course_types_str, # Use the collected course types
+                    "type": final_course_type, # Use the corrected string
                     "lb_course_name": item.get("final_labbuild_course", "N/A"),
                     "sf_course_code": key_tp,
                     "vendor": item.get("vendor", "xx").lower()
@@ -147,18 +155,24 @@ def _generate_apm_data_for_plan(
     for username, existing_details in current_apm_entries.items():
         code = existing_details.get("vpn_auth_course_code")
         if not code:
-            apm_commands_delete.append(f"course2 del {username}")
+            # --- MODIFICATION: Group orphaned deletes under a generic key ---
+            commands_by_code["__orphaned_deletes__"].append(f"course2 del {username}")
             continue
         
         if code in final_desired_state:
             apm_code_to_user[code] = username
             new = final_desired_state[code]
-            if str(existing_details.get("vpn_auth_range")) != str(new["vpn_auth_range"]): apm_commands_add_update.append(f'course2 range {username} "{new["vpn_auth_range"]}"')
-            if str(existing_details.get("vpn_auth_version")) != str(new["version"]): apm_commands_add_update.append(f'course2 version {username} "{new["version"]}"')
-            if str(existing_details.get("vpn_auth_courses")) != str(new["vpn_auth_courses"]): apm_commands_add_update.append(f'course2 description {username} "{new["vpn_auth_courses"]}"')
-            apm_commands_add_update.append(f'course2 password {username} "{new["password"]}"')
+            # --- MODIFICATION: Append commands to the dictionary ---
+            if str(existing_details.get("vpn_auth_range")) != str(new["vpn_auth_range"]): 
+                commands_by_code[code].append(f'course2 range {username} "{new["vpn_auth_range"]}"')
+            if str(existing_details.get("vpn_auth_version")) != str(new["version"]): 
+                commands_by_code[code].append(f'course2 version {username} "{new["version"]}"')
+            if str(existing_details.get("vpn_auth_courses")) != str(new["vpn_auth_courses"]): 
+                commands_by_code[code].append(f'course2 description {username} "{new["vpn_auth_courses"]}"')
+            commands_by_code[code].append(f'course2 password {username} "{new["password"]}"')
         elif code not in extended_apm_codes:
-            apm_commands_delete.append(f"course2 del {username}")
+            # --- MODIFICATION: Append delete command to the dictionary ---
+            commands_by_code[code].append(f"course2 del {username}")
 
     used_x_nums = defaultdict(set)
     for uname in current_apm_entries.keys():
@@ -174,8 +188,8 @@ def _generate_apm_data_for_plan(
                     used_x_nums[vendor_short].add(x)
                     break
                 x += 1
-            
-            apm_commands_add_update.append(f'course2 add {new_user} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["version"]}" "{details["vpn_auth_courses"]}" "8" "{code}"')
+            # --- MODIFICATION: Append add command to the dictionary ---
+            commands_by_code[code].append(f'course2 add {new_user} "{details["password"]}" "{details["vpn_auth_range"]}" "{details["version"]}" "{details["vpn_auth_courses"]}" "8" "{code}"')
             apm_code_to_user[code] = new_user
             
     # --- Step 4: Populate the final credentials map ---
@@ -183,11 +197,13 @@ def _generate_apm_data_for_plan(
         username = apm_code_to_user.get(code)
         if username:
             apm_credentials_map[code] = {"username": username, "password": details["password"]}
-
-    all_generated_commands = apm_commands_delete + apm_commands_add_update
-    logger.info(f"APM Logic: Generated {len(all_generated_commands)} commands. Errors: {apm_errors}")
     
-    return all_generated_commands, apm_credentials_map, apm_errors
+    # --- MODIFICATION: Prepare final return values ---
+    final_commands_by_code = dict(commands_by_code)
+    total_commands = sum(len(cmds) for cmds in final_commands_by_code.values())
+    logger.info(f"APM Logic: Generated {total_commands} commands. Errors: {apm_errors}")
+    
+    return final_commands_by_code, apm_credentials_map, apm_errors
 
 @bp.route('/generate-commands', methods=['POST'])
 def generate_apm_commands_route():
@@ -229,12 +245,16 @@ def generate_apm_commands_route():
             logger.error(f"APM Route: Error fetching plan items: {e_plan_route}")
             return jsonify({"commands": ["# ERROR: Could not fetch build plan."], "message": f"DB error: {e_plan_route}", "error": True}), 500
     
-    # Call the refactored APM logic
-    all_commands, _, apm_errors = _generate_apm_data_for_plan(
+    # --- MODIFICATION: Handle new return signature ---
+    commands_by_code, _, apm_errors = _generate_apm_data_for_plan(
         plan_items_for_route_apm,
         current_apm_entries_route,
         extended_apm_codes_route
     )
+    
+    # Flatten the dictionary of lists into a single list for the JSON response
+    all_commands = [cmd for cmd_list in commands_by_code.values() for cmd in cmd_list]
+    # --- END MODIFICATION ---
     
     num_actual_adds = sum(1 for cmd in all_commands if " add " in cmd)
     num_actual_deletes = sum(1 for cmd in all_commands if " del " in cmd)
