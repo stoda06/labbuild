@@ -179,7 +179,6 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                         if class_num is None or host is None: continue
                         if host_filter and host.lower() != host_filter.lower(): continue
 
-                        # --- MODIFICATION START ---
                         matching_pods = []
                         for p in pod_detail.get('pods', []):
                             f5_pod_num_raw = p.get('pod_number')
@@ -192,7 +191,6 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                             except (ValueError, TypeError):
                                 logger.warning(f"Skipping non-integer F5 pod number '{f5_pod_num_raw}' in course '{course_name}'.")
                                 continue
-                        # --- MODIFICATION END ---
                         
                         if matching_pods:
                             job_key = (vendor.lower(), course_name, host, class_num)
@@ -204,7 +202,6 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                             f5_job_collector[job_key]["pods"].update(matching_pods)
                 else:
                     for pod_detail in course.get("pod_details", []):
-                        # --- MODIFICATION START ---
                         pod_num_raw = pod_detail.get("pod_number")
                         host = pod_detail.get("host")
                         if pod_num_raw is None or host is None: continue
@@ -216,7 +213,6 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                             continue
                         
                         if not (start_num <= pod_num <= end_num): continue
-                        # --- MODIFICATION END ---
                         if host_filter and host.lower() != host_filter.lower(): continue
                         
                         raw_jobs.append({ "vendor": vendor.lower(), "tag": tag, "course_name": course_name, "host": host, "pod_number": pod_num })
@@ -264,17 +260,32 @@ def get_test_jobs_by_vendor(vendor: str, exclude_set: Set[int]) -> List[Dict[str
                 # F5 labs are structured by class
                 if vendor.lower() == 'f5':
                     for pod_detail in course.get("pod_details", []):
-                        class_num = pod_detail.get("class_number")
+                        # --- MODIFICATION START ---
+                        class_num_raw = pod_detail.get("class_number")
                         host = pod_detail.get("host")
-                        if class_num is None or host is None: continue
+                        if class_num_raw is None or host is None: continue
                         
+                        try:
+                            class_num = int(class_num_raw)
+                        except (ValueError, TypeError):
+                             logger.warning(f"Skipping non-integer F5 class number '{class_num_raw}' in course '{course_name}'.")
+                             continue
+
                         if class_num in exclude_set:
                             logger.info(f"Excluding F5 class {class_num} for tag '{tag}' based on --exclude list.")
                             continue
 
-                        pod_numbers = [p.get('pod_number') for p in pod_detail.get('pods', []) if p.get('pod_number') is not None]
-                        if not pod_numbers: continue
-
+                        pod_numbers_raw = [p.get('pod_number') for p in pod_detail.get('pods', []) if p.get('pod_number') is not None]
+                        if not pod_numbers_raw: continue
+                        
+                        try:
+                            # Ensure all pod numbers are integers for min/max
+                            pod_numbers = [int(p) for p in pod_numbers_raw]
+                        except (ValueError, TypeError):
+                            logger.warning(f"Skipping F5 class {class_num} due to non-integer pod numbers within it.")
+                            continue
+                        # --- MODIFICATION END ---
+                        
                         job = {
                             "vendor": vendor.lower(), "tag": tag, "course_name": course_name,
                             "host": host, "class_number": class_num,
@@ -283,9 +294,16 @@ def get_test_jobs_by_vendor(vendor: str, exclude_set: Set[int]) -> List[Dict[str
                         jobs.append(job)
                 else: # Non-F5 labs are structured by individual pods
                     for pod_detail in course.get("pod_details", []):
-                        pod_num = pod_detail.get("pod_number")
+                        # --- MODIFICATION START ---
+                        pod_num_raw = pod_detail.get("pod_number")
                         host = pod_detail.get("host")
-                        if pod_num is None or host is None: continue
+                        if pod_num_raw is None or host is None: continue
+                        
+                        try:
+                            pod_num = int(pod_num_raw)
+                        except (ValueError, TypeError):
+                            logger.warning(f"Skipping non-integer pod number '{pod_num_raw}' in course '{course_name}'.")
+                            continue
                         
                         if pod_num in exclude_set:
                             logger.info(f"Excluding pod {pod_num} for tag '{tag}' based on --exclude list.")
@@ -296,6 +314,7 @@ def get_test_jobs_by_vendor(vendor: str, exclude_set: Set[int]) -> List[Dict[str
                             "host": host, "pod_number": pod_num
                         }
                         jobs.append(job)
+                        # --- MODIFICATION END ---
 
     # For non-F5 vendors, group individual pod jobs into ranges
     if vendor.lower() != 'f5':
