@@ -278,12 +278,13 @@ def main():
     # -------------------------------
     test_parser = subparsers.add_parser("test", help="Run test suite for labs", parents=[f5_parser])
     test_parser.add_argument("-t", "--tag", help="Run tests for a specific allocation by tag name.")
-    test_parser.add_argument("-v", "--vendor", help="Vendor name (required if not using --tag).")
-    test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod number (required if not using --tag).")
-    test_parser.add_argument("-e", "--end_pod", type=int, help="End pod number (required if not using --tag).")
-    test_parser.add_argument("-H", "--host", help="ESXi host name (required if not using --tag).")
-    test_parser.add_argument("-g", "--group", help="Course group/section (required if not using --tag).")  
-    test_parser.add_argument("-c", "--component", help="Test specific component(s), or '?' to list available.") 
+    test_parser.add_argument("-v", "-l", "--vendor", help="Vendor name. Use alone to test all pods for that vendor.")
+    test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod number. For F5, this filters pods within classes.")
+    test_parser.add_argument("-e", "--end_pod", type=int, help="End pod number. For F5, this filters pods within classes.")
+    test_parser.add_argument("-H", "--host", help="ESXi host name (optional, used to filter manual range tests).")
+    test_parser.add_argument("-g", "--group", help="Course group/section (optional, used to filter manual range tests).")
+    test_parser.add_argument("-c", "--component", help="Test specific component(s), or '?' to list available.")
+    test_parser.add_argument("-x", "--exclude", help="Exclude pods/classes from vendor-wide test. E.g., '1-5,10,22-25'")
     test_parser.set_defaults(func=test_environment)
 
 
@@ -377,6 +378,8 @@ def main():
         logging.getLogger("labbuild.listing").setLevel(log_level)
         logging.getLogger("labbuild.utils").setLevel(log_level)
         logging.getLogger("labbuild.oplogger").setLevel(log_level)
+        # Add new logger for test utils
+        logging.getLogger("labbuild.test.utils").setLevel(log_level)
     except Exception as e:
         logger.warning(f"Could not set log level for all sub-loggers: {e}")
 
@@ -485,7 +488,7 @@ def main():
             # Normal processing
             total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "success")
             total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "failed")
-            total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "skipped")
+            total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") in ["skipped", "cancelled", "completed_no_tasks"])
 
             if total_failure > 0: overall_status = "completed_with_errors"
             elif total_success > 0: overall_status = "completed"
@@ -518,5 +521,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# --- END OF FILE LabBuild.py ----

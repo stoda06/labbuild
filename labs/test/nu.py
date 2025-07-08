@@ -1,222 +1,182 @@
 #!/usr/bin/env python3.10
 
-import argparse
-import re
-import pexpect
-import sys
+import argparse, re, pexpect, sys, threading
 from pymongo import MongoClient
 from tabulate import tabulate
 
 VERBOSE = False
-
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+RED = '\033[91m'
+ENDC = '\033[0m'
 
-def strip_ansi(text):
-    return ANSI_ESCAPE.sub('', text)
-
-def log(msg):
+def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
+def log(msg, print_lock):
     if VERBOSE:
-        print(f"[DEBUG] {msg}")
+        with print_lock: print(f"[DEBUG] {msg}")
 
-def get_course_components(course_name):
+def get_course_components(course_name, print_lock):
     try:
-        mongo_uri = "mongodb://labbuild_user:%24%24u1QBd6%26372%23%24rF@builder:27017/?authSource=labbuild_db"
-        client = MongoClient(mongo_uri)
+        client = MongoClient("mongodb://labbuild_user:%24%24u1QBd6%26372%23%24rF@builder:27017/?authSource=labbuild_db")
         db = client["labbuild_db"]
         collection = db["temp_courseconfig"]
         doc = collection.find_one({"course_name": course_name})
-        log(f"MongoDB raw result: {doc}")
-
+        log(f"MongoDB raw result: {doc}", print_lock)
         if not doc or "components" not in doc:
-            print(f"❌ No components found for course: {course_name}")
+            with print_lock:
+                print(f"❌ No components found for course: {course_name}")
             return []
-
         components = []
         for c in doc["components"]:
-            name = c.get("component_name")
-            ip = c.get("podip")
-            port = c.get("podport")
+            name, ip, port = c.get("component_name"), c.get("podip"), c.get("podport")
             if name and ip and port:
                 components.append((name, ip, port))
-                log(f"Component parsed: {name}, IP: {ip}, Port: {port}")
-
+                log(f"Component parsed: {name}, IP: {ip}, Port: {port}", print_lock)
         return components
-
     except Exception as e:
-        print(f"❌ MongoDB error: {e}")
+        with print_lock:
+            print(f"❌ MongoDB error: {e}")
         return []
 
-def resolve_ip(ip_template, pod, host_label):
+def resolve_ip(ip_template, pod, host_label, print_lock):
     host_label = host_label.lower().strip()
-
     if "+X" in ip_template:
-        base = ip_template.replace("+X", "")
+        base, _, offset = ip_template.partition("+X")
         parts = base.split(".")
-        if len(parts) != 4:
-            log(f"Invalid IP template after +X removal: {ip_template}")
-            return ip_template
-        parts[-1] = str(int(parts[-1]) + pod)
-        ip_template = ".".join(parts)
-
-    log(f"IP after +X resolution: {ip_template}")
-
-    if host_label == "hotshot":
+        if len(parts) == 4:
+            try:
+                parts[-1] = str(int(parts[-1]) + pod)
+                ip_template = ".".join(parts)
+            except ValueError:
+                log(f"Invalid integer in last octet for '+X': {base}", print_lock)
+        log(f"IP after +X resolution: {ip_template}", print_lock)
+    # --- MODIFIED ---
+    if host_label in ["hotshot", "trypticon"]:
         parts = ip_template.split(".")
         if len(parts) == 4 and parts[0] == "172":
-            original_octet = parts[1]
-            parts[1] = "26"
-            new_ip = ".".join(parts)
-            log(f"Adjusted IP from 172.{original_octet} to 172.26 -> {new_ip}")
+            new_ip = ".".join(["172", "26", parts[2], parts[3]])
+            log(f"Adjusted IP from 172.{parts[1]} to 172.26 for host {host_label} -> {new_ip}", print_lock)
             return new_ip
-
+    # --- END MODIFICATION ---
     return ip_template
 
-def run_cluster_status(child, label, ip):
-    print(f"\n🧪 Checking cluster status for {label} ({ip})")
-    child.sendline(f"ssh nutanix@{ip}")
-    child.expect("password")
-    child.sendline("nutanix/4u")
-    child.expect(r"nutanix@.*:\~\$")
-
-    child.sendline("cluster status")
-    child.expect(r"nutanix@.*:\~\$", timeout=60)
-    output = strip_ansi(child.before.decode())
-
-    lines = output.splitlines()
-    down_services = []
-
-    for line in lines:
-        line = line.strip()
-        if line.endswith("DOWN") or "DOWN\t" in line or "DOWN [" in line:
-            parts = re.split(r'\s{2,}|\t+', line)
-            if len(parts) >= 1:
-                component = parts[0].strip()
-                down_services.append([component, "DOWN"])
-
-    child.sendline("exit")
-    child.expect(r"#\s*$")
-
-    if down_services:
-        print(f"\n📉 {label.upper()} - Services NOT UP")
-        print(tabulate(down_services, headers=["Component", "Status"], tablefmt="fancy_grid"))
-        return (label.upper(), ip, "DOWN")
-    else:
-        print(f"\n✅ {label.upper()} - All services are UP")
-        return (label.upper(), ip, "UP")
-
-def run_ssh_checks(pod, components, host):
-    host_fqdn = f"nuvr{pod}.us"
-    print(f"\n🔐 Connecting to {host_fqdn} via SSH...")
+def run_cluster_status(child, label, ip, pod, print_lock):
+    with print_lock:
+        print(f"\n🧪 Checking cluster status for {label} ({ip}) on pod {pod}")
     results = []
+    try:
+        child.sendline(f"ssh nutanix@{ip}")
+        child.expect("password")
+        child.sendline("nutanix/4u")
+        child.expect(r"nutanix@.*:\~\$")
+        child.sendline("cluster status")
+        child.expect(r"nutanix@.*:\~\$", timeout=60)
+        output = strip_ansi(child.before.decode())
+        
+        down_services = []
+        for line in output.splitlines():
+            if line.strip().endswith("DOWN") or "DOWN\t" in line or "DOWN [" in line:
+                component = re.split(r'\s{2,}|\t+', line.strip())[0].strip()
+                results.append({'pod': pod, 'component': f"{label}-{component}", 'ip': ip, 'port': 'N/A', 'status': 'DOWN'})
+        
+        if not any(r['status'] == 'DOWN' for r in results):
+            results.append({'pod': pod, 'component': label, 'ip': ip, 'port': 'N/A', 'status': 'UP'})
 
+        child.sendline("exit")
+        child.expect(r"#\s*$")
+    except Exception as e:
+        with print_lock:
+            print(f"Error checking cluster {label} on pod {pod}: {e}")
+        results.append({'pod': pod, 'component': label, 'ip': ip, 'port': 'N/A', 'status': 'FAILED'})
+
+    with print_lock:
+        if any(r['status'] == 'DOWN' for r in results):
+            print(f"📉 {label.upper()} on pod {pod} - Services NOT UP")
+        else:
+            print(f"✅ {label.upper()} on pod {pod} - All services are UP")
+    return results
+
+def run_ssh_checks(pod, components, host, print_lock):
+    # --- MODIFIED ---
+    host_fqdn = f"nuvr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"nuvr{pod}"
+    # --- END MODIFICATION ---
+    results = []
+    with print_lock:
+        print(f"\n🔐 Connecting to {host_fqdn} via SSH...")
     try:
         child = pexpect.spawn(f"ssh {host_fqdn}", timeout=30)
         child.expect(r"#\s*$")
-        log(f"Connected to {host_fqdn}")
-        print(f"✅ Connected to {host_fqdn}")
-
-        total = len(components)
-        progress = 0
-
+        with print_lock:
+            print(f"✅ Connected to {host_fqdn}")
+        
         for name, raw_ip, port in components:
-            progress += 1
-
-            bar_length = 30
-            filled = int(bar_length * progress // total)
-            bar = "#" * filled + " " * (bar_length - filled)
-            sys.stdout.write(f"\r[{bar}] {progress}/{total} Checking: {name}   ")
-            sys.stdout.flush()
-
-            ip = resolve_ip(raw_ip, pod, host)
+            ip = resolve_ip(raw_ip, pod, host, print_lock)
             status = "UNKNOWN"
-
-            if VERBOSE:
-                print(f"\n🔎 Running nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
-                print(f"✅ Using resolved IP for {name}: {ip}")
-
             if port.lower() == "arping":
                 subnet = ".".join(ip.split(".")[:3])
-                cmd = f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1"
-                child.sendline(cmd)
+                child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
                 child.expect(r"#\s*$")
-                iface = strip_ansi(child.before.decode()).strip().splitlines()[-1]
+                iface = strip_ansi(child.before.decode()).strip().splitlines()[-1] if strip_ansi(child.before.decode()).strip().splitlines() else ""
                 if iface:
-                    cmd = f"arping -c 3 -I {iface} {ip}"
-                    if VERBOSE:
-                        print(f"📶 Running {cmd}")
-                    child.sendline(cmd)
+                    child.sendline(f"arping -c 3 -I {iface} {ip}")
                     child.expect(r"#\s*$", timeout=15)
-                    out = strip_ansi(child.before.decode())
-                    status = "UP" if "Unicast reply" in out else "DOWN"
-                    log(out)
-                else:
-                    print(f"⚠️ No interface found for {ip}")
+                    status = "UP" if "Unicast reply" in child.before.decode() else "DOWN"
             else:
-                cmd = f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'"
-                child.sendline(cmd)
+                child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
                 child.expect(r"#\s*$", timeout=20)
-                out = strip_ansi(child.before.decode())
-                status = "UP" if "open" in out else "DOWN"
-                log(out)
-
-            results.append([name, ip, host_fqdn, port, status])
-
-        print()  # newline after progress bar
-
-        # Now do cluster checks
-        cluster1 = run_cluster_status(child, "cluster1", "192.168.1.12")
-        cluster2 = run_cluster_status(child, "cluster2", "192.168.1.22")
-        cluster_rows = [
-            ["cluster1", cluster1[1], "cluster1", "N/A", cluster1[2]],
-            ["cluster2", cluster2[1], "cluster2", "N/A", cluster2[2]],
-        ]
-
-        # Put cluster results at the top
-        results = cluster_rows + results
-
+                status = "UP" if "open" in child.before.decode() else "DOWN"
+            results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
+        
+        results.extend(run_cluster_status(child, "cluster1", "192.168.1.12", pod, print_lock))
+        results.extend(run_cluster_status(child, "cluster2", "192.168.1.22", pod, print_lock))
+        
         child.sendline("exit")
         child.close()
-
     except Exception as e:
-        print(f"\n❌ SSH to {host_fqdn} failed: {e}")
+        with print_lock:
+            print(f"\n❌ SSH to {host_fqdn} failed: {e}")
+        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED'})
+
+    with print_lock:
+        print(f"\n📊 Network & Cluster Check Summary for Pod {pod}")
+        headers=["Component", "Component IP", "NU Pod", "Port", "Status"]
+        table_data = [[r['component'], r.get('ip', 'N/A'), r.get('host', host_fqdn), r.get('port', 'N/A'), r['status']] for r in results]
+        formatted_rows = [[f"{RED}{cell}{ENDC}" if row[4] != 'UP' else cell for cell in row] for row in table_data]
+        print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
 
     return results
 
-def main(argv=None):
+def main(argv=None, print_lock=None):
+    if print_lock is None:
+        print_lock = threading.Lock()
     global VERBOSE
     parser = argparse.ArgumentParser(description="NU Pod Network and Cluster Checker")
-    parser.add_argument("-g", "--course", required=True, help="Course name")
-    parser.add_argument("--host", required=True, help="Target host label")
-    parser.add_argument("-v", "--vendor", help="Vendor name")
-    parser.add_argument("-s", "--start", type=int, required=True, help="Start pod number")
-    parser.add_argument("-e", "--end", type=int, required=True, help="End pod number")
-    parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
-    parser.add_argument("-c", "--component", help="Test specific components (comma-separated list).")
+    parser.add_argument("-g", "--course", required=True)
+    parser.add_argument("--host", required=True)
+    parser.add_argument("-s", "--start", type=int, required=True)
+    parser.add_argument("-e", "--end", type=int, required=True)
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("-c", "--component", help="Test specific components.")
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
-
-    print(f"[INFO] Host argument received: '{args.host}'")
-    print(f"📘 Fetching components for course: {args.course}")
-    components = get_course_components(args.course)
     
+    with print_lock:
+        print(f"📘 Fetching components for course: {args.course}")
+    components = get_course_components(args.course, print_lock)
     if args.component:
-        selected_components = [c.strip() for c in args.component.split(',')]
-        original_count = len(components)
-        components = [c for c in components if c[0] in selected_components]
-        print(f"\n🔎 Filtering: Selected {len(components)} of {original_count} components based on user input.")
-
+        selected = [c.strip() for c in args.component.split(',')]
+        components = [c for c in components if c[0] in selected]
+    
     if not components:
-        print(f"❌ No usable components found (or matched filter). Exiting.")
-        return
+        with print_lock:
+            print(f"❌ No usable components found. Exiting.")
+        return []
 
-    full_results = []
+    all_results = []
     for pod in range(args.start, args.end + 1):
-        pod_results = run_ssh_checks(pod, components, args.host)
-        full_results.extend(pod_results)
-
-    if full_results:
-        print("\n📊 Network Check Summary")
-        print(tabulate(full_results, headers=["Component", "Component IP", "NU Pod", "Port", "Status"], tablefmt="fancy_grid"))
+        pod_results = run_ssh_checks(pod, components, args.host, print_lock)
+        all_results.extend(pod_results)
+    
+    return all_results
 
 if __name__ == "__main__":
     main()
