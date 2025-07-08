@@ -13,7 +13,7 @@ from vcenter_utils import get_vcenter_instance
 from orchestrator import vendor_setup, vendor_teardown, update_monitor_and_database
 from operation_logger import OperationLogger
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
-from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range
+from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker
 from monitor.prtg import PRTGManager
 from constants import DB_NAME, TEMP_COURSE_CONFIG_COLLECTION
 
@@ -22,69 +22,6 @@ logger = logging.getLogger('labbuild.commands')
 COMPONENT_LIST_STATUS = "component_list_displayed"
 RED = '\033[91m'
 ENDC = '\033[0m'
-
-def _execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading.Lock) -> List[Dict[str, Any]]:
-    """
-    Worker function for the thread pool. It executes a single test run and returns structured results.
-    """
-    vendor = args_dict.get("vendor", "").lower()
-    start = args_dict.get("start_pod")
-    end = args_dict.get("end_pod")
-    host = args_dict.get("host")
-    group = args_dict.get("group")
-    component_arg = args_dict.get("component")
-
-    # Final safeguard validation
-    required = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
-    if any(args_dict.get(arg) is None for arg in required):
-        return [{'status': 'failed', 'error': f"Internal Error: Missing args for worker: {args_dict}"}]
-
-    # Dispatch to vendor-specific test script, passing the lock
-    try:
-        if vendor == "cp":
-            from labs.test import checkpoint
-            argv = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
-            if component_arg: argv.extend(["-c", component_arg])
-            return checkpoint.main(argv, print_lock=print_lock)
-        elif vendor == "pa":
-            from labs.test import palo
-            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
-            if component_arg: argv.extend(["-c", component_arg])
-            return palo.main(argv, print_lock=print_lock)
-        elif vendor == "nu":
-            from labs.test import nu
-            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
-            if component_arg: argv.extend(["-c", component_arg])
-            return nu.main(argv, print_lock=print_lock)
-        elif vendor == "av":
-            from labs.test import avaya
-            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
-            if component_arg: argv.extend(["-c", component_arg])
-            return avaya.main(argv, print_lock=print_lock)
-        elif vendor == "f5":
-            classnum = args_dict.get("class_number")
-            if classnum is None: return [{'status': 'failed', 'error': "Internal Error: F5 class_number missing."}]
-            from labs.test import f5
-            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group, "--classnum", str(classnum)]
-            if component_arg: argv.extend(["-c", component_arg])
-            return f5.main(argv, print_lock=print_lock)
-        else:
-            with print_lock:
-                print(f"Vendor '{vendor}' is not yet supported for testing.")
-            return [{'status': 'failed', 'error': f"Unsupported vendor: {vendor}"}]
-    except Exception as e:
-        with print_lock:
-            logger.error(f"Test worker for {vendor} pod {start}-{end} failed: {e}", exc_info=True)
-        return [{
-            'pod': start,
-            'class_number': args_dict.get('class_number'),
-            'component': 'Module Execution',
-            'ip': host,
-            'port': 'N/A',
-            'status': 'CRASHED',
-            'error': str(e)
-        }]
-
 
 def test_environment(args_dict, operation_logger=None):
     """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
@@ -115,7 +52,7 @@ def test_environment(args_dict, operation_logger=None):
                 job_args_dict = job.copy()
                 job_args_dict["group"] = job.get("course_name")
                 job_args_dict["component"] = args_dict.get("component")
-                future = executor.submit(_execute_single_test_worker, job_args_dict, print_lock)
+                future = executor.submit(execute_single_test_worker, job_args_dict, print_lock)
                 future_to_job[future] = job
             
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
@@ -195,7 +132,7 @@ def test_environment(args_dict, operation_logger=None):
             args_dict.update(test_params)
             logger.info(f"Successfully fetched parameters for tag '{tag}': {test_params}")
             print_lock = threading.Lock()
-            return _execute_single_test_worker(args_dict, print_lock)
+            return execute_single_test_worker(args_dict, print_lock)
 
         except Exception as e:
             err_msg = f"An unexpected error occurred while fetching parameters for tag '{tag}': {e}"
@@ -235,7 +172,7 @@ def test_environment(args_dict, operation_logger=None):
                 job_args_dict = job.copy()
                 job_args_dict["group"] = job.get("course_name")
                 job_args_dict["component"] = args_dict.get("component")
-                future = executor.submit(_execute_single_test_worker, job_args_dict, print_lock)
+                future = executor.submit(execute_single_test_worker, job_args_dict, print_lock)
                 future_to_job[future] = job
             
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):

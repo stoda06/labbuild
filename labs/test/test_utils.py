@@ -1,5 +1,6 @@
 import logging
 import re
+import threading
 from typing import Set, List, Dict, Any, Optional
 from collections import defaultdict
 from tabulate import tabulate
@@ -12,6 +13,68 @@ CYAN = '\033[96m'
 YELLOW = '\033[93m'
 GREEN = '\033[92m'
 ENDC = '\033[0m'
+
+def execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading.Lock) -> List[Dict[str, Any]]:
+    """
+    Worker function for the thread pool. It executes a single test run and returns structured results.
+    """
+    vendor = args_dict.get("vendor", "").lower()
+    start = args_dict.get("start_pod")
+    end = args_dict.get("end_pod")
+    host = args_dict.get("host")
+    group = args_dict.get("group")
+    component_arg = args_dict.get("component")
+
+    # Final safeguard validation
+    required = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
+    if any(args_dict.get(arg) is None for arg in required):
+        return [{'status': 'failed', 'error': f"Internal Error: Missing args for worker: {args_dict}"}]
+
+    # Dispatch to vendor-specific test script, passing the lock
+    try:
+        if vendor == "cp":
+            from labs.test import checkpoint
+            argv = ["-s", str(start), "-e", str(end), "-H", host, "-g", group]
+            if component_arg: argv.extend(["-c", component_arg])
+            return checkpoint.main(argv, print_lock=print_lock)
+        elif vendor == "pa":
+            from labs.test import palo
+            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+            if component_arg: argv.extend(["-c", component_arg])
+            return palo.main(argv, print_lock=print_lock)
+        elif vendor == "nu":
+            from labs.test import nu
+            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+            if component_arg: argv.extend(["-c", component_arg])
+            return nu.main(argv, print_lock=print_lock)
+        elif vendor == "av":
+            from labs.test import avaya
+            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+            if component_arg: argv.extend(["-c", component_arg])
+            return avaya.main(argv, print_lock=print_lock)
+        elif vendor == "f5":
+            classnum = args_dict.get("class_number")
+            if classnum is None: return [{'status': 'failed', 'error': "Internal Error: F5 class_number missing."}]
+            from labs.test import f5
+            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group, "--classnum", str(classnum)]
+            if component_arg: argv.extend(["-c", component_arg])
+            return f5.main(argv, print_lock=print_lock)
+        else:
+            with print_lock:
+                print(f"Vendor '{vendor}' is not yet supported for testing.")
+            return [{'status': 'failed', 'error': f"Unsupported vendor: {vendor}"}]
+    except Exception as e:
+        with print_lock:
+            logger.error(f"Test worker for {vendor} pod {start}-{end} failed: {e}", exc_info=True)
+        return [{
+            'pod': start,
+            'class_number': args_dict.get('class_number'),
+            'component': 'Module Execution',
+            'ip': host,
+            'port': 'N/A',
+            'status': 'CRASHED',
+            'error': str(e)
+        }]
 
 def parse_exclude_string(exclude_str: Optional[str]) -> Set[int]:
     """Parses a string like '1-5,8,10-12' into a set of integers."""
@@ -116,10 +179,20 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                         if class_num is None or host is None: continue
                         if host_filter and host.lower() != host_filter.lower(): continue
 
-                        matching_pods = [
-                            p.get('pod_number') for p in pod_detail.get('pods', [])
-                            if p.get('pod_number') is not None and start_num <= p.get('pod_number') <= end_num
-                        ]
+                        # --- MODIFICATION START ---
+                        matching_pods = []
+                        for p in pod_detail.get('pods', []):
+                            f5_pod_num_raw = p.get('pod_number')
+                            if f5_pod_num_raw is None:
+                                continue
+                            try:
+                                f5_pod_num = int(f5_pod_num_raw)
+                                if start_num <= f5_pod_num <= end_num:
+                                    matching_pods.append(f5_pod_num)
+                            except (ValueError, TypeError):
+                                logger.warning(f"Skipping non-integer F5 pod number '{f5_pod_num_raw}' in course '{course_name}'.")
+                                continue
+                        # --- MODIFICATION END ---
                         
                         if matching_pods:
                             job_key = (vendor.lower(), course_name, host, class_num)
@@ -131,10 +204,19 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                             f5_job_collector[job_key]["pods"].update(matching_pods)
                 else:
                     for pod_detail in course.get("pod_details", []):
-                        pod_num = pod_detail.get("pod_number")
+                        # --- MODIFICATION START ---
+                        pod_num_raw = pod_detail.get("pod_number")
                         host = pod_detail.get("host")
-                        if pod_num is None or host is None: continue
+                        if pod_num_raw is None or host is None: continue
+
+                        try:
+                            pod_num = int(pod_num_raw)
+                        except (ValueError, TypeError):
+                            logger.warning(f"Skipping non-integer pod number '{pod_num_raw}' in course '{course_name}'.")
+                            continue
+                        
                         if not (start_num <= pod_num <= end_num): continue
+                        # --- MODIFICATION END ---
                         if host_filter and host.lower() != host_filter.lower(): continue
                         
                         raw_jobs.append({ "vendor": vendor.lower(), "tag": tag, "course_name": course_name, "host": host, "pod_number": pod_num })

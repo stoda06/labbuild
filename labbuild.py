@@ -116,7 +116,7 @@ def main():
     # -------------------------------
     test_parser = subparsers.add_parser("test", help="Run test suite for labs", parents=[f5_parser])
     test_parser.add_argument("-t", "--tag", help="Run tests for a specific allocation by tag name.")
-    test_parser.add_argument("-v", "--vendor", help="Vendor name. Use alone to test all pods for that vendor.")
+    test_parser.add_argument("-v", "-l", "--vendor", help="Vendor name. Use alone to test all pods for that vendor.")
     test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod number. For F5, this filters pods within classes.")
     test_parser.add_argument("-e", "--end_pod", type=int, help="End pod number. For F5, this filters pods within classes.")
     test_parser.add_argument("-H", "--host", help="ESXi host name (optional, used to filter manual range tests).")
