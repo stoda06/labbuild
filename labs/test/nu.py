@@ -49,14 +49,12 @@ def resolve_ip(ip_template, pod, host_label, print_lock):
             except ValueError:
                 log(f"Invalid integer in last octet for '+X': {base}", print_lock)
         log(f"IP after +X resolution: {ip_template}", print_lock)
-    # --- MODIFIED ---
     if host_label in ["hotshot", "trypticon"]:
         parts = ip_template.split(".")
         if len(parts) == 4 and parts[0] == "172":
             new_ip = ".".join(["172", "26", parts[2], parts[3]])
             log(f"Adjusted IP from 172.{parts[1]} to 172.26 for host {host_label} -> {new_ip}", print_lock)
             return new_ip
-    # --- END MODIFICATION ---
     return ip_template
 
 def run_cluster_status(child, label, ip, pod, print_lock):
@@ -96,9 +94,7 @@ def run_cluster_status(child, label, ip, pod, print_lock):
     return results
 
 def run_ssh_checks(pod, components, host, print_lock):
-    # --- MODIFIED ---
     host_fqdn = f"nuvr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"nuvr{pod}"
-    # --- END MODIFICATION ---
     results = []
     with print_lock:
         print(f"\n🔐 Connecting to {host_fqdn} via SSH...")
@@ -113,17 +109,44 @@ def run_ssh_checks(pod, components, host, print_lock):
             status = "UNKNOWN"
             if port.lower() == "arping":
                 subnet = ".".join(ip.split(".")[:3])
-                child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
+                iface_cmd = f"ip -o addr show | grep '{subnet}\\.' | awk '{{print $2}}'"
+                log(f"Executing interface lookup: {iface_cmd}", print_lock)
+                child.sendline(iface_cmd)
                 child.expect(r"#\s*$")
-                iface = strip_ansi(child.before.decode()).strip().splitlines()[-1] if strip_ansi(child.before.decode()).strip().splitlines() else ""
+                
+                # --- FINAL, ROBUST PARSING LOGIC ---
+                iface_raw_output = strip_ansi(child.before.decode())
+                lines = iface_raw_output.strip().splitlines()
+                # Find the first line *after* the command we sent. That's the result.
+                iface = ""
+                command_sent_found = False
+                for line in lines:
+                    if iface_cmd in line:
+                        command_sent_found = True
+                        continue
+                    if command_sent_found and line.strip():
+                        iface = line.strip()
+                        break
+                # --- END OF PARSING LOGIC ---
+
+                log(f"Interface lookup for subnet {subnet}: raw='{iface_raw_output}', cleaned='{iface}'", print_lock)
+
                 if iface:
-                    child.sendline(f"arping -c 3 -I {iface} {ip}")
+                    arp_cmd = f"arping -c 3 -I {iface} {ip}"
+                    log(f"Executing arping command: {arp_cmd}", print_lock)
+                    child.sendline(arp_cmd)
                     child.expect(r"#\s*$", timeout=15)
-                    status = "UP" if "Unicast reply" in child.before.decode() else "DOWN"
+                    arping_output = child.before.decode()
+                    log(f"Arping raw output for {ip}:\n---\n{arping_output}\n---", print_lock)
+                    status = "UP" if "unicast reply" in arping_output.lower() else "DOWN"
+                else:
+                    log(f"Skipping arping for {ip} because no interface was found.", print_lock)
+                    status = "FAILED"
             else:
                 child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
                 child.expect(r"#\s*$", timeout=20)
-                status = "UP" if "open" in child.before.decode() else "DOWN"
+                nmap_output = child.before.decode()
+                status = "UP" if "open" in nmap_output.lower() else "DOWN"
             results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
         
         results.extend(run_cluster_status(child, "cluster1", "192.168.1.12", pod, print_lock))
@@ -140,7 +163,7 @@ def run_ssh_checks(pod, components, host, print_lock):
         print(f"\n📊 Network & Cluster Check Summary for Pod {pod}")
         headers=["Component", "Component IP", "NU Pod", "Port", "Status"]
         table_data = [[r['component'], r.get('ip', 'N/A'), r.get('host', host_fqdn), r.get('port', 'N/A'), r['status']] for r in results]
-        formatted_rows = [[f"{RED}{cell}{ENDC}" if row[4] != 'UP' else cell for cell in row] for row in table_data]
+        formatted_rows = [[f"{RED}{cell}{ENDC}" if row[4] not in ['UP', 'SUCCESS'] else cell for cell in row] for row in table_data]
         print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
 
     return results
