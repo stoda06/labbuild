@@ -15,7 +15,7 @@ AU_HOST_NAMES = ["nightbird", "cliffjumper", "ultramagnus", "unicron"]
 US_HOST_NAMES = ["hotshot"]
 
 AVAILABLE_RAM_GB = {
-    "Ni": 1800, "Cl": 500, "Ul": 2000, "Un": 2000, "Ho": 2000, "Tr": 1000,
+    "Ni": 1800, "Cl": 500, "Ul": 2000, "Un": 2000, "Ho": 2000, "Tr": 2000,
 }
 
 SUMMARY_ENV_ORDER = ["Ni", "Cl", "Ul", "Un", "Ho", "Tr"]

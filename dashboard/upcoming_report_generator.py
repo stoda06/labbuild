@@ -1,4 +1,7 @@
-# labbuild/dashboard/report_generator.py
+# labbuild/dashboard/upcoming_report_generator.py
+# This file generates the "Upcoming Lab Report" which uses data from the
+# interimallocation collection and also includes extended courses from the
+# currentallocation collection.
 
 import io
 import logging
@@ -7,26 +10,26 @@ import pymongo
 from flask import current_app
 from datetime import datetime
 from collections import defaultdict
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
+# Note: We now import all relevant collection constants
 from constants import (
     INTERIM_ALLOCATION_COLLECTION,
     ALLOCATION_COLLECTION,
     HOST_COLLECTION,
-    COURSE_CONFIG_COLLECTION # Assuming 'courseconfig' is defined in constants
+    COURSE_CONFIG_COLLECTION
 )
 
 from excelreport_config import (
-    ExcelStyle, LOG_LEVEL_GENERATE_EXCEL,
+    ExcelStyle,
     AU_HOST_NAMES, US_HOST_NAMES,
     AVAILABLE_RAM_GB, SUMMARY_ENV_ORDER,
     RAM_SUMMARY_START_COL, EXCEL_GROUP_ORDER, EXCEL_COLUMN_WIDTHS
 )
-
 
 # --- Logging Setup ---
 logger = logging.getLogger(__name__)
@@ -36,6 +39,11 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 def calculate_ram_summary(all_allocations: List[Dict], host_map: Dict) -> Dict[str, float]:
+    """
+    Note: This function calculates RAM totals in Python. It's kept for potential future use
+    but is no longer used for the primary "Allocated RAM" summary at the top of the report,
+    which now uses an Excel formula.
+    """
     allocated_ram_by_env = {env_key: 0 for env_key in host_map.keys()}
     for allocation in all_allocations:
         ram = convert_to_numeric(allocation.get("ram"))
@@ -44,7 +52,11 @@ def calculate_ram_summary(all_allocations: List[Dict], host_map: Dict) -> Dict[s
         if not virtual_hosts_str: continue
         for env_key, host_prefix in host_map.items():
             if host_prefix.lower() in virtual_hosts_str:
-                allocated_ram_by_env[env_key] += ram
+                total_pods_for_course = convert_to_numeric(allocation.get("vendor_pods")) or 1
+                if total_pods_for_course <= 1:
+                    allocated_ram_by_env[env_key] += ram
+                else:
+                    allocated_ram_by_env[env_key] += ram + (total_pods_for_course - 1) * ram / 2
     return allocated_ram_by_env
 
 def convert_to_numeric(val):
@@ -74,7 +86,8 @@ def write_cell(sheet, row, col, value, trainer=False, use_green_fill=False, numb
     if number_format: cell.number_format = number_format
 
 def write_group_title(sheet, row, title):
-    sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=34)
+    # <<< FIX: Removed cell merging for group titles >>>
+    # The merge_cells line has been removed to prevent the title from spanning multiple columns.
     cell = sheet.cell(row=row, column=1, value=title)
     cell.font = Font(bold=True, size=14)
     return row + 1
@@ -89,7 +102,8 @@ def write_merged_header(sheet, row, col, header_text):
         cell.alignment = ExcelStyle.CENTER_ALIGNMENT.value
     sheet.cell(row=row, column=col, value=header_text)
 
-def write_summary_section(sheet, row_offset, allocated_ram_by_env: Dict[str, float]):
+def write_summary_section(sheet, row_offset):
+    # <<< FIX: This function now writes Excel formulas for RAM totals >>>
     start_col = RAM_SUMMARY_START_COL
     env_keys = SUMMARY_ENV_ORDER
     headers = ["RAM Summary", "Total", *env_keys]
@@ -105,16 +119,23 @@ def write_summary_section(sheet, row_offset, allocated_ram_by_env: Dict[str, flo
     sheet.cell(row=allocated_pct_row, column=start_col, value="Allocated RAM (%)").font = Font(bold=True)
     sheet.cell(row=remaining_ram_row, column=start_col, value="Remaining RAM (GB)").font = Font(bold=True)
     total_col_letter = get_column_letter(start_col + 1)
+    
+    first_data_row = 13 # Data rows start at row 13
+    last_data_row = 500 # Use a large number to ensure all data is included
+
     for i, env_key in enumerate(env_keys):
         col, col_letter = start_col + 2 + i, get_column_letter(start_col + 2 + i)
         available_ram = AVAILABLE_RAM_GB.get(env_key, 0)
         write_cell(sheet, available_ram_row, col, available_ram, is_summary=False, number_format='0')
-        allocated_ram = allocated_ram_by_env.get(env_key, 0)
-        write_cell(sheet, allocated_ram_row, col, allocated_ram, is_summary=False, number_format='0.0')
+        
+        formula_ram = f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})/2"
+        write_cell(sheet, allocated_ram_row, col, formula_ram, is_summary=False, number_format='0.0')
+        
         formula_pct = f"=IF({col_letter}{available_ram_row}>0, {col_letter}{allocated_ram_row}/{col_letter}{available_ram_row}, 0)"
         write_cell(sheet, allocated_pct_row, col, formula_pct, is_summary=False, number_format="0%")
         formula_rem = f"={col_letter}{available_ram_row}-{col_letter}{allocated_ram_row}"
         write_cell(sheet, remaining_ram_row, col, formula_rem, is_summary=False, number_format='0.0')
+        
     first_env, last_env = get_column_letter(start_col + 2), get_column_letter(start_col + 1 + len(env_keys))
     write_cell(sheet, available_ram_row, start_col + 1, f"=SUM({first_env}{available_ram_row}:{last_env}{available_ram_row})", number_format='0')
     write_cell(sheet, allocated_ram_row, start_col + 1, f"=SUM({first_env}{allocated_ram_row}:{last_env}{allocated_ram_row})", number_format='0.0')
@@ -155,10 +176,13 @@ def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trai
             write_cell(sheet, row, col, val_to_write, trainer_flag, green_flag, number_format=num_format)
             col += 1
 
-def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total, group_host_ram_totals, group_name, group_end_col):
+def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total_or_formula, group_host_ram_totals, group_name, group_end_col):
+    # <<< FIX: This function now accepts an Excel formula for the pod total >>>
     vendor_col = header_pos.get("Vendor Pods")
-    has_pod_summary, has_ram_summary = vendor_col and group_pod_total > 0, sum(group_host_ram_totals.values()) > 0
+    has_pod_summary = vendor_col and (group_pod_total_or_formula is not None)
+    has_ram_summary = sum(group_host_ram_totals.values()) > 0
     if not (has_pod_summary or has_ram_summary): return start_row
+    
     label_start, label_end = start_row, start_row + 1
     value_start, value_end = start_row + 2, start_row + 3
     summary_end = value_end
@@ -175,8 +199,10 @@ def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total, gro
         label_cell = sheet.cell(row=label_start, column=merge_start, value="Total Pods")
         label_cell.font, label_cell.alignment, label_cell.fill = Font(bold=True, size=16), Alignment(horizontal='center', vertical='center'), ExcelStyle.LIGHT_BLUE_FILL.value
         sheet.merge_cells(start_row=value_start, start_column=merge_start, end_row=value_end, end_column=merge_end)
-        value_cell = sheet.cell(row=value_start, column=merge_start, value=group_pod_total)
+        
+        value_cell = sheet.cell(row=value_start, column=merge_start, value=group_pod_total_or_formula)
         value_cell.font, value_cell.alignment, value_cell.fill = Font(bold=True, size=14), Alignment(horizontal='center', vertical='center'), ExcelStyle.LIGHT_BLUE_FILL.value
+
     if has_ram_summary:
         for host_key, host_ram in group_host_ram_totals.items():
             if host_col := header_pos.get(host_key):
@@ -223,6 +249,14 @@ def _find_field(doc, keys):
         if course_details.get(key) is not None: return course_details.get(key)
     return None
 
+def _find_value_across_docs(docs: list, key_priority_list: list):
+    for key in key_priority_list:
+        for doc in docs:
+            value = doc.get(key)
+            if value is not None and value != '':
+                return value
+    return None
+
 # ==============================================================================
 # CREDENTIAL HANDLING
 # ==============================================================================
@@ -253,95 +287,135 @@ def build_apm_lookup(apm_data):
 # ==============================================================================
 # DATA UNPACKING FUNCTIONS
 # ==============================================================================
-def unpack_current_allocations(documents, vendor_map, apm_lookup_by_code, location_map, host_to_vcenter_map, ram_lookup_map):
-    unpacked_data = {'standard': [], 'extended': [], 'trainer': []}
-    grouped = defaultdict(lambda: {'pod_numbers': set(), 'hosts': set(), 'doc': None})
+def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_by_code, ram_lookup_map, host_vcenter_map):
+    logger.info("Starting unpack_interim_allocations process...")
+    trainer_data_map = {}
+    standard_docs_raw = []
+    trainer_docs_raw = []
+    
     for doc in documents:
-        if not (key := doc.get('tag')): continue
-        if not grouped[key]['doc']: grouped[key]['doc'] = doc
-        for c in doc.get('courses', []):
-            for pd in c.get('pod_details', []):
-                for p in pd.get("pods", [pd]):
-                    if p.get("pod_number") is not None: grouped[key]['pod_numbers'].add(int(p.get("pod_number")))
-                    if p.get("host"): grouped[key]['hosts'].add(p.get("host"))
-
-    for course_code, val in grouped.items():
-        if not val['pod_numbers']: continue
-        doc = val['doc']
-
-        # <<< START OF FIX for RAM >>>
-        numeric_ram = None
-        # Attempt 1: Get RAM from the allocation document itself
-        raw_ram_from_alloc = _find_field(doc, ['ram', 'memory_gb_one_pod'])
-        if raw_ram_from_alloc is not None:
-            numeric_ram = convert_to_numeric(raw_ram_from_alloc)
-
-        # Attempt 2 (Fallback): If RAM not found, use the courseconfig lookup map
-        if not isinstance(numeric_ram, (int, float)) or numeric_ram <= 0:
-            course_version = _find_field(doc, ['course_name', 'version'])
-            if course_version and course_version in ram_lookup_map:
-                ram_from_config = ram_lookup_map.get(course_version)
-                numeric_ram = convert_to_numeric(ram_from_config)
-                logger.debug(f"Used fallback RAM '{numeric_ram}' for course '{course_version}'")
-        # <<< END OF FIX for RAM >>>
-
-        lookup_key = course_code.upper().removesuffix('-TP')
-        creds_from_apm = apm_lookup_by_code.get(lookup_key, {})
-        final_username = _find_field(doc, ['apm_username']) or creds_from_apm.get('username')
-        final_password = _find_field(doc, ['apm_password']) or creds_from_apm.get('password')
-        
-        pod_nums, pod_count = sorted(val['pod_numbers']), len(val['pod_numbers'])
-        pod_range = f"{pod_nums[0]}-{pod_nums[-1]}" if pod_count > 1 else str(pod_nums[0])
-        course_hosts = sorted(val['hosts'])
-        
-        if course_code.upper().endswith("-TP"):
-            pod_type, target_list = 'trainer', unpacked_data['trainer']
-        elif doc.get('extend') == 'true':
-            pod_type, target_list = 'extended', unpacked_data['extended']
+        course_code_value = doc.get('sf_course_code')
+        if course_code_value and '-trainer pod' in str(course_code_value).lower():
+            trainer_docs_raw.append(doc)
         else:
-            pod_type, target_list = 'standard', unpacked_data['standard']
+            standard_docs_raw.append(doc)
+    logger.info(f"Separated documents: {len(standard_docs_raw)} standard, {len(trainer_docs_raw)} trainer.")
 
-        base_pod_data = {
-            'course_code': course_code, 'us_au_location': determine_us_au_location(", ".join(course_hosts)),
-            'pod_type': pod_type, 'start_end_pod': pod_range, 'location': find_location_from_code(course_code, location_map),
-            'course_start_date': format_date(_find_field(doc, ['start_date', 'sf_start_date'])),
-            'last_day': format_date(_find_field(doc, ['end_date', 'sf_end_date'])),
-            'username': final_username, 'password': final_password,
-            'trainer_name': _find_field(doc, ['trainer_name']),
-            'ram': numeric_ram,  # Use the cleaned/fallback numeric RAM value
-            'vendor_pods': pod_count, 'students': pod_count,
-            'course_name': _find_field(doc, ['course_name', 'version']) or 'N/A',
-            'version': _find_field(doc, ['course_name', 'version']) or 'N/A',
-            'course_version': _find_field(doc, ['course_name', 'version']) or 'N/A',
+    processed_trainer_pods = []
+    for doc in trainer_docs_raw:
+        related_courses = doc.get('related_student_courses', [])
+        grouping_course_code = related_courses[0] if related_courses else doc.get('sf_course_code')
+        shared_ram = doc.get('memory_gb_one_pod')
+        if not shared_ram:
+            course_version = doc.get('final_labbuild_course')
+            if course_version in ram_lookup_map:
+                shared_ram = ram_lookup_map.get(course_version)
+        shared_username = doc.get('student_apm_username') or doc.get('apm_username')
+        shared_password = doc.get('student_apm_password') or doc.get('apm_password')
+        trainer_hosts = sorted(set(a.get('host') for a in doc.get('assignments', []) if a.get('host')))
+        shared_host_str = ", ".join(trainer_hosts)
+        trainer_vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in trainer_hosts if h)))
+        shared_vcenter_str = ", ".join(filter(None, trainer_vcenters))
+        if not related_courses:
+             logger.warning(f"Trainer pod doc {doc.get('sf_course_code')} has no related_student_courses. Cannot link data reliably.")
+        for course_code in related_courses:
+            trainer_data_map[course_code] = { 'username': shared_username, 'password': shared_password, 'ram': shared_ram, 'virtual_hosts': shared_host_str }
+        pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in doc.get('assignments', []) if a.get('start_pod')]
+        us_au_loc = determine_us_au_location(shared_host_str)
+        trainer_pod_entry = {
+            'course_code': grouping_course_code, 'location': "", 'us_au_location': us_au_loc, 'course_start_date': "", 'last_day': "",
+            'trainer_name': "", 'course_name': doc.get('sf_course_type', ''), 'start_end_pod': ", ".join(pod_ranges),
+            'username': shared_username, 'password': shared_password, 'class_number': "", 'students': len(related_courses),
+            'vendor_pods': doc.get('effective_pods_req', len(pod_ranges) or 0), 'ram': shared_ram, 'virtual_hosts': shared_host_str,
+            'vcenter': shared_vcenter_str, 'pod_type': 'trainer', 'version': doc.get('final_labbuild_course'), 'course_version': doc.get('final_labbuild_course'),
         }
-        if not course_hosts:
-            pod = base_pod_data.copy()
-            pod['virtual_hosts'], pod['vcenter_name'] = None, ""
-            target_list.append(pod)
-        else:
-            for host in course_hosts:
-                pod = base_pod_data.copy()
-                pod['virtual_hosts'], pod['vcenter_name'] = host, host_to_vcenter_map.get(host, "")
-                target_list.append(pod)
-    return unpacked_data['standard'], unpacked_data['extended'], unpacked_data['trainer']
+        processed_trainer_pods.append(trainer_pod_entry)
+    logger.info(f"Built trainer_data_map for {len(trainer_data_map)} student courses.")
 
-# ==============================================================================
-# EXCEL GENERATION & MAIN ORCHESTRATION
-# ==============================================================================
-# labbuild/dashboard/report_generator.py
+    grouped_courses = defaultdict(lambda: {'docs': [], 'assignments': []})
+    for doc in standard_docs_raw:
+        if code := doc.get('sf_course_code'):
+            grouped_courses[code]['docs'].append(doc)
+            grouped_courses[code]['assignments'].extend(doc.get('assignments', []))
+    processed_standard_courses = []
+    logger.info(f"Processing {len(grouped_courses)} unique standard course codes.")
+    for code, data in grouped_courses.items():
+        base_doc = data['docs'][0]
+        info_from_trainer = trainer_data_map.get(code, {})
+        apm_creds = apm_lookup_by_code.get(code, {})
+        final_username = info_from_trainer.get('username') or apm_creds.get('username')
+        final_password = info_from_trainer.get('password') or apm_creds.get('password')
+        final_ram = info_from_trainer.get('ram') or _find_value_across_docs(data['docs'], ['memory_gb_one_pod', 'ram'])
+        if not final_ram:
+            course_version = base_doc.get('final_labbuild_course')
+            if course_version in ram_lookup_map:
+                final_ram = ram_lookup_map.get(course_version)
+        hosts_from_assignments = sorted(set(a.get('host') for a in data['assignments'] if a.get('host')))
+        final_host_str = info_from_trainer.get('virtual_hosts') or ", ".join(hosts_from_assignments)
+        final_hosts_list = [h.strip() for h in final_host_str.split(',') if h.strip()]
+        vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in final_hosts_list if h)))
+        final_vcenter_str = ", ".join(filter(None, vcenters))
+        pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in data['assignments'] if a.get('start_pod')]
+        us_au_loc = determine_us_au_location(final_host_str)
+        if not us_au_loc and code:
+            code_lower = code.lower()
+            if code_lower.startswith('au-') or '-au-' in code_lower: us_au_loc = "AU"
+            elif code_lower.startswith('us-') or '-us-' in code_lower: us_au_loc = "US"
+        course = {
+            'course_code': code, 'location': find_location_from_code(code, location_map), 'us_au_location': us_au_loc,
+            'course_start_date': format_date(base_doc.get('sf_start_date')), 'last_day': format_date(base_doc.get('sf_end_date')),
+            'trainer_name': base_doc.get('sf_trainer_name'), 'course_name': base_doc.get('sf_course_type'), 'start_end_pod': ", ".join(pod_ranges),
+            'username': final_username, 'password': final_password, 'class_number': base_doc.get('f5_class_number'), 'students': base_doc.get('sf_pax_count', 0),
+            'vendor_pods': base_doc.get('effective_pods_req', len(pod_ranges) or 0), 'ram': final_ram, 'virtual_hosts': final_host_str,
+            'vcenter': final_vcenter_str, 'pod_type': 'default', 'version': base_doc.get('final_labbuild_course'), 'course_version': base_doc.get('final_labbuild_course'),
+        }
+        processed_standard_courses.append(course)
+    logger.info(f"Finished processing. Returning {len(processed_standard_courses)} standard courses and {len(processed_trainer_pods)} trainer pods.")
+    return processed_standard_courses, processed_trainer_pods
 
-# ... (all other functions remain the same) ...
+def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_lookup_map: Dict, host_vcenter_map: Dict) -> List[Dict]:
+    extended_courses = []
+    logger.info(f"Unpacking {len(documents)} extended allocations from currentallocation.")
+    for doc in documents:
+        course_details = doc.get('courses', [{}])[0]
+        if not course_details:
+            logger.warning(f"Skipping extended allocation doc with _id {doc.get('_id')} due to missing 'courses' data.")
+            continue
+        pod_details_list = doc.get('pod_details') or course_details.get('pod_details', [])
+        pod_numbers = sorted([p.get('pod_number') for p in pod_details_list if p.get('pod_number') is not None])
+        hosts = sorted(list(set(p.get('host') for p in pod_details_list if p.get('host'))))
+        vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in hosts if h)))
+        final_vcenter_str = ", ".join(filter(None, vcenters))
+        start_end_pod = ""
+        if pod_numbers:
+            start_end_pod = f"{pod_numbers[0]}-{pod_numbers[-1]}" if len(pod_numbers) > 1 else str(pod_numbers[0])
+        ram_value = course_details.get('memory_gb_one_pod') or course_details.get('ram')
+        if not ram_value:
+            course_version = course_details.get('course_name')
+            if course_version in ram_lookup_map:
+                ram_value = ram_lookup_map.get(course_version)
+        course_code = doc.get('tag', '')
+        course = {
+            'course_code': course_code, 'location': find_location_from_code(course_code, location_map), 'us_au_location': determine_us_au_location(", ".join(hosts)),
+            'course_start_date': format_date(course_details.get('start_date')), 'last_day': format_date(course_details.get('end_date')),
+            'trainer_name': course_details.get('trainer_name'), 'course_name': course_details.get('course_name'), 'start_end_pod': start_end_pod,
+            'username': course_details.get('apm_username'), 'password': course_details.get('apm_password'), 'class_number': None, 'students': len(pod_numbers),
+            'vendor_pods': len(pod_numbers), 'ram': ram_value, 'virtual_hosts': ", ".join(hosts), 'vcenter': final_vcenter_str,
+            'pod_type': 'extended', 'version': course_details.get('course_name'), 'course_version': course_details.get('course_name'),
+        }
+        extended_courses.append(course)
+    return extended_courses
 
 # ==============================================================================
 # EXCEL GENERATION & MAIN ORCHESTRATION
 # ==============================================================================
 def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[Dict], extended_pods: List[Dict], host_map: Dict) -> io.BytesIO:
+    # <<< FIX: This function now generates Excel formulas for summaries >>>
     wb = Workbook()
     sheet = wb.active
-
-    sheet.title = "Labbuild"
+    sheet.title = "Upcoming Labs"
+    
     all_data = course_allocations + trainer_pods + extended_pods
-    allocated_ram_data = calculate_ram_summary(all_data, host_map)
     expanded_data = []
     for entry in all_data:
         hosts_val = entry.get("virtual_hosts")
@@ -381,58 +455,48 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
                 apply_style(cell, is_summary=True)
                 col += 1
         current_row += 1
-        group_host_ram_totals, group_pod_total = {k: 0 for k in host_map}, 0
-        
-        # Combine all records for simpler summary logic
-        all_records_in_group = [e for e in records]
-
-        # Function to calculate RAM based on pods
-        def get_calculated_ram(entry):
-            base_ram = convert_to_numeric(entry.get("ram")) or 0
-            if base_ram <= 0:
-                return 0
-            pods = convert_to_numeric(entry.get("vendor_pods")) or 1
-            if pods <= 1:
-                return base_ram
-            else:
-                return base_ram + (pods - 1) * base_ram / 2
-
-        # <<< START OF FIX >>>
-        # Calculate totals using the corrected logic first
-        for entry in all_records_in_group:
-            group_pod_total += convert_to_numeric(entry.get("vendor_pods")) or 0
-            calculated_ram_for_entry = get_calculated_ram(entry)
-            if calculated_ram_for_entry > 0:
-                 for host_key, host_name in host_map.items():
-                    if host_name.lower() in (entry.get("virtual_hosts", "") or "").lower():
-                        group_host_ram_totals[host_key] += calculated_ram_for_entry
-        # <<< END OF FIX >>>
-        
-        # Now write the rows
+        data_start_row = current_row
+        group_host_ram_totals = {k: 0 for k in host_map}
         non_trainer_pods = [e for e in records if e.get("pod_type") != "trainer"]
         trainer_pods_in_group = [e for e in records if e.get("pod_type") == "trainer"]
         
         for entry in non_trainer_pods:
-            is_extended = entry.get("pod_type") == "extended"
-            _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, False, is_extended, host_map)
+            _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, False, entry.get("pod_type") == "extended", host_map)
+            if (entry_ram := convert_to_numeric(entry.get("ram")) or 0) > 0:
+                for host_key, host_name in host_map.items():
+                    if host_name.lower() in (entry.get("virtual_hosts", "") or "").lower():
+                        total_pods_for_entry = convert_to_numeric(entry.get("vendor_pods")) or 1
+                        if total_pods_for_entry <= 1: group_host_ram_totals[host_key] += entry_ram
+                        else: group_host_ram_totals[host_key] += entry_ram + (total_pods_for_entry - 1) * entry_ram / 2
             current_row += 1
-        
         if non_trainer_pods and trainer_pods_in_group:
-            for col in range(1, group_end_col + 1):
-                sheet.cell(row=current_row, column=col).border = ExcelStyle.THIN_BORDER.value
+            for c in range(1, group_end_col + 1): sheet.cell(row=current_row, column=c).border = ExcelStyle.THIN_BORDER.value
             current_row += 1
-            
         for entry in trainer_pods_in_group:
             _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, True, False, host_map)
+            if (entry_ram := convert_to_numeric(entry.get("ram")) or 0) > 0:
+                for host_key, host_name in host_map.items():
+                    if host_name.lower() in (entry.get("virtual_hosts", "") or "").lower():
+                        total_pods_for_entry = convert_to_numeric(entry.get("vendor_pods")) or 1
+                        if total_pods_for_entry <= 1: group_host_ram_totals[host_key] += entry_ram
+                        else: group_host_ram_totals[host_key] += entry_ram + (total_pods_for_entry - 1) * entry_ram / 2
             current_row += 1
+        data_end_row = current_row - 1
+        
+        pod_total_formula = 0
+        vendor_pods_col_num = header_pos.get("Vendor Pods")
+        if vendor_pods_col_num and data_start_row <= data_end_row:
+            vendor_pods_col_letter = get_column_letter(vendor_pods_col_num)
+            pod_total_formula = f"=SUM({vendor_pods_col_letter}{data_start_row}:{vendor_pods_col_letter}{data_end_row})"
 
         summary_start_row = current_row
-        current_row = write_group_summary_boxes(sheet, summary_start_row, header_pos, group_pod_total, group_host_ram_totals, group_name, group_end_col)
+        current_row = write_group_summary_boxes(sheet, summary_start_row, header_pos, pod_total_formula, group_host_ram_totals, group_name, group_end_col)
         end_row = current_row - 1 if summary_start_row < current_row else summary_start_row - 1
         apply_outer_border(sheet, group_start_row, end_row, 1, group_end_col)
         current_row += 1
         
-    write_summary_section(sheet, 2, allocated_ram_data)
+    write_summary_section(sheet, 2)
+    
     for col_letter, width in EXCEL_COLUMN_WIDTHS.items():
         sheet.column_dimensions[col_letter].width = width
     in_memory_fp = io.BytesIO()
@@ -440,46 +504,58 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
     in_memory_fp.seek(0)
     return in_memory_fp
 
-def get_full_report_data(db):
+def get_upcoming_report_data(db):
     try:
         if db is None: raise ConnectionError("A valid database connection was not provided.")
-        logger.info("Fetching data using provided DB connection...")
-        # <<< START OF FIX for RAM >>>
-        # Fetch allocations, configs, and other metadata
-        current_docs = list(db[ALLOCATION_COLLECTION].find({}))
-        course_configs = list(db[COURSE_CONFIG_COLLECTION].find({}, {"course_name": 1, "memory": 1}))
-        locations_data, host_docs = list(db["locations"].find({})), list(db[HOST_COLLECTION].find({}))
+        
+        logger.info("Fetching data for upcoming report from INTERIM_ALLOCATION_COLLECTION...")
+        interim_docs = list(db[INTERIM_ALLOCATION_COLLECTION].find({}))
+        
+        logger.info("Fetching extended courses from CURRENT_ALLOCATION_COLLECTION...")
+        extended_docs = list(db[ALLOCATION_COLLECTION].find({"extend": "true"}))
+        logger.info(f"Found {len(extended_docs)} allocations marked for extension.")
 
-        # Create the RAM lookup map from course configs
+        logger.info("Fetching course configs for RAM fallback...")
+        course_configs = list(db[COURSE_CONFIG_COLLECTION].find({}, {"course_name": 1, "memory": 1}))
         ram_lookup_map = {
             doc['course_name']: doc['memory']
             for doc in course_configs if 'course_name' in doc and 'memory' in doc
         }
-        logger.info(f"Built RAM lookup map with {len(ram_lookup_map)} entries from courseconfig.")
-        # <<< END OF FIX for RAM >>>
+        logger.info(f"Built RAM lookup map with {len(ram_lookup_map)} entries.")
+
+        locations_data = list(db["locations"].find({}))
+        host_docs = list(db[HOST_COLLECTION].find({}))
 
         host_map_for_summary = {doc['host_shortcode'].capitalize(): doc['host_shortcode'] for doc in host_docs if 'host_shortcode' in doc and doc.get('include_for_build') == 'true'}
-        logger.info(f"Dynamically built HOST_MAP for summary: {host_map_for_summary}")
-        
-        host_to_vcenter_map = {}
-        for doc in host_docs:
-            if doc.get('host_name') and doc.get('vcenter'):
-                vcenter_fqdn = doc['vcenter']
-                short_vcenter_name = vcenter_fqdn.split('.')[0] if isinstance(vcenter_fqdn, str) else ""
-                host_to_vcenter_map[doc['host_name']] = short_vcenter_name
-
         location_map = {loc['code']: loc['name'] for loc in locations_data if 'code' in loc and 'name' in loc}
-        logger.info("Successfully fetched data from MongoDB.")
+        
+        # <<< FIX: Create a robust, case-insensitive vCenter map with shortened names. >>>
+        host_vcenter_map = {}
+        logger.info("Building robust host-to-vCenter lookup map...")
+        for doc in host_docs:
+            vcenter_fqdn = doc.get('vcenter')
+            if not (vcenter_fqdn and isinstance(vcenter_fqdn, str)):
+                continue
+            short_vcenter = vcenter_fqdn.split('.')[0]
+            for key in ['host_name', 'fqdn', 'host_shortcode']:
+                identifier = doc.get(key)
+                if identifier and isinstance(identifier, str):
+                    host_vcenter_map[identifier.lower()] = short_vcenter
+        logger.info(f"Built vCenter map with {len(host_vcenter_map)} keys for reliable lookup.")
         
         vendor_map = get_vendor_prefix_map()
         apm_data = fetch_apm_credentials()
         apm_lookup_by_code = build_apm_lookup(apm_data)
         
-        # Pass the new ram_lookup_map to the unpacking function
-        course_allocs, extended_pods, all_trainer_pods = unpack_current_allocations(current_docs, vendor_map, apm_lookup_by_code, location_map, host_to_vcenter_map, ram_lookup_map)
+        course_allocs, trainer_pods = unpack_interim_allocations(interim_docs, vendor_map, location_map, apm_lookup_by_code, ram_lookup_map, host_vcenter_map)
+        extended_pods = unpack_extended_allocations(extended_docs, location_map, ram_lookup_map, host_vcenter_map)
         
-        logger.info(f"Processed: {len(course_allocs)} Standard | {len(extended_pods)} Extended | {len(all_trainer_pods)} Trainer pods")
-        return course_allocs, all_trainer_pods, extended_pods, host_map_for_summary
+        logger.info(
+            f"Processed for Upcoming Report: {len(course_allocs)} Standard Courses | "
+            f"{len(trainer_pods)} Trainer Pods | {len(extended_pods)} Extended Pods"
+        )
+        return course_allocs, trainer_pods, extended_pods, host_map_for_summary
+
     except Exception as e:
-        logger.error(f"FATAL: An error occurred during data fetching: {e}", exc_info=True)
+        logger.error(f"FATAL: An error occurred during upcoming report data fetching: {e}", exc_info=True)
         raise e
