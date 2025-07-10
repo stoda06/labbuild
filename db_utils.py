@@ -1,4 +1,3 @@
-# db_utils.py
 """Database utility functions for MongoDB interaction."""
 
 import logging
@@ -12,7 +11,7 @@ from pymongo.errors import PyMongoError, ConnectionFailure
 from dotenv import load_dotenv
 
 # Import constants
-from constants import DB_NAME, ALLOCATION_COLLECTION
+from constants import DB_NAME, ALLOCATION_COLLECTION, HOST_COLLECTION
 
 # Load environment variables for MongoDB connection
 load_dotenv() # Assumes .env is in the project root relative to where labbuild.py runs
@@ -55,6 +54,44 @@ def mongo_client() -> Generator[Optional[pymongo.MongoClient], None, None]:
         if client:
             client.close()
             logger.debug("Closed MongoDB connection.")
+
+# --- NEW FUNCTION ---
+def get_vcenter_by_host(host_name: str) -> Optional[str]:
+    """
+    Queries the hosts collection to get the vCenter FQDN for a given host name.
+    """
+    try:
+        with mongo_client() as client:
+            if not client:
+                logger.error(f"Get vCenter: DB connection failed for host '{host_name}'.")
+                return None
+            
+            db = client[DB_NAME]
+            collection = db[HOST_COLLECTION]
+            
+            logger.debug(f"Searching for host '{host_name}' in collection '{HOST_COLLECTION}'.")
+            # Query is case-insensitive for robustness
+            doc = collection.find_one({"host_name": host_name.lower()})
+
+            if not doc:
+                logger.warning(f"Host '{host_name}' not found in the hosts collection.")
+                return None
+
+            vcenter_fqdn = doc.get('vcenter')
+            if not vcenter_fqdn:
+                logger.warning(f"Host '{host_name}' found, but is missing a 'vcenter' field.")
+                return None
+
+            logger.debug(f"Found vCenter '{vcenter_fqdn}' for host '{host_name}'.")
+            return vcenter_fqdn
+
+    except PyMongoError as e:
+        logger.error(f"Get vCenter (PyMongoError) for host '{host_name}': {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Get vCenter error for host '{host_name}': {e}", exc_info=True)
+        return None
+# --- END NEW FUNCTION ---
 
 def update_database(data: Dict[str, Any]):
     """

@@ -61,7 +61,26 @@ def _propose_assignments(
             elif isinstance(item, list): flat_hosts_list.extend([str(sub_item) for sub_item in item if isinstance(sub_item, str)])
     elif isinstance(hosts_to_try, str): flat_hosts_list.append(hosts_to_try)
     
-    unavailable_pods = db_locked_pods.get(vendor_code, set()).union(pods_assigned_in_this_batch.get(vendor_code, set()))
+    unavailable_pods = set()
+    # 1. Add pods of the same type that are already assigned (DB lock or this batch)
+    unavailable_pods.update(db_locked_pods.get(vendor_code, set()))
+    unavailable_pods.update(pods_assigned_in_this_batch.get(vendor_code, set()))
+
+    # 2. Add pods that would create an IP conflict
+    if vendor_code == 'cp_regular':
+        # A regular pod 'Y' conflicts with a maestro pod 'X' if Y = X + 100.
+        # For every existing maestro pod X, block regular pod X + 100.
+        all_maestro_pods = db_locked_pods.get('cp_maestro', set()).union(pods_assigned_in_this_batch.get('cp_maestro', set()))
+        for x in all_maestro_pods:
+            unavailable_pods.add(x + 100)
+    
+    elif vendor_code == 'cp_maestro':
+        # A maestro pod 'X' conflicts with a regular pod 'Y' if X = Y - 100.
+        # For every existing regular pod Y, block maestro pod Y - 100.
+        all_regular_pods = db_locked_pods.get('cp_regular', set()).union(pods_assigned_in_this_batch.get('cp_regular', set()))
+        for y in all_regular_pods:
+            if y > 100:
+                unavailable_pods.add(y - 100)
     
     # Try to find one contiguous block on the best host first
     for host_target in flat_hosts_list:
@@ -195,7 +214,12 @@ def intermediate_build_review():
             for tag_doc in db_allocs_cursor:
                 for course in tag_doc.get("courses", []):
                     vendor = course.get("vendor", "").lower()
+                    course_name = course.get("course_name", "").lower()
                     if not vendor: continue
+                    vendor_key = vendor
+                    if vendor == 'cp':
+                        is_maestro = 'maestro' in course_name
+                        vendor_key = 'cp_maestro' if is_maestro else 'cp_regular'
                     for pd in course.get("pod_details", []):
                         try:
                             if vendor == 'f5':
@@ -205,7 +229,8 @@ def intermediate_build_review():
                                     initial_data["f5_highest_class_number_used"] = max(initial_data["f5_highest_class_number_used"], class_num_int)
                                 for nested in pd.get("pods", []):
                                     if nested.get("pod_number") is not None: initial_data["db_locked_pods"]['f5'].add(int(nested["pod_number"]))
-                            elif pd.get("pod_number") is not None: initial_data["db_locked_pods"][vendor].add(int(pd["pod_number"]))
+                            elif pd.get("pod_number") is not None: 
+                                initial_data["db_locked_pods"][vendor_key].add(int(pd["pod_number"]))
                         except (ValueError, TypeError): continue
             initial_data["db_locked_pods"]['f5'].add(17)
             logger.info("Reserved pod number 17 for vendor 'f5'. It will not be allocated.")
@@ -413,6 +438,7 @@ def intermediate_build_review():
                 part_doc["maestro_part_name"] = part["name"]
                 part_doc["final_labbuild_course"] = part["course"]
                 part_doc["effective_pods_req"] = part["pods"]
+                vendor_key_for_proposal = 'cp_maestro' if vendor == 'cp' else vendor
                 
                 mem = _get_memory_for_course_local(part["course"], {c['course_name']: c for c in initial_data["course_configs"]})
                 part_doc["memory_gb_one_pod"] = mem
@@ -422,7 +448,7 @@ def intermediate_build_review():
                     num_pods_to_allocate=part["pods"],
                     hosts_to_try=part["hosts"], # Pass the correctly filtered host list
                     memory_per_pod=mem,
-                    vendor_code=vendor,
+                    vendor_code=vendor_key_for_proposal,
                     start_pod_suggestion=rule_based_actions.get("start_pod_number", 1),
                     pods_assigned_in_this_batch=batch_state["pods_assigned"],
                     db_locked_pods=initial_data["db_locked_pods"],
@@ -451,6 +477,11 @@ def intermediate_build_review():
                 elif rule_course:
                     warning = (warning or "") + f"Rule course '{rule_course}' is invalid."
             
+            is_maestro_course = 'maestro' in (final_lb_course or "").lower()
+            vendor_key_for_proposal = vendor
+            if vendor == 'cp':
+                vendor_key_for_proposal = 'cp_maestro' if is_maestro_course else 'cp_regular'
+            
             pods_req_str = str(course_input.get('sf_pods_req', '1'))
             pods_req_calc_match = re.match(r"^\s*(\d+)", pods_req_str)
             eff_pods_req = int(pods_req_calc_match.group(1)) if pods_req_calc_match else 1
@@ -458,6 +489,14 @@ def intermediate_build_review():
                 eff_pods_req = int(rule_based_actions.get("override_pods_req"))
             if rule_based_actions.get("set_max_pods") is not None:
                 eff_pods_req = min(eff_pods_req, int(rule_based_actions.get("set_max_pods")))
+
+            f5_pod_adjustment_warning = None
+            if vendor == 'f5' and eff_pods_req > 0:
+                if eff_pods_req % 2 != 0:
+                    original_req = eff_pods_req
+                    eff_pods_req += 1
+                    f5_pod_adjustment_warning = f"F5 pod count adjusted from {original_req} to {eff_pods_req} to be even."
+                    logger.info(f"For F5 course '{sf_code}', {f5_pod_adjustment_warning}")
             
             mem_per_pod = _get_memory_for_course_local(final_lb_course, {c['course_name']: c for c in initial_data["course_configs"]}) if final_lb_course else 0.0
 
@@ -467,7 +506,7 @@ def intermediate_build_review():
 
             assignments, auto_assign_warn = _propose_assignments(
                 num_pods_to_allocate=max(0, eff_pods_req), hosts_to_try=hosts_to_try, memory_per_pod=mem_per_pod,
-                vendor_code=vendor, start_pod_suggestion=max(1, int(rule_based_actions.get('start_pod_number', 1))),
+                vendor_code=vendor_key_for_proposal, start_pod_suggestion=max(1, int(rule_based_actions.get('start_pod_number', 1))),
                 pods_assigned_in_this_batch=batch_state["pods_assigned"], db_locked_pods=initial_data["db_locked_pods"],
                 current_host_capacities_gb=batch_state["capacities"]
             )
@@ -493,7 +532,8 @@ def intermediate_build_review():
                 interim_doc['f5_class_number'] = next_class_num
                 batch_state['f5_class_number_cursor'] = next_class_num + 1
 
-            final_warning = (warning + ". " if warning else "") + (auto_assign_warn or "")
+            final_warning_parts = [part for part in [warning, f5_pod_adjustment_warning, auto_assign_warn] if part]
+            final_warning = ". ".join(final_warning_parts)
             if not assignments and interim_doc["effective_pods_req"] > 0:
                 final_warning += " Could not auto-assign any pods."
             
@@ -817,6 +857,10 @@ def prepare_trainer_pods():
 
         first_course_in_group = courses_in_group[0]
         vendor = first_course_in_group.get("vendor", "").lower()
+        is_maestro_tp = 'maestro' in (lb_course or "").lower()
+        vendor_key_tp = vendor
+        if vendor == 'cp':
+            vendor_key_tp = 'cp_maestro' if is_maestro_tp else 'cp_regular'
         sf_codes_in_group = sorted(list({c['sf_course_code'] for c in courses_in_group}))
         
         # --- REVISED: Get course types directly from the confirmed student documents ---
@@ -841,13 +885,21 @@ def prepare_trainer_pods():
         mem_per_pod = _get_memory_for_course_local(lb_course, {c['course_name']: c for c in prep_data["course_configs_for_mem"]})
         
         hosts_to_try = eff_actions_tp.get("host_priority", prep_data["all_hosts_dd"])
+
+        start_pod_sugg = 100 # Default fallback
+        if vendor == 'f5':
+            start_pod_sugg = 50
+            logger.info(f"F5 trainer pod for '{lb_course}' detected. Setting start pod suggestion to 50.")
+        else:
+            # Use rule-based suggestion or default for other vendors
+            start_pod_sugg = max(1, int(eff_actions_tp.get('start_pod_number', 100)))
         
         assignments, warn = _propose_assignments(
             num_pods_to_allocate=num_pods_needed,
             hosts_to_try=hosts_to_try,
             memory_per_pod=mem_per_pod,
-            vendor_code=vendor,
-            start_pod_suggestion=max(1, int(eff_actions_tp.get('start_pod_number', 100))),
+            vendor_code=vendor_key_tp,
+            start_pod_suggestion=start_pod_sugg,
             pods_assigned_in_this_batch=batch_trainer_state["pods_assigned"],
             db_locked_pods={},
             current_host_capacities_gb=batch_trainer_state["working_host_caps_gb"]
@@ -1199,41 +1251,59 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
             return [], "Error fetching review data."
 
     # --- Nested Helper: Update DB with APM credentials ---
-    def _update_db_with_apm(batch_id, apm_creds_map):
+    def _update_db_with_apm(batch_id, apm_creds_map, apm_commands_map):
         """
-        Updates all interim documents for a given course code with the generated APM credentials.
+        Updates all interim documents for a given course code with the generated APM credentials and commands.
         This now uses UpdateMany to handle split courses like Maestro.
         """
         if not apm_creds_map:
             return True, "No APM credentials to update."
         
         update_ops = []
+        processed_codes_for_commands = set()
+
         for apm_code, creds in apm_creds_map.items():
+            # Prepare the payload with both credentials and commands
+            commands_for_this_code = apm_commands_map.get(apm_code, [])
+            base_payload = {"apm_commands": commands_for_this_code}
+
             if apm_code.endswith("-TP"):
                 # Handle trainer pods
                 sf_code = apm_code[:-3]
-                payload = {"trainer_apm_username": creds.get("username"), "trainer_apm_password": creds.get("password")}
-                # Use UpdateMany to apply trainer creds to all parts of a course (e.g., Maestro)
+                payload = {**base_payload, "trainer_apm_username": creds.get("username"), "trainer_apm_password": creds.get("password")}
                 update_ops.append(UpdateMany(
                     {"batch_review_id": batch_id, "sf_course_code": sf_code},
                     {"$set": payload}
                 ))
+                processed_codes_for_commands.add(apm_code)
             else:
                 # Handle student pods
-                payload = {"student_apm_username": creds.get("username"), "student_apm_password": creds.get("password")}
-                # Use UpdateMany to apply student creds to all parts of a course (e.g., Maestro)
+                payload = {**base_payload, "student_apm_username": creds.get("username"), "student_apm_password": creds.get("password")}
                 update_ops.append(UpdateMany(
                     {"batch_review_id": batch_id, "sf_course_code": apm_code},
                     {"$set": payload}
                 ))
+                processed_codes_for_commands.add(apm_code)
+
+        # Handle commands for codes that didn't have credentials (e.g., pure deletes)
+        for apm_code, commands in apm_commands_map.items():
+            if apm_code in processed_codes_for_commands or not commands:
+                continue
+            
+            payload = {"apm_commands": commands}
+            update_ops.append(UpdateMany(
+                {"batch_review_id": batch_id, "sf_course_code": apm_code},
+                {"$set": payload}
+            ))
+
         try:
             if update_ops and interim_alloc_collection is not None:
                 result = interim_alloc_collection.bulk_write(update_ops)
-                logger.info(f"Updated APM credentials in DB. Matched: {result.matched_count}, Modified: {result.modified_count}")
+                logger.info(f"Updated APM credentials & commands in DB. Matched: {result.matched_count}, Modified: {result.modified_count}")
             return True, None
         except Exception as e:
-            logger.error(f"Error updating interim DB with APM credentials: {e}", exc_info=True)
-            return False, "Database error while saving APM credentials."
+            logger.error(f"Error updating interim DB with APM data: {e}", exc_info=True)
+            return False, "Database error while saving APM data."
 
     # --- Nested Helper: Process final plan for display ---
     def _process_plan_for_display(final_plan_docs):
@@ -1349,40 +1419,44 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                 apm_errors.append("Could not fetch extended allocation tags.")
 
         # Step 2: Call the helper with all required arguments
-        apm_commands, apm_creds_map, gen_errors = generate_apm_helper(
+        commands_by_code, apm_creds_map, gen_errors = generate_apm_helper(
             final_plan_docs, 
             current_apm_entries, 
             extended_apm_codes
         )
-        apm_errors.extend(gen_errors) # Combine any errors
+        
+        # Flatten for the template preview
+        apm_commands = [cmd for cmd_list in commands_by_code.values() for cmd in cmd_list]
+        apm_errors.extend(gen_errors)
 
         if apm_errors:
             flash("Note: Errors occurred during APM data generation: " + " | ".join(apm_errors), "info")
         
-        # Step 3: Update DB with new credentials
-        success, error = _update_db_with_apm(batch_review_id, apm_creds_map)
+        # Update DB with new credentials AND commands
+        success, error = _update_db_with_apm(batch_review_id, apm_creds_map, commands_by_code)
         if not success:
             flash(error, "danger")
         
-        # Re-fetch to get the newly saved APM credentials
+        # Re-fetch to get the newly saved APM data
         final_plan_docs, _ = _fetch_all_plan_data(batch_review_id)
     else:
         # This "view-only" logic remains the same
         logger.info(f"Skipping APM data regeneration for batch '{batch_review_id}'. Displaying existing data.")
         try:
-            # We still need to fetch the data to generate a preview of commands
             current_apm_entries = {}
             extended_apm_codes = set()
             try:
                 apm_list_url = os.getenv("APM_LIST_URL", "http://connect.rededucation.com:1212/list")
                 response = requests.get(apm_list_url, timeout=15); response.raise_for_status()
                 current_apm_entries = response.json()
-            except Exception: pass # Ignore errors for preview
+            except Exception: pass
             if alloc_collection is not None:
                 for doc in alloc_collection.find({"extend": "true"}, {"tag": 1, "_id": 0}):
                     if doc.get("tag"): extended_apm_codes.add(doc.get("tag"))
 
-            apm_commands, _, _ = generate_apm_helper(final_plan_docs, current_apm_entries, extended_apm_codes)
+            commands_by_code_preview, _, _ = generate_apm_helper(final_plan_docs, current_apm_entries, extended_apm_codes)
+            # Flatten for preview
+            apm_commands = [cmd for cmd_list in commands_by_code_preview.values() for cmd in cmd_list]
         except Exception as e:
             logger.warning(f"Could not generate APM command preview for view-only mode: {e}")
             apm_commands = ["# Could not generate command preview."]
