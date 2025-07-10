@@ -885,3 +885,34 @@ def export_trainer_pod_allocation():
         logger.error(f"Failed to generate Trainer Pod Allocation report: {e}", exc_info=True)
         flash(f"Could not generate the trainer pod report. Error: {e}", 'danger')
         return redirect(url_for('main.view_allocations')) # Adjust redirect as needed
+
+@bp.route('/test-tag', methods=['POST'])
+def test_tag():
+    """
+    Handles a 'test' action for a given tag from the allocations page.
+    """
+    tag = request.form.get('tag')
+    if not tag:
+        flash("Tag identifier is missing for the test action.", "danger")
+        return redirect(url_for('main.view_allocations'))
+
+    logger.info(f"Received 'test' request for tag: {tag}")
+    
+    # Construct the argument list for the labbuild.py script
+    args_list = ['test', '-t', tag]
+
+    try:
+        # Run the command in a background thread so the UI doesn't block
+        thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True)
+        thread.start()
+        
+        flash(f"Submitted 'test' command for tag '{tag}'. Check logs for progress.", 'info')
+        logger.info(f"Dispatched background task for 'test -t {tag}'")
+
+    except Exception as e:
+        logger.error(f"Failed to start thread for 'test' command on tag '{tag}': {e}", exc_info=True)
+        flash("Error starting the test task. Check server logs.", 'danger')
+
+    # Preserve any existing filters when redirecting
+    query_params = {k: v for k, v in request.args.items() if k.startswith('filter_')}
+    return redirect(url_for('main.view_allocations', **query_params))
