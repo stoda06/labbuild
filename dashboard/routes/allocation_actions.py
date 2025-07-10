@@ -4,14 +4,12 @@ import logging
 import json
 import threading
 from dashboard.utils import get_next_monday_date_str
-# Add these with your other imports
-from flask import Response # This one is probably new for this file
+
+from flask import Response
 from datetime import datetime
-# At the top of allocation_actions.py
-# ... other imports
+
 from dashboard.trainer_report_generator import fetch_trainer_pod_data, create_trainer_report_in_memory
 from ..upcoming_report_generator import get_upcoming_report_data, generate_excel_in_memory as generate_upcoming_report
-# This is the crucial import from the new file we created
 from ..report_generator import get_full_report_data, generate_excel_in_memory
 from flask import (
     Blueprint, request, redirect, url_for, flash, jsonify, Response
