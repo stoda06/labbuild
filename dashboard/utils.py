@@ -6,20 +6,45 @@ import os
 import logging
 import datetime
 import pytz
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 from flask import current_app
 import random
 import string
-from typing import Union
 from pyVmomi import vim # type: ignore
 from vcenter_utils import get_vcenter_instance # Import your vCenter connector
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
+from bson import ObjectId
 
 # Import DB collection from extensions only if needed by utils directly
 # Currently only update_power_state_in_db needs it
 from .extensions import alloc_collection
 
 logger = logging.getLogger('dashboard.utils')
+
+def _generate_deterministic_password(doc_id: Optional[str], length: int = 8) -> str:
+    """
+    Generates a deterministic numeric password of a given length by hashing a document ID.
+    If the ID is missing, it returns a random password as a fallback.
+    """
+    if not doc_id:
+        # Fallback to a random password if no ID is provided, for safety.
+        return "".join(random.choice(string.digits) for _ in range(length))
+
+    # Use SHA-256 to hash the document ID string.
+    hasher = hashlib.sha256()
+    hasher.update(str(doc_id).encode('utf-8'))
+    hash_bytes = hasher.digest()
+
+    # Convert the first few bytes of the hash to an integer.
+    # Using the first 8 bytes (64 bits) for a large number space.
+    hash_int = int.from_bytes(hash_bytes[:8], 'big')
+
+    # Take modulo to get a number within the desired range (e.g., 0 to 99,999,999 for length 8).
+    password_num = hash_int % (10 ** length)
+
+    # Format as a zero-padded string of the desired length.
+    return f"{password_num:0{length}d}"
 
 def build_args_from_form(form_data):
     """Converts form dictionary to a list of CLI arguments for labbuild.py
@@ -531,10 +556,6 @@ def get_hosts_available_memory_parallel(host_details_list: List[Dict]) -> Dict[s
 
     logger.info(f"Finished parallel memory fetch. Results for {len(host_memory_gb)} hosts.")
     return host_memory_gb
-
-def _generate_random_password(length=8) -> str:
-    """Generates a random numeric password of specified length."""
-    return "".join(random.choice(string.digits) for _ in range(length))
 
 def _create_contiguous_ranges(pod_numbers: List[Union[int,str]]) -> str:
     """

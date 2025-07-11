@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const labbuildCommandsModal = document.getElementById('labbuildCommandsModal');
     const emailModal = document.getElementById('emailTrainersModal');
     const scheduleOptionSelect = document.getElementById('schedule_option_select');
+    const apmCommandsModal = document.getElementById('apmCommandsModal');
 
     let buildableItemsData = [];
     let allReviewData = [];
@@ -66,6 +67,54 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     setupCopyButton('copyApmCommandsBtn', 'apmCommandsModalBody');
     setupCopyButton('copyLabbuildCommandsBtn', 'labbuildCommandsModalBody');
+
+    if (apmCommandsModal) {
+        const modalBody = document.getElementById('apmCommandsModalBody');
+        const outputEl = document.getElementById('apmCommandsOutput');
+        const loadingMsg = document.getElementById('apmCommandsLoadingMsg');
+        const batchIdInput = document.querySelector('input[name="batch_review_id"]');
+
+        async function generateApmCommands() {
+            if (!modalBody || !outputEl || !loadingMsg || !batchIdInput) return;
+
+            // Show loading state
+            outputEl.textContent = '';
+            loadingMsg.textContent = 'Generating APM commands...';
+            loadingMsg.style.display = 'block';
+
+            try {
+                const response = await fetch('/apm/generate-commands', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        batch_review_id: batchIdInput.value
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                
+                loadingMsg.style.display = 'none'; // Hide loading message
+                if (data.commands && data.commands.length > 0) {
+                    outputEl.textContent = data.commands.join('\n');
+                } else {
+                    outputEl.textContent = "# No APM commands needed for this plan.";
+                }
+
+            } catch (error) {
+                console.error("Error generating APM commands:", error);
+                loadingMsg.style.display = 'none';
+                outputEl.textContent = `# Error fetching commands: ${error.message}`;
+                outputEl.style.color = 'var(--bs-danger)';
+            }
+        }
+
+        // Add event listener to trigger the generation when the modal is about to open
+        apmCommandsModal.addEventListener('show.bs.modal', generateApmCommands);
+    }
 
     if (labbuildCommandsModal) {
         const performTeardownCheckbox = document.getElementById('perform_teardown_first');

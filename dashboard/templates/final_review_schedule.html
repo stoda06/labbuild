@@ -136,11 +136,8 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body" id="apmCommandsModalBody">
-        {% if apm_commands_for_preview %}
-            <pre><code>{{ apm_commands_for_preview | join('\n') }}</code></pre>
-        {% else %}
-            <p class="text-info">No APM commands were generated for this plan.</p>
-        {% endif %}
+        <p class="text-muted" id="apmCommandsLoadingMsg">Click "Preview APM Commands" to generate the list.</p>
+        <pre><code id="apmCommandsOutput"></code></pre>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" id="copyApmCommandsBtn" title="Copy all commands to clipboard">

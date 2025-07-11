@@ -10,7 +10,7 @@ from collections import defaultdict
 from typing import List, Dict, Set, Tuple, Any
 from pymongo.errors import PyMongoError
 from ..extensions import alloc_collection, interim_alloc_collection
-from ..utils import _create_contiguous_ranges, _generate_random_password
+from ..utils import _create_contiguous_ranges, _generate_deterministic_password
 
 bp = Blueprint('apm_actions', __name__, url_prefix='/apm')
 logger = logging.getLogger('dashboard.routes.apm_actions')
@@ -31,10 +31,8 @@ def _generate_apm_data_for_plan(
     apm_errors: List[str] = []
     apm_credentials_map: Dict[str, Dict[str, str]] = {}
 
-    # --- NEW: Define hosts that map to the US APM server ---
     US_APM_HOSTS = {"hotshot", "trypticon"}
 
-    # Helper function to determine the APM version string
     def _determine_apm_version(vendor: str, lb_course_name: str, sf_course_code: str) -> str:
         vendor_lower = (vendor or "").lower()
         lb_course_lower = (lb_course_name or "").lower()
@@ -57,7 +55,6 @@ def _generate_apm_data_for_plan(
 
         return lb_course_name or "unknown-version"
 
-    # Helper function to expand pod ranges, including Nutanix logic
     def get_expanded_pods(assignments, vendor):
         expanded_pods = set()
         for asgn in assignments:
@@ -73,10 +70,16 @@ def _generate_apm_data_for_plan(
                         expanded_pods.add(pod_num)
         return expanded_pods
 
-    # --- Step 1: Build the desired state from the build plan, including target location ---
     desired_apm_state = defaultdict(lambda: {"all_pod_numbers": set(), "assigned_hosts": set()})
     
     for item in final_plan_items:
+        # --- MODIFICATION: Add logging to inspect the item ---
+        logger.debug(f"Processing item for APM state: {item}")
+        doc_id_for_debug = item.get("_id")
+        if not doc_id_for_debug:
+            logger.warning(f"Item with SF code '{item.get('sf_course_code')}' is MISSING '_id'. Password will be random.")
+        # --- END MODIFICATION ---
+
         is_trainer_group_doc = item.get("sf_trainer_name") == "Trainer Pods"
         key = item.get("sf_course_code") if is_trainer_group_doc else (item.get("original_sf_course_code") or item.get("sf_course_code"))
         if not key: continue
@@ -94,12 +97,12 @@ def _generate_apm_data_for_plan(
                 "type": final_course_type,
                 "lb_course_name": item.get("final_labbuild_course", "N/A"),
                 "sf_course_code": key,
-                "vendor": vendor
+                "vendor": vendor,
+                "doc_id": str(item.get("_id"))
             }
         desired_apm_state[key]["all_pod_numbers"].update(get_expanded_pods(assignments, vendor))
         desired_apm_state[key]["assigned_hosts"].update({a.get("host") for a in assignments if a.get("host")})
 
-    # --- Step 2: Finalize desired state (password, range, version, and target_location) ---
     final_desired_state: Dict[str, Dict[str, Any]] = {}
     for code, data in desired_apm_state.items():
         if not data["all_pod_numbers"]: continue
@@ -113,20 +116,20 @@ def _generate_apm_data_for_plan(
             sf_course_code=data["details"]["sf_course_code"]
         )
         
+        doc_id = data["details"].get("doc_id")
+        
         final_desired_state[code] = {
             "vpn_auth_courses": f"{data['details']['trainer']} - {data['details']['type']}"[:250],
             "vpn_auth_range": _create_contiguous_ranges(list(data["all_pod_numbers"])),
             "version": apm_version,
-            "password": _generate_random_password(),
+            "password": _generate_deterministic_password(doc_id),
             "vendor_short": data["details"]["vendor"],
             "target_location": target_location,
             "command_prefix": "course2 -u" if target_location == 'us' else "course2"
         }
 
-    # --- Step 3: Compare current and desired states to generate commands ---
     apm_code_to_user_map: Dict[str, Dict[str, str]] = defaultdict(dict)
     
-    # Process deletions first
     for username, existing_details in current_apm_entries.items():
         code = existing_details.get("vpn_auth_course_code")
         source = existing_details.get("source", "au")
@@ -143,7 +146,6 @@ def _generate_apm_data_for_plan(
         elif code not in final_desired_state:
             if code not in extended_apm_codes: commands_by_code[code].append(f"{cmd_prefix_del} del {username}")
 
-    # Process adds and updates
     used_x_nums_by_loc = {'au': defaultdict(set), 'us': defaultdict(set)}
     for uname, udetails in current_apm_entries.items():
         loc = udetails.get('source', 'au')
@@ -154,13 +156,13 @@ def _generate_apm_data_for_plan(
         target_loc, cmd_prefix = new_details["target_location"], new_details["command_prefix"]
         username = apm_code_to_user_map[target_loc].get(code)
         
-        if username: # UPDATE existing user
+        if username: 
             existing = current_apm_entries[username]
             if str(existing.get("vpn_auth_range")) != str(new_details["vpn_auth_range"]): commands_by_code[code].append(f'{cmd_prefix} range {username} "{new_details["vpn_auth_range"]}"')
             if str(existing.get("vpn_auth_version")) != str(new_details["version"]): commands_by_code[code].append(f'{cmd_prefix} version {username} "{new_details["version"]}"')
             if str(existing.get("vpn_auth_courses")) != str(new_details["vpn_auth_courses"]): commands_by_code[code].append(f'{cmd_prefix} description {username} "{new_details["vpn_auth_courses"]}"')
             commands_by_code[code].append(f'{cmd_prefix} password {username} "{new_details["password"]}"')
-        else: # ADD new user
+        else: 
             vendor_short, x = new_details["vendor_short"], 1
             while True:
                 if x not in used_x_nums_by_loc[target_loc][vendor_short]:
@@ -169,7 +171,6 @@ def _generate_apm_data_for_plan(
             commands_by_code[code].append(f'{cmd_prefix} add {new_user} "{new_details["password"]}" "{new_details["vpn_auth_range"]}" "{new_details["version"]}" "{new_details["vpn_auth_courses"]}" "8" "{code}"')
             apm_code_to_user_map[target_loc][code] = new_user
             
-    # --- Step 4: Populate final credentials map ---
     for code, details in final_desired_state.items():
         username = apm_code_to_user_map[details["target_location"]].get(code)
         if username: apm_credentials_map[code] = {"username": username, "password": details["password"]}

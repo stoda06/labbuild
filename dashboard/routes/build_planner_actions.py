@@ -5,15 +5,13 @@ import datetime
 import pytz
 import re
 from flask import (
-    Blueprint, request, redirect, url_for, flash, render_template, jsonify
+    Blueprint, request, redirect, url_for, flash, render_template, jsonify, session
 )
 from pymongo import ASCENDING, DESCENDING, UpdateOne, UpdateMany
 from pymongo.errors import PyMongoError, BulkWriteError
 from collections import defaultdict
 from typing import List, Dict, Optional, Tuple, Any, Union
 import os
-import string
-import random
 import requests
 import pymongo
 from apscheduler.triggers.date import DateTrigger
@@ -1014,28 +1012,35 @@ def execute_scheduled_builds():
                 f"Schedule Option = {schedule_option}")
 
     schedule_start_time_str: Optional[str] = None
+    # MODIFICATION: Default stagger minutes to a smaller value for 'run now'
     stagger_minutes: int = 3
 
-    if schedule_option in ['now', 'staggered']:
-        # Always apply a short auto-stagger when 'now' is chosen
-        if schedule_option == 'now':
-            stagger_minutes = int(os.getenv("AUTO_STAGGER_MINUTES", "5"))
-            schedule_option  = 'staggered'      # treat as staggered under the hood
+    # --- MODIFICATION: Reworked scheduling logic to fix 'run now' stagger ---
+    if schedule_option == 'now':
+        # For 'Run Now', we want an immediate, short stagger.
+        # The base run time will be now, and stagger will be short.
+        schedule_start_time_str = None # It will default to now
+        stagger_minutes = int(os.getenv("AUTO_STAGGER_MINUTES", "3")) # Use a small value
+        logger.info(f"Run Now selected. Using a short stagger of {stagger_minutes} minutes.")
 
-    if schedule_option == 'specific_time_all':
-        schedule_start_time_str = request.form.get('schedule_start_time')
     elif schedule_option == 'staggered':
         schedule_start_time_str = request.form.get('schedule_start_time_staggered')
         try:
+            # Read stagger from form ONLY for the explicit 'staggered' option
             stagger_minutes = int(request.form.get('schedule_stagger_minutes', '30'))
-            if stagger_minutes < 1:
-                stagger_minutes = 1
+            if stagger_minutes < 1: stagger_minutes = 1
         except (ValueError, TypeError):
-            stagger_minutes = 3
+            stagger_minutes = 30 # Fallback for explicit stagger
+            
+    elif schedule_option == 'specific_time_all':
+        schedule_start_time_str = request.form.get('schedule_start_time')
+        stagger_minutes = 0 # No stagger for 'all at specific time'
+    # --- END MODIFICATION ---
 
     if not confirmed_plan_json:
         flash("No confirmed build plan received to schedule.", "danger")
-        return redirect(url_for('actions.finalize_and_display_build_plan', batch_review_id=batch_review_id))
+        # Corrected redirect endpoint
+        return redirect(url_for('build_planner_actions.finalize_and_display_build_plan', batch_review_id=batch_review_id))
 
     try:
         buildable_items_from_form = json.loads(confirmed_plan_json)
@@ -1043,7 +1048,8 @@ def execute_scheduled_builds():
             raise ValueError("Invalid confirmed build plan format.")
     except (json.JSONDecodeError, ValueError) as e:
         flash(f"Error processing confirmed build plan: {e}", "danger")
-        return redirect(url_for('actions.finalize_and_display_build_plan', batch_review_id=batch_review_id))
+        # Corrected redirect endpoint
+        return redirect(url_for('build_planner_actions.finalize_and_display_build_plan', batch_review_id=batch_review_id))
 
     if scheduler is None or not scheduler.running:
         flash("Scheduler not running. Cannot schedule builds.", "danger")
@@ -1055,23 +1061,29 @@ def execute_scheduled_builds():
     scheduler_tz_obj = scheduler.timezone
     base_run_time_utc: datetime.datetime = datetime.datetime.now(pytz.utc) # Default to now in UTC
 
-    if schedule_option != 'now' and schedule_start_time_str:
+    if schedule_start_time_str: # Only process if a start time was provided
         try:
             # 1. Parse the naive datetime string from the form
             naive_dt_from_form = datetime.datetime.fromisoformat(schedule_start_time_str)
             
-            # 2. Localize the naive datetime using the scheduler's configured timezone.
-            #    This correctly handles DST and attaches the right timezone info.
-            localized_dt = scheduler_tz_obj.localize(naive_dt_from_form, is_dst=None)
+            # --- MODIFICATION: Handle both pytz and zoneinfo timezone objects ---
+            # 2. Make the naive datetime "aware" of the scheduler's timezone.
+            if hasattr(scheduler_tz_obj, 'localize'):
+                # This is the old way for pytz objects
+                localized_dt = scheduler_tz_obj.localize(naive_dt_from_form, is_dst=None)
+            else:
+                # This is the new way for zoneinfo objects (Python 3.9+)
+                localized_dt = naive_dt_from_form.replace(tzinfo=scheduler_tz_obj)
+            # --- END MODIFICATION ---
             
-            # 3. Convert the now-aware local time to UTC for scheduling. APScheduler works best with UTC.
+            # 3. Convert the now-aware local time to UTC for scheduling.
             base_run_time_utc = localized_dt.astimezone(pytz.utc)
             
             logger.info(f"Scheduling base time set. Input: '{schedule_start_time_str}', "
                         f"Interpreted in '{scheduler_tz_obj}': {localized_dt.isoformat()}, "
                         f"Scheduled for (UTC): {base_run_time_utc.isoformat()}")
 
-        except (ValueError, pytz.exceptions.NonExistentTimeError, pytz.exceptions.AmbiguousTimeError) as e_date_sched:
+        except Exception as e_date_sched: # Broader exception catch
             error_msg = f"Invalid or ambiguous schedule time '{schedule_start_time_str}'. Scheduling for 'now'. Error: {e_date_sched}"
             logger.error(error_msg)
             flash(error_msg, "warning")
@@ -1107,16 +1119,19 @@ def execute_scheduled_builds():
             if not host or start_pod is None or end_pod is None:
                 failed_ops_count +=1
                 continue
-
-            if schedule_option == 'staggered' and (item_idx > 0 or assignment_idx > 0):
-                current_operation_block_start_time_utc += stagger_delta
-            elif schedule_option == 'now':
-                current_operation_block_start_time_utc = datetime.datetime.now(pytz.utc)
             
-            is_student_build = item_to_build.get('type') == 'Student Build'
+            # MODIFICATION: Stagger logic simplified
+            # If staggering is enabled (minutes > 0), add the delta for every operation block.
+            if stagger_minutes > 0 and (item_idx > 0 or assignment_idx > 0):
+                current_operation_block_start_time_utc += stagger_delta
+            
+            # This logic now correctly handles 'run now' because its start time is 'now' and its
+            # stagger_minutes is small, while 'specific_time_all' has stagger_minutes=0.
+            
+            is_student_build = item_to_build.get('type') == 'student' # Corrected comparison
             tag = f"{item_sf_code.replace('/', '_').replace(' ', '_')}"
             if not is_student_build:
-                tag += "_TP"
+                tag += "-TP"
             
             base_args = ['-v', item_vendor, '-g', item_lb_course, '--host', host, '-s', str(start_pod), '-e', str(end_pod), '-t', tag[:45]]
             
