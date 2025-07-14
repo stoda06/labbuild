@@ -476,7 +476,30 @@ def main():
 
         # --- Process results (checking for component list status) ---
         component_list_result = next((r for r in all_results if isinstance(r,dict) and r.get("status") == COMPONENT_LIST_STATUS), None)
-        if component_list_result:
+        
+        # --- THIS IS THE CORRECTED LOGIC FOR CALCULATING SUMMARY ---
+        if args.command == 'test':
+            if isinstance(all_results, list):
+                # Group results by pod/class identifier
+                results_by_pod = defaultdict(list)
+                for r in all_results:
+                    if isinstance(r, dict):
+                        pod_id = r.get('pod') or r.get('class')
+                        if pod_id is not None:
+                            results_by_pod[pod_id].append(r)
+
+                # Determine final status for each pod
+                for pod_id, results in results_by_pod.items():
+                    # A pod fails if ANY of its component checks fail
+                    if any(res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN'] for res in results):
+                        total_failure += 1
+                    else:
+                        total_success += 1
+            else: # Fallback if test function returns unexpected data type
+                total_failure = 1
+        # --- END OF CORRECTED LOGIC ---
+        
+        elif component_list_result:
             logger.info(f"Command returned component list for course '{args_dict.get('course')}'.")
             print("\nAvailable components:")
             for comp_name in component_list_result.get("components", []):
@@ -485,20 +508,28 @@ def main():
             overall_status = "completed" # Listing is considered complete
             total_success, total_failure, total_skipped = 0, 0, 0 # No pod actions taken
         elif isinstance(all_results, list):
-            # Normal processing
+            # Original processing for setup, teardown, manage
             total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "success")
             total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "failed")
             total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") in ["skipped", "cancelled", "completed_no_tasks"])
-
-            if total_failure > 0: overall_status = "completed_with_errors"
-            elif total_success > 0: overall_status = "completed"
-            elif total_skipped > 0: overall_status = "completed" # Includes skipped only case
-            elif not all_results: overall_status = "completed_no_tasks"
-            else: overall_status = "completed" # Default catch-all
-            logger.info(f"Command '{args.command}' result summary: Success={total_success}, Failed={total_failure}, Skipped={total_skipped}")
         else:
             logger.warning(f"Command function '{args.command}' did not return a list. Result: {all_results}")
             overall_status = "unknown"
+            
+        # Determine overall status based on counts
+        if total_failure > 0: 
+            overall_status = "completed_with_errors"
+        elif total_success > 0: 
+            overall_status = "completed"
+        elif total_skipped > 0: 
+            overall_status = "completed" # Includes skipped only case
+        elif not all_results: 
+            overall_status = "completed_no_tasks"
+        else: # Fallback if no failures/successes but results exist (e.g., all skipped)
+            overall_status = "completed" 
+
+        logger.info(f"Command '{args.command}' result summary: Success={total_success}, Failed={total_failure}, Skipped={total_skipped}")
+
 
     except KeyboardInterrupt:
         print("\nTerminated by user.")
