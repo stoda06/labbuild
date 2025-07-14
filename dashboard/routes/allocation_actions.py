@@ -901,3 +901,37 @@ def test_tag():
     # Preserve any existing filters when redirecting
     query_params = {k: v for k, v in request.args.items() if k.startswith('filter_')}
     return redirect(url_for('main.view_allocations', **query_params))
+
+
+@bp.route('/export-upcoming-lab-report')
+def export_upcoming_lab_report():
+    """
+    Generates and serves the Upcoming Lab Report, which uses data from
+    the interim allocation collection.
+    """
+    logger.info("Request received for 'Upcoming Lab Report'.")
+
+    try:
+        # 1. Fetch data specifically for the upcoming report using its dedicated helper
+        course_allocs, trainer_pods, extended_pods, host_map = get_upcoming_report_data(db)
+
+        # 2. Generate the Excel file in memory using the aliased generator function
+        excel_stream = generate_upcoming_report(course_allocs, trainer_pods, extended_pods, host_map)
+
+        # 3. Prepare the filename
+        next_monday_str = get_next_monday_date_str("%Y%m%d")
+        filename = f"Upcoming Lab Build - {next_monday_str}.xlsx"
+
+        # 4. Create and return a Flask Response to trigger the download
+        return Response(
+            excel_stream,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={
+                'Content-Disposition': f'attachment;filename={filename}'
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate upcoming lab report: {e}", exc_info=True)
+        flash(f"Could not generate the upcoming report. Error: {e}", 'danger')
+        # Redirect back to the page where the button was clicked
+        return redirect(url_for('main.view_allocations'))
