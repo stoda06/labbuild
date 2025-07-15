@@ -70,7 +70,8 @@ def test_environment(args_dict, operation_logger=None):
                 try:
                     results = future.result()
                     for res in results:
-                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
+                        status_upper = res.get('status', '').upper()
+                        if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
@@ -190,7 +191,8 @@ def test_environment(args_dict, operation_logger=None):
                 try:
                     results = future.result()
                     for res in results:
-                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
+                        status_upper = res.get('status', '').upper()
+                        if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]

@@ -113,12 +113,20 @@ def fetch_course_config(pod, group, verbose, print_lock):
                 print(f"❌ No components found for course '{group}'")
             return [], []
         components = []
+        ignore_list = []
         for c in course["components"]:
-            if c.get("podip") and c.get("podport"): components.append((c["component_name"], c["podip"], c["podport"]))
+            if c.get("state") == "poweroff":
+                if c.get("podip") and c.get("podport"):
+                    ignore_list.append((c["component_name"], c["podip"], c["podport"]))
+                elif verbose:
+                    with print_lock:
+                        print(f"⚠️ Skipping incomplete component config (powered off): {c.get('component_name', 'UNKNOWN')}")
+            elif c.get("podip") and c.get("podport"):
+                components.append((c["component_name"], c["podip"], c["podport"]))
             elif verbose:
                 with print_lock:
                     print(f"⚠️ Skipping incomplete component config: {c.get('component_name', 'UNKNOWN')}")
-        return components, []
+        return components, ignore_list
     except Exception as e:
         with print_lock:
             print(f"❌ MongoDB query failed: {e}")
@@ -134,61 +142,68 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
     # --- MODIFIED ---
     host = f"cpvr{pod}.us" if host_key in ["hotshot", "trypticon"] else f"cpvr{pod}"
     # --- END MODIFICATION ---
-    if verbose:
-        with print_lock:
-            print(f"\n🔐 Connecting to {host} via SSH...")
     
     check_results = []
-    try:
-        child = pexpect.spawn(f"ssh {host}", timeout=30)
-        i = child.expect([r"Are you sure you want to continue connecting.*", r"vr:~#", r"[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=20)
-        if i == 0:
-            child.sendline("yes")
-            child.expect(r"vr:~#")
-        elif i == 1:
-            if verbose:
-                with print_lock:
-                    print(f"✅ SSH to {host} successful")
-        else:
+    # Add skipped components to results first
+    for name, raw_ip, port in ignore_list:
+        ip = resolve_pod_ip(raw_ip, pod)
+        check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': 'SKIPPED (Powered Off)', 'host': host})
+
+    # Only attempt SSH if there are components to test
+    if components:
+        if verbose:
             with print_lock:
-                print(f"❌ Failed to connect to {host}.")
+                print(f"\n🔐 Connecting to {host} via SSH...")
+        try:
+            child = pexpect.spawn(f"ssh {host}", timeout=30)
+            i = child.expect([r"Are you sure you want to continue connecting.*", r"vr:~#", r"[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=20)
+            if i == 0:
+                child.sendline("yes")
+                child.expect(r"vr:~#")
+            elif i == 1:
+                if verbose:
+                    with print_lock:
+                        print(f"✅ SSH to {host} successful")
+            else:
+                with print_lock:
+                    print(f"❌ Failed to connect to {host}.")
+                check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host, 'port': 22, 'status': 'FAILED', 'host': host})
+                return check_results
+            
+            for name, raw_ip, port in components:
+                ip = resolve_pod_ip(raw_ip, pod)
+                status = "UNKNOWN"
+                if port.lower() == "arping":
+                    subnet = ".".join(ip.split(".")[:3])
+                    child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
+                    child.expect(r"vr:~#")
+                    iface = child.before.decode().strip().splitlines()[-1]
+                    if iface:
+                        child.sendline(f"arping -c 3 -I {iface} {ip}")
+                        child.expect(r"vr:~#")
+                        status = "UP" if "Unicast reply" in child.before.decode() else "DOWN"
+                else:
+                    child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
+                    child.expect(r"vr:~#")
+                    status = "UP" if "open" in child.before.decode() else "DOWN"
+                
+                check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host})
+            
+            child.sendline("exit")
+            child.expect(pexpect.EOF)
+            child.close()
+        except Exception as e:
+            with print_lock:
+                print(f"❌ SSH or command execution failed on {host}: {e}")
             check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host, 'port': 22, 'status': 'FAILED', 'host': host})
             return check_results
-        
-        for name, raw_ip, port in components:
-            ip = resolve_pod_ip(raw_ip, pod)
-            status = "UNKNOWN"
-            if port.lower() == "arping":
-                subnet = ".".join(ip.split(".")[:3])
-                child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
-                child.expect(r"vr:~#")
-                iface = child.before.decode().strip().splitlines()[-1]
-                if iface:
-                    child.sendline(f"arping -c 3 -I {iface} {ip}")
-                    child.expect(r"vr:~#")
-                    status = "UP" if "Unicast reply" in child.before.decode() else "DOWN"
-            else:
-                child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
-                child.expect(r"vr:~#")
-                status = "UP" if "open" in child.before.decode() else "DOWN"
-            
-            check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host})
-        
-        child.sendline("exit")
-        child.expect(pexpect.EOF)
-        child.close()
-    except Exception as e:
-        with print_lock:
-            print(f"❌ SSH or command execution failed on {host}: {e}")
-        check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host, 'port': 22, 'status': 'FAILED', 'host': host})
-        return check_results
 
     with print_lock:
         if check_results:
             print(f"\n📊 Network Test Summary for Pod {pod}")
             headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
             table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
-            formatted_rows = [[f"{RED}{cell}{END}" if row[4] != "UP" else cell for cell in row] for row in table_data]
+            formatted_rows = [[f"{RED}{cell}{END}" if row[4] not in ["UP", "SKIPPED (Powered Off)"] else cell for cell in row] for row in table_data]
             print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
         
         powered_off_vms = [[name, str(state)] for name, state in vm_power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
