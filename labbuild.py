@@ -211,7 +211,8 @@ def main():
                         help='Ending pod/class number for filtering list.')
     parser.add_argument('--test', action='store_true',
                         help='Test allocation validity: check VR VM existence and remove invalid DB entries (use with -l).')
-    parser.add_argument('--operation',
+    parser.add_argument('--vendor-operation',
+                        dest='vendor_operation',
                         choices=['rebuild', 'teardown', 'start', 'stop'],
                         help='Perform a batch operation on all valid allocations for the specified vendor (use with -l).')
     # Global verbose flag
@@ -299,13 +300,14 @@ def main():
 
 
     # --- Mode Handling: Listing or Command ---
-    if args.list_allocations and args.operation:
+    if args.list_allocations and args.vendor_operation:
         if not args.vendor:
-            parser.error("Vendor-level operations (-l --operation) require the vendor (-v) argument.")
+            # --- MODIFICATION: Updated error message for clarity ---
+            parser.error("Vendor-level operations (-l --vendor-operation) require the vendor (-v) argument.")
         logger = setup_logger() # Minimal setup
         log_level = logging.DEBUG if args.verbose else logging.INFO
         logger.setLevel(log_level)
-        perform_vendor_level_operation(args.vendor, args.operation, args.verbose)
+        perform_vendor_level_operation(args.vendor, args.vendor_operation, args.verbose)
         sys.exit(0)
     # --- END UPDATED LOGIC ---
     elif args.list_allocations: # Original listing logic
@@ -332,8 +334,8 @@ def main():
         parser.error("--test flag cannot be used with commands (setup, manage, teardown).")
     
     # Ensure --operation is not used with commands
-    if args.operation and args.command:
-         parser.error("--operation flag cannot be used with commands (setup, manage, teardown). Use with -l.")
+    if hasattr(args, 'vendor_operation') and args.vendor_operation and args.command:
+         parser.error("--vendor-operation flag cannot be used with commands (setup, manage, teardown). Use with -l.")
 
     # --- Vendor is Required for Commands (also checked in common_parser parent) ---
     if args.command in ['setup', 'manage', 'teardown'] and not args.vendor:
