@@ -114,10 +114,8 @@ def run_ssh_checks(pod, components, host, print_lock):
                 child.sendline(iface_cmd)
                 child.expect(r"#\s*$")
                 
-                # --- FINAL, ROBUST PARSING LOGIC ---
                 iface_raw_output = strip_ansi(child.before.decode())
                 lines = iface_raw_output.strip().splitlines()
-                # Find the first line *after* the command we sent. That's the result.
                 iface = ""
                 command_sent_found = False
                 for line in lines:
@@ -127,8 +125,7 @@ def run_ssh_checks(pod, components, host, print_lock):
                     if command_sent_found and line.strip():
                         iface = line.strip()
                         break
-                # --- END OF PARSING LOGIC ---
-
+                
                 log(f"Interface lookup for subnet {subnet}: raw='{iface_raw_output}', cleaned='{iface}'", print_lock)
 
                 if iface:
@@ -157,7 +154,8 @@ def run_ssh_checks(pod, components, host, print_lock):
     except Exception as e:
         with print_lock:
             print(f"\n❌ SSH to {host_fqdn} failed: {e}")
-        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED'})
+        # --- FIX: Added 'host' key to the error dictionary ---
+        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED', 'host': host_fqdn})
 
     with print_lock:
         print(f"\n📊 Network & Cluster Check Summary for Pod {pod}")
