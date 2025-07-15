@@ -8,7 +8,6 @@ from tqdm import tqdm
 from tabulate import tabulate
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import defaultdict
 
 # Import local utilities and helpers
 from config_utils import fetch_and_prepare_course_config, extract_components, get_host_by_name
@@ -19,10 +18,10 @@ from operation_logger import OperationLogger
 # Import the new function from db_utils
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
 from monitor.prtg import PRTGManager
-from constants import DB_NAME, ALLOCATION_COLLECTION
+from constants import DB_NAME
 
 import labs.setup.checkpoint as checkpoint 
-from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker, _format_pod_ranges
+from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker
 import labs.manage.vm_operations as vm_operations
 
 logger = logging.getLogger('labbuild.commands')
@@ -35,99 +34,11 @@ COMPONENT_LIST_STATUS = "component_list_displayed"
 RED = '\033[91m'
 ENDC = '\033[0m'
 
-def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[OperationLogger] = None) -> List[Dict[str, Any]]:
-    """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
-    
-    # --- Mode 0: Database listing mode ---
-    if args_dict.get('db'):
-        logger.info("Database listing mode invoked for 'test' command.")
-        
-        vendor_filter = args_dict.get('vendor')
-        start_filter = args_dict.get('start_pod')
-        end_filter = args_dict.get('end_pod')
-
-        processed_data = []
-        
-        try:
-            with mongo_client() as client:
-                if not client:
-                    err_msg = "Database connection failed."
-                    logger.error(err_msg)
-                    print(f"Error: {err_msg}", file=sys.stderr)
-                    return [{"status": "failed", "error": err_msg}]
-
-                db = client[DB_NAME]
-                collection = db[ALLOCATION_COLLECTION]
-                
-                query = {}
-                if vendor_filter:
-                    # Case-insensitive match for vendor
-                    query["courses.vendor"] = {"$regex": f"^{vendor_filter}$", "$options": "i"}
-                
-                logger.debug(f"Querying allocations with: {query}")
-                allocations = collection.find(query)
-                
-                for alloc in allocations:
-                    tag = alloc.get("tag", "N/A")
-                    for course in alloc.get("courses", []):
-                        vendor = course.get("vendor", "N/A")
-                        course_name = course.get("course_name", "N/A")
-                        
-                        all_hosts = set()
-                        all_item_numbers = [] # Holds pod numbers or class numbers based on vendor
-
-                        is_f5 = vendor.lower() == 'f5'
-
-                        # In F5, we filter by class number. In others, by pod number.
-                        item_key = "class_number" if is_f5 else "pod_number"
-                        
-                        for detail in course.get("pod_details", []):
-                            host = detail.get("host")
-                            item_num_raw = detail.get(item_key)
-                            
-                            if not host or item_num_raw is None:
-                                continue
-                            
-                            try:
-                                item_num = int(item_num_raw)
-                            except (ValueError, TypeError):
-                                logger.warning(f"Skipping non-integer {item_key} '{item_num_raw}' in course '{course_name}'.")
-                                continue
-
-                            # Apply range filter if provided
-                            if start_filter is not None and end_filter is not None:
-                                if not (start_filter <= item_num <= end_filter):
-                                    continue
-                            
-                            all_hosts.add(host)
-                            all_item_numbers.append(item_num)
-                        
-                        # Only add a row if there are items left after filtering
-                        if all_item_numbers:
-                            range_str = _format_pod_ranges(all_item_numbers)
-                            hosts_str = ", ".join(sorted(list(all_hosts)))
-                            processed_data.append([tag, vendor.upper(), course_name, hosts_str, range_str])
-
-        except Exception as e:
-            err_msg = f"An error occurred while querying the database: {e}"
-            logger.error(err_msg, exc_info=True)
-            print(f"Error: {err_msg}", file=sys.stderr)
-            return [{"status": "failed", "error": err_msg}]
-
-        if not processed_data:
-            print("\nNo allocations found matching the specified criteria.")
-        else:
-            # Sort data by tag, then course name for consistent output
-            processed_data.sort(key=lambda x: (x[0], x[2]))
-            headers = ["Tag", "Vendor", "Course Name", "Host(s)", "Pod/Class Range"]
-            print("\n" + "="*80)
-            print("                       DATABASE ALLOCATION SUMMARY")
-            print("="*80)
-            print(tabulate(processed_data, headers=headers, tablefmt="fancy_grid"))
-            print("="*80)
-
-        return [{"status": "completed_db_list"}]
-
+def test_environment(args_dict, operation_logger=None):
+    """
+    Runs a test suite for a lab, by tag, by vendor, or by manual parameters.
+    MODIFIED: Now returns a flat list of all component test results.
+    """
     thread_count = args_dict.get('thread', 10)
 
     # --- Mode 1: Vendor-wide test mode ---
@@ -316,7 +227,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
         return all_results
     
     # --- Fallback Error ---
-    err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod, or use --db to list allocations."
+    err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod."
     logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
     return [{"status": "failed", "error": err_msg}]
 

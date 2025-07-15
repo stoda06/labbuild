@@ -14,39 +14,6 @@ YELLOW = '\033[93m'
 GREEN = '\033[92m'
 ENDC = '\033[0m'
 
-def _format_pod_ranges(pod_numbers: List[int]) -> str:
-    """Formats a list of pod numbers into a condensed string like '1-3, 5, 7-8'."""
-    if not pod_numbers:
-        return "N/A"
-    
-    # Use set to remove duplicates and then sort
-    sorted_pods = sorted(list(set(pod_numbers)))
-    if not sorted_pods:
-        return "N/A"
-
-    ranges = []
-    start_range = sorted_pods[0]
-    
-    for i in range(1, len(sorted_pods)):
-        # If the current number is not consecutive to the previous one, close the range
-        if sorted_pods[i] != sorted_pods[i-1] + 1:
-            end_range = sorted_pods[i-1]
-            if start_range == end_range:
-                ranges.append(str(start_range))
-            else:
-                ranges.append(f"{start_range}-{end_range}")
-            # Start a new range
-            start_range = sorted_pods[i]
-
-    # Add the last range after the loop finishes
-    end_range = sorted_pods[-1]
-    if start_range == end_range:
-        ranges.append(str(start_range))
-    else:
-        ranges.append(f"{start_range}-{end_range}")
-        
-    return ", ".join(ranges)
-
 def execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading.Lock) -> List[Dict[str, Any]]:
     """
     Worker function for the thread pool. It executes a single test run and returns structured results.

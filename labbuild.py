@@ -277,11 +277,10 @@ def main():
     # Test Subcommand
     # -------------------------------
     test_parser = subparsers.add_parser("test", help="Run test suite for labs", parents=[f5_parser])
-    test_parser.add_argument("--db", action='store_true', help="List allocations from the database with test-related info.")
     test_parser.add_argument("-t", "--tag", help="Run tests for a specific allocation by tag name.")
-    test_parser.add_argument("-v", "--vendor", help="Vendor name. Used for vendor-wide tests or to filter --db list.")
-    test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod/class number. Used for range tests or to filter --db list.")
-    test_parser.add_argument("-e", "--end_pod", type=int, help="End pod/class number. Used for range tests or to filter --db list.")
+    test_parser.add_argument("-v", "-l", "--vendor", help="Vendor name. Use alone to test all pods for that vendor.")
+    test_parser.add_argument("-s", "--start_pod", type=int, help="Start pod number. For F5, this filters pods within classes.")
+    test_parser.add_argument("-e", "--end_pod", type=int, help="End pod number. For F5, this filters pods within classes.")
     test_parser.add_argument("-H", "--host", help="ESXi host name (optional, used to filter manual range tests).")
     test_parser.add_argument("-g", "--group", help="Course group/section (optional, used to filter manual range tests).")
     test_parser.add_argument("-c", "--component", help="Test specific component(s), or '?' to list available.")
@@ -341,8 +340,8 @@ def main():
 
 
     # --- Convert args Namespace to Dictionary *once* ---
-    # Pass the full namespace as a dictionary for simplicity and robustness.
-    args_dict = vars(args)
+    # Exclude list-specific args and 'func'
+    args_dict = {k: v for k, v in vars(args).items() if k not in ['func', 'list_start_pod', 'list_end_pod'] and v is not None}
 
     # --- Initialize Operation Logger ---
     operation_logger = None
@@ -512,14 +511,7 @@ def main():
             # Original processing for setup, teardown, manage
             total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "success")
             total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "failed")
-            total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") in ["skipped", "cancelled", "completed_no_tasks", "completed_db_list"])
-
-            if total_failure > 0: overall_status = "completed_with_errors"
-            elif total_success > 0: overall_status = "completed"
-            elif total_skipped > 0: overall_status = "completed" # Includes skipped only case
-            elif not all_results: overall_status = "completed_no_tasks"
-            else: overall_status = "completed" # Default catch-all
-            logger.info(f"Command '{args.command}' result summary: Success={total_success}, Failed={total_failure}, Skipped={total_skipped}")
+            total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") in ["skipped", "cancelled", "completed_no_tasks"])
         else:
             logger.warning(f"Command function '{args.command}' did not return a list. Result: {all_results}")
             overall_status = "unknown"
