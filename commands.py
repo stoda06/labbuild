@@ -164,7 +164,8 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     results = future.result()
                     all_results.extend(results)
                     for res in results:
-                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
+                        status_upper = res.get('status', '').upper()
+                        if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
@@ -288,7 +289,8 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     results = future.result()
                     all_results.extend(results)
                     for res in results:
-                        if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
+                        status_upper = res.get('status', '').upper()
+                        if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
