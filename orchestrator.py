@@ -42,7 +42,7 @@ VENDOR_TEARDOWN_MAP: Dict[str, Callable] = {
 VENDOR_MONITOR_MAP: Dict[str, Callable] = {
     "cp": checkpoint.add_monitor, "pa": palo.add_monitor, "f5": f5.add_monitor,
     "av": PRTGManager.add_monitor, "pr": PRTGManager.add_monitor,
-    "nu": PRTGManager.add_monitor, "ot": PRTGManager.add_monitor, # Default/Other
+    "nu": nu.add_monitor, "ot": PRTGManager.add_monitor, # Default/Other
     # Add other vendor monitor functions here if they differ from default
 }
 
@@ -90,7 +90,7 @@ def update_monitor_and_database(
                     # Check if the function expects prtg_server_preference
                     # Based on previous f5.add_monitor, it accepts it.
                     # Checkpoint and Palo also accept it. Others might use default.
-                    if vendor_shortcode in ["cp", "pa", "f5"]:
+                    if vendor_shortcode in ["cp", "pa", "f5", "nu"]:
                          prtg_url = add_monitor_func(config, client, prtg_server_preference)
                     else: # For av, pr, nu, ot (using PRTGManager.add_monitor by default)
                          # PRTGManager.add_monitor in monitor/prtg.py also needs adaptation if it should take preference
