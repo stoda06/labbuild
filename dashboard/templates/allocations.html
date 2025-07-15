@@ -128,18 +128,6 @@
                                     <i class="fas {{ 'fa-lock' if group.summary.is_extended else 'fa-lock-open' }}"></i>
                                 </button>
                             </form>
-                            
-                            <!-- NEW TEST BUTTON FORM -->
-                            <form action="{{ url_for('allocation_actions.test_tag') }}" method="POST"
-                                  class="d-inline view-mode"
-                                  onsubmit="return confirm('Run a \'test\' operation on tag \'{{ group.summary.tag }}\'?');">
-                                <input type="hidden" name="tag" value="{{ group.summary.tag }}">
-                                <button type="submit" class="action-btn text-info" title="Run Test on Tag">
-                                    <i class="fas fa-vial"></i>
-                                </button>
-                            </form>
-                            <!-- END NEW TEST BUTTON FORM -->
-
                             <button type="button" class="action-btn text-danger ajax-teardown-tag-btn view-mode"
                                 title="Teardown Tag"
                                 data-teardown-url="{{ url_for('allocation_actions.teardown_tag') }}"

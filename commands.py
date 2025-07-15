@@ -35,10 +35,7 @@ RED = '\033[91m'
 ENDC = '\033[0m'
 
 def test_environment(args_dict, operation_logger=None):
-    """
-    Runs a test suite for a lab, by tag, by vendor, or by manual parameters.
-    MODIFIED: Now returns a flat list of all component test results.
-    """
+    """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
     thread_count = args_dict.get('thread', 10)
 
     # --- Mode 1: Vendor-wide test mode ---
@@ -57,7 +54,6 @@ def test_environment(args_dict, operation_logger=None):
 
         display_test_jobs(jobs, vendor)
 
-        all_results = []
         all_failures = []
         print_lock = threading.Lock()
 
@@ -73,17 +69,14 @@ def test_environment(args_dict, operation_logger=None):
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
                 try:
                     results = future.result()
-                    all_results.extend(results)
                     for res in results:
                         if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
                     logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
-                    failure_report = {'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
-                                      'status': 'EXCEPTION', 'error': str(e)}
-                    all_failures.append(failure_report)
-                    all_results.append(failure_report)
+                    all_failures.append({'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
+                                         'status': 'EXCEPTION', 'error': str(e)})
 
         if all_failures:
             print("\n" + "="*80)
@@ -103,7 +96,7 @@ def test_environment(args_dict, operation_logger=None):
         else:
             print("\n✅ All tests completed successfully with no reported failures.")
 
-        return all_results
+        return [{"status": "completed"}]
 
     # --- Mode 2: Component listing request ---
     if args_dict.get('component') == '?':
@@ -182,7 +175,6 @@ def test_environment(args_dict, operation_logger=None):
 
         display_test_jobs(jobs, args_dict['vendor'])
 
-        all_results = []
         all_failures = []
         print_lock = threading.Lock()
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
@@ -197,17 +189,14 @@ def test_environment(args_dict, operation_logger=None):
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
                 try:
                     results = future.result()
-                    all_results.extend(results)
                     for res in results:
                         if res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN']:
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
                     logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
-                    failure_report = {'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
-                                      'status': 'EXCEPTION', 'error': str(e)}
-                    all_failures.append(failure_report)
-                    all_results.append(failure_report)
+                    all_failures.append({'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
+                                         'status': 'EXCEPTION', 'error': str(e)})
 
         if all_failures:
             print("\n" + "="*80)
@@ -224,7 +213,7 @@ def test_environment(args_dict, operation_logger=None):
         else:
             print("\n✅ All tests completed successfully with no reported failures.")
 
-        return all_results
+        return [{"status": "completed"}]
     
     # --- Fallback Error ---
     err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod."
@@ -934,3 +923,5 @@ def manage_environment(args_dict: Dict[str, Any], operation_logger: OperationLog
     all_results.extend(task_results) # Combine submission errors with task results
     logger.info(f"VM management ({operation_arg}) tasks submitted/completed.")
     return all_results
+
+# --- END OF FILE commands.py ---

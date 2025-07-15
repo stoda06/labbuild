@@ -870,34 +870,31 @@ def export_trainer_pod_allocation():
         logger.error(f"Failed to generate Trainer Pod Allocation report: {e}", exc_info=True)
         flash(f"Could not generate the trainer pod report. Error: {e}", 'danger')
         return redirect(url_for('main.view_allocations')) # Adjust redirect as needed
-
-@bp.route('/test-tag', methods=['POST'])
-def test_tag():
-    """
-    Handles a 'test' action for a given tag from the allocations page.
-    """
-    tag = request.form.get('tag')
-    if not tag:
-        flash("Tag identifier is missing for the test action.", "danger")
-        return redirect(url_for('main.view_allocations'))
-
-    logger.info(f"Received 'test' request for tag: {tag}")
     
-    # Construct the argument list for the labbuild.py script
-    args_list = ['test', '-t', tag]
-
+@bp.route('/export-upcoming-lab-report')
+def export_upcoming_lab_report():
+    """
+    Generates and serves the "Upcoming Lab Report" which uses data
+    exclusively from the interimallocation collection.
+    """
+    logger.info("Request received for 'Upcoming Lab Report'.")
     try:
-        # Run the command in a background thread so the UI doesn't block
-        thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True)
-        thread.start()
-        
-        flash(f"Submitted 'test' command for tag '{tag}'. Check logs for progress.", 'info')
-        logger.info(f"Dispatched background task for 'test -t {tag}'")
+        # 1. Fetch data using the function from upcoming_report_generator.py
+        course_allocs, trainer_pods, extended_pods, host_map = get_upcoming_report_data(db)
 
+        # 2. Generate the Excel file in memory using the aliased function
+        excel_stream = generate_upcoming_report(course_allocs, trainer_pods, extended_pods, host_map)
+
+        # 3. Define the filename for the download
+        filename = "upcoming_lab_report.xlsx"
+
+        # 4. Create and return a Flask Response to trigger the download
+        return Response(
+            excel_stream,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment;filename={filename}'}
+        )
     except Exception as e:
-        logger.error(f"Failed to start thread for 'test' command on tag '{tag}': {e}", exc_info=True)
-        flash("Error starting the test task. Check server logs.", 'danger')
-
-    # Preserve any existing filters when redirecting
-    query_params = {k: v for k, v in request.args.items() if k.startswith('filter_')}
-    return redirect(url_for('main.view_allocations', **query_params))
+        logger.error(f"Failed to generate upcoming lab report: {e}", exc_info=True)
+        flash(f"Could not generate the upcoming lab report. Error: {e}", 'danger')
+        return redirect(url_for('main.view_allocations'))

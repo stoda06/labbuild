@@ -26,12 +26,14 @@ def resolve_ip(ip_template, pod, host_label, print_lock):
                 log(f"IP after '+X' resolution: {ip_template}", print_lock)
             except ValueError: log(f"Invalid integer in last octet for '+X': {ip_template}", print_lock)
     if "X" in ip_template: ip_template = ip_template.replace("X", str(pod)); log(f"IP after 'X' substitution: {ip_template}", print_lock)
+    # --- MODIFIED ---
     if host_label in ["hotshot", "trypticon"]:
         parts = ip_template.split(".")
         if len(parts) == 4 and parts[0] == "172":
             new_ip = ".".join(["172", "26", parts[2], parts[3]])
             log(f"Adjusted IP from 172.{parts[1]} to 172.26 for host {host_label} -> {new_ip}", print_lock)
             return new_ip
+    # --- END MODIFICATION ---
     return ip_template
 
 def get_course_groups(course_name, print_lock):
@@ -132,8 +134,7 @@ def run_checks_for_pod(pod, grouped_components, ssh_target, host, class_num, pri
     except Exception as e:
         with print_lock:
             print(f"❌ SSH session to {ssh_target} failed: {e}")
-        # --- FIX: Added 'host' key to the error dictionary ---
-        check_results.append({'pod': pod, 'class': class_num, 'component': 'SSH Connection', 'ip': ssh_target, 'status': 'FAILED', 'host': ssh_target})
+        check_results.append({'pod': pod, 'class': class_num, 'component': 'SSH Connection', 'ip': ssh_target, 'status': 'FAILED'})
 
     return check_results
 
@@ -148,7 +149,9 @@ def main(argv=None, print_lock=None):
     parser.add_argument("-c", "--component", help="Test specific components (comma-separated list).")
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
+    # --- MODIFIED ---
     ssh_target = f"f5vr{args.classnum}.us" if args.host.lower() in ["hotshot", "trypticon"] else f"f5vr{args.classnum}"
+    # --- END MODIFICATION ---
     
     with print_lock:
         print(f"[INFO] Connecting to: {ssh_target}")

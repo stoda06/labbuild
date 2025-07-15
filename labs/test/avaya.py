@@ -70,7 +70,9 @@ def get_vm_power_map(si, pod, print_lock):
         return {}
 
 def run_ssh_checks(pod, components, host, power_map, print_lock):
+    # --- MODIFIED ---
     host_fqdn = f"avvr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"avvr{pod}"
+    # --- END MODIFICATION ---
     results = []
     with print_lock:
         print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) via SSH...")
@@ -108,8 +110,7 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
     except Exception as e:
         with print_lock:
             print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
-        # --- FIX: Added 'host' key to the error dictionary ---
-        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED', 'host': host_fqdn})
+        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED'})
 
     with print_lock:
         print(f"\n📊 Network Test Summary for Pod {pod}")
