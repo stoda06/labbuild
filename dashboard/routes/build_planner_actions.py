@@ -1265,40 +1265,57 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
             logger.error(f"Error fetching final plan items for batch '{batch_id}': {e}", exc_info=True)
             return [], "Error fetching review data."
 
-    # --- Nested Helper: Update DB with APM credentials ---
+    # --- MODIFIED Nested Helper: Update DB with APM credentials ---
     def _update_db_with_apm(batch_id, apm_creds_map, apm_commands_map):
         """
         Updates all interim documents for a given course code with the generated APM credentials and commands.
-        This now uses UpdateMany to handle split courses like Maestro.
+        This now correctly targets trainer pod documents for trainer credentials.
         """
         if not apm_creds_map:
             return True, "No APM credentials to update."
         
         update_ops = []
         processed_codes_for_commands = set()
+        
+        # Define the string used to identify trainer pod documents
+        trainer_doc_suffix = "-Trainer Pod"
 
         for apm_code, creds in apm_creds_map.items():
-            # Prepare the payload with both credentials and commands
             commands_for_this_code = apm_commands_map.get(apm_code, [])
             base_payload = {"apm_commands": commands_for_this_code}
 
-            if apm_code.endswith("-TP"):
-                # Handle trainer pods
-                sf_code = apm_code[:-3]
-                payload = {**base_payload, "trainer_apm_username": creds.get("username"), "trainer_apm_password": creds.get("password")}
-                update_ops.append(UpdateMany(
-                    {"batch_review_id": batch_id, "sf_course_code": sf_code},
+            # --- Start of Modification ---
+            # Correctly identify if the APM code is for a trainer pod group
+            if apm_code.endswith(trainer_doc_suffix):
+                # This is a Trainer Pod Group. Update its OWN document.
+                # The `apm_code` directly matches the `sf_course_code` of the trainer document.
+                payload = {
+                    **base_payload, 
+                    # Per display logic, trainer docs also use these field names for their credentials
+                    "student_apm_username": creds.get("username"), 
+                    "student_apm_password": creds.get("password")
+                }
+                # Use UpdateOne as the trainer group's sf_course_code is unique per batch
+                update_ops.append(UpdateOne(
+                    {"batch_review_id": batch_id, "sf_course_code": apm_code},
                     {"$set": payload}
                 ))
                 processed_codes_for_commands.add(apm_code)
             else:
-                # Handle student pods
-                payload = {**base_payload, "student_apm_username": creds.get("username"), "student_apm_password": creds.get("password")}
+                # This is a Student Course. Update its document(s).
+                payload = {
+                    **base_payload, 
+                    "student_apm_username": creds.get("username"),
+                    "student_apm_password": creds.get("password")
+                }
+                # Use UpdateMany as a student SF course code could correspond to multiple
+                # interim docs in a split build scenario (e.g., Maestro).
                 update_ops.append(UpdateMany(
                     {"batch_review_id": batch_id, "sf_course_code": apm_code},
                     {"$set": payload}
                 ))
                 processed_codes_for_commands.add(apm_code)
+            # --- End of Modification ---
 
         # Handle commands for codes that didn't have credentials (e.g., pure deletes)
         for apm_code, commands in apm_commands_map.items():
@@ -1320,7 +1337,7 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
             logger.error(f"Error updating interim DB with APM data: {e}", exc_info=True)
             return False, "Database error while saving APM data."
 
-    # --- Nested Helper: Process final plan for display ---
+    # --- Nested Helper: Process final plan for display (Unchanged) ---
     def _process_plan_for_display(final_plan_docs):
         """
         Processes the final plan for display, correctly identifying and separating
@@ -1335,11 +1352,9 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
             vendor = doc.get("vendor")
             logger.debug(f"[_process_plan_for_display] Processing doc for SF Code: {sf_code}")
             
-            # --- REVISED LOGIC: Mutually exclusive check ---
             is_trainer_doc = isinstance(sf_code, str) and sf_code.endswith("-Trainer Pod")
 
             if is_trainer_doc:
-                # --- This is a CONSOLIDATED TRAINER POD document ---
                 trainer_item = {
                     "type": "Trainer Build",
                     "sf_course_code": sf_code, 
@@ -1348,13 +1363,11 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                     "vendor": vendor,
                     "assignments": doc.get("assignments", []),
                     "status_note": doc.get("trainer_assignment_warning"),
-                    # Use generic/fixed values for display consistency
                     "sf_trainer_name": "N/A", 
                     "start_date": None,
                     "end_date": None,
                     "location": "N/A",
                     "f5_class_number": None,
-                    # APM logic now uses the tag as the code, so it's stored in student fields
                     "apm_username": doc.get("student_apm_username"),
                     "apm_password": doc.get("student_apm_password"),
                 }
@@ -1362,7 +1375,6 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                 logger.debug(f"Added CONSOLIDATED TRAINER item for tag '{sf_code}'.")
 
             else:
-                # --- This is a STUDENT build document ---
                 student_item = {
                     "type": "Student Build",
                     "sf_course_code": sf_code,
@@ -1386,12 +1398,11 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                 student_items.append(student_item)
                 logger.debug(f"Added STUDENT item for course '{sf_code}'.")
         
-        # Combine the lists, ensuring a consistent sort order.
         all_items = student_items + trainer_items
         all_items.sort(key=lambda x: (x.get('start_date') is None, x.get('start_date', 'z'), x['sf_course_code']))
         return all_items
 
-    # --- Nested Helper: Sanitize data for JSON embedding ---
+    # --- Nested Helper: Sanitize data for JSON embedding (Unchanged) ---
     def _sanitize_for_json(data):
         if isinstance(data, list): return [_sanitize_for_json(i) for i in data]
         if isinstance(data, dict): return {str(k): _sanitize_for_json(v) for k,v in data.items()}
@@ -1400,7 +1411,7 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
         if isinstance(data, datetime.date): return data.isoformat()
         return data
 
-    # --- Main execution flow of the helper ---
+    # --- Main execution flow of the helper (Unchanged) ---
     final_plan_docs, error = _fetch_all_plan_data(batch_review_id)
     if error:
         flash(error, "danger")
@@ -1414,7 +1425,6 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
     if regenerate_apm:
         logger.info(f"Regenerating APM data for batch '{batch_review_id}'...")
         
-        # Step 1: Fetch current APM state and extended tags
         current_apm_entries = {}
         extended_apm_codes = set()
         apm_errors = []
@@ -1433,29 +1443,24 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
             except PyMongoError:
                 apm_errors.append("Could not fetch extended allocation tags.")
 
-        # Step 2: Call the helper with all required arguments
         commands_by_code, apm_creds_map, gen_errors = generate_apm_helper(
             final_plan_docs, 
             current_apm_entries, 
             extended_apm_codes
         )
         
-        # Flatten for the template preview
         apm_commands = [cmd for cmd_list in commands_by_code.values() for cmd in cmd_list]
         apm_errors.extend(gen_errors)
 
         if apm_errors:
             flash("Note: Errors occurred during APM data generation: " + " | ".join(apm_errors), "info")
         
-        # Update DB with new credentials AND commands
         success, error = _update_db_with_apm(batch_review_id, apm_creds_map, commands_by_code)
         if not success:
             flash(error, "danger")
         
-        # Re-fetch to get the newly saved APM data
         final_plan_docs, _ = _fetch_all_plan_data(batch_review_id)
     else:
-        # This "view-only" logic remains the same
         logger.info(f"Skipping APM data regeneration for batch '{batch_review_id}'. Displaying existing data.")
         try:
             current_apm_entries = {}
@@ -1470,7 +1475,6 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
                     if doc.get("tag"): extended_apm_codes.add(doc.get("tag"))
 
             commands_by_code_preview, _, _ = generate_apm_helper(final_plan_docs, current_apm_entries, extended_apm_codes)
-            # Flatten for preview
             apm_commands = [cmd for cmd_list in commands_by_code_preview.values() for cmd in cmd_list]
         except Exception as e:
             logger.warning(f"Could not generate APM command preview for view-only mode: {e}")
