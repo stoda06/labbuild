@@ -489,6 +489,33 @@ class PRTGManager:
         # If no available server was able to successfully add the device, log an error.
         logger.error("Failed to add device to any available PRTG server.")
         return None
+    
+    def pause_device(self, device_id):
+        """
+        Pauses a device on the PRTG server.
+
+        This method calls the API endpoint to pause a device.
+
+        Args:
+            device_id (str): The ID of the device to pause.
+
+        Returns:
+            bool: True if the device was successfully paused; False otherwise.
+        """
+        pause_url = f"{self.prtg_url}/api/pause.htm"
+        pause_params = {
+            'id': device_id,
+            'action': '0',  # '0' indicates pausing the device.
+            'apitoken': self.api_token
+        }
+        try:
+            response = self.session.get(pause_url, params=pause_params, verify=False, timeout=60)
+            response.raise_for_status()
+            logger.info(f"Successfully sent pause command for device ID {device_id}.")
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to pause device ID {device_id}: {e}")
+            return False
 
     @staticmethod
     def delete_monitor(prtg_monitor_url, db_client):
