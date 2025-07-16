@@ -10,12 +10,12 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 # --- Setup basic logging to see the output ---
-# In a real app, this would be configured elsewhere.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Constants ---
-ALLOCATION_COLLECTION = "allocation"
-HOST_COLLECTION = "host"  # Corrected to singular
+# CORRECTED to match your database collection name
+ALLOCATION_COLLECTION = "currentallocation"
+HOST_COLLECTION = "host"
 INTERIM_ALLOCATION_COLLECTION = "interimallocation"
 
 class ExcelStyle:
@@ -87,17 +87,16 @@ def _fetch_credentials_from_course2() -> Dict[str, Dict[str, str]]:
         for username, details in api_data.items():
             if isinstance(details, dict) and details.get('vpn_auth_course_code') == 'Trainer':
                 course_version = details.get('vpn_auth_version')
-                password_value = details.get('vpn_auth_class') # As per original logic, this is the password
-                class_name = details.get('vpn_auth_class') # This is for the "Class" column
+                password_value = details.get('vpn_auth_class')
+                class_name = details.get('vpn_auth_class')
 
                 if course_version and username and password_value:
                     lookup_key = course_version.strip()
                     credential_map[lookup_key] = {
                         "username": username,
                         "password": password_value,
-                        "class": class_name  # Store the class name separately
+                        "class": class_name
                     }
-                    
         logger.info(f"Successfully loaded {len(credential_map)} TRAINER credentials from course2.")
     except requests.exceptions.RequestException as e:
         logger.error(f"FATAL: Could not connect to course2 service. Credentials will be blank. Error: {e}")
@@ -107,24 +106,38 @@ def _fetch_credentials_from_course2() -> Dict[str, Dict[str, str]]:
 
 
 def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: Dict) -> List[Dict]:
-    """Data Source 1: Fetches trainer pods from 'allocation'."""
+    """Data Source 1: Fetches trainer pods from 'currentallocation'."""
     processed_data = []
     collection = db[ALLOCATION_COLLECTION]
-    query = {"$or": [{"tag": "untagged"}, {"tag": {"$regex": "[-_](TP|Trainer-Pods)$", "$options": "i"}}]}
-    logger.info(f"Fetching CURRENT week data from '{ALLOCATION_COLLECTION}'...")
     
-    for doc in collection.find(query):
+    # This query assumes the field name for tags is 'tag'.
+    # If it's different, you'll need to change 'tag' to the correct field name.
+    query = {
+        "$or": [
+            {"tag": "untagged"},
+            {"tag": {"$regex": "Trainer-Pods|[-_]TP", "$options": "i"}}
+        ]
+    }
+    logger.info(f"Fetching CURRENT week data from '{ALLOCATION_COLLECTION}'...")
+
+    try:
+        matching_docs = list(collection.find(query))
+        logger.info(f"Found {len(matching_docs)} documents matching the trainer pod query.")
+        if not matching_docs:
+            logger.warning(f"The collection '{ALLOCATION_COLLECTION}' was found, but no documents matched the query. Check if tags like 'CCTE-Trainer-Pods' exist.")
+            return []
+    except Exception as e:
+        logger.error(f"Error executing query on '{ALLOCATION_COLLECTION}': {e}", exc_info=True)
+        return []
+
+    for doc in matching_docs:
         for course_item in doc.get('courses', []):
             if not isinstance(course_item, dict): continue
             
             course_name_from_db = course_item.get('course_name', 'N/A')
-            credential_lookup_key = course_name_from_db.strip()
-            creds = credential_map.get(credential_lookup_key, {})
-
+            creds = credential_map.get(course_name_from_db.strip(), {})
             vendor_code = course_item.get('vendor', '').upper()
             vendor_group_name = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
-
-            # MODIFICATION: The 'Class' column is now always blank for manual entry.
             class_value = ''
 
             for pod_detail in course_item.get('pod_details', []):
@@ -141,7 +154,7 @@ def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: 
                     'password': creds.get('password', ''),
                     'version': course_name_from_db,
                     'ram': pod_detail.get('memory_gb_one_pod', 'N/A'),
-                    'class': class_value,  # This will now always be blank
+                    'class': class_value,
                     'host': host_name_from_alloc, 
                     'vcenter': full_vcenter.split('.')[0],
                     'taken_by': '', 'notes': '', 'vendor': vendor_group_name
@@ -154,19 +167,41 @@ def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: 
     processed_data = []
     collection = db[INTERIM_ALLOCATION_COLLECTION]
     query = {"sf_trainer_name": "Trainer Pods"}
-    logger.info(f"Fetching NEXT week data from '{INTERIM_ALLOCATION_COLLECTION}'...")
+    logger.info(f"Fetching NEXT week data from '{INTERIM_ALLOCATION_COLLECTION}' with query: {query}")
 
     for doc in collection.find(query):
-        course_version_key_from_db = doc.get('final_labbuild_course')
-        credential_lookup_key = course_version_key_from_db.strip() if course_version_key_from_db else None
-        creds = credential_map.get(credential_lookup_key, {}) if credential_lookup_key else {}
+        username = ''
+        password = ''
 
+        # --- NEW LOGIC START ---
+        # PRIORITY 1: Check for credentials directly within the MongoDB document.
+        doc_username = doc.get('student_apm_username')
+        doc_password = doc.get('student_apm_password')
+
+        if doc_username and doc_password:
+            username = doc_username
+            password = doc_password
+            logger.info(f"Found direct credentials in interim doc ID {doc.get('_id')}")
+        else:
+            # PRIORITY 2 (FALLBACK): If not found, use the API credential map.
+            course_version_key_from_db = doc.get('final_labbuild_course')
+            credential_lookup_key = course_version_key_from_db.strip() if course_version_key_from_db else None
+            
+            if credential_lookup_key:
+                creds = credential_map.get(credential_lookup_key, {})
+                username = creds.get('username', '')
+                password = creds.get('password', '')
+                if not username: # Add a warning if the fallback also fails
+                    logger.warning(f"Direct creds missing. Fallback to API also FAILED for interim doc ID {doc.get('_id')} with key '{credential_lookup_key}'")
+            else:
+                 logger.warning(f"Direct creds missing and no 'final_labbuild_course' key in interim doc ID {doc.get('_id')}")
+        # --- NEW LOGIC END ---
+
+        # Now, continue building the record with the username/password we found.
+        course_version_key_from_db = doc.get('final_labbuild_course')
         vendor_code = doc.get('vendor', '').upper()
         vendor_group_name = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
-        
-        # MODIFICATION: The 'Class' column is now always blank for manual entry.
         class_value = ''
-
         ram_per_pod = doc.get('memory_gb_one_pod', 'N/A')
         
         for assignment in doc.get('assignments', []):
@@ -182,11 +217,11 @@ def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: 
                         processed_data.append({
                             'course_name': doc.get('sf_course_type', 'N/A'),
                             'pod_number': pod_num,
-                            'username': creds.get('username', ''),
-                            'password': creds.get('password', ''),
+                            'username': username,  # Use the determined username
+                            'password': password,  # Use the determined password
                             'version': course_version_key_from_db,
                             'ram': ram_per_pod,
-                            'class': class_value,  # This will now always be blank
+                            'class': class_value,
                             'host': host_name_from_alloc, 
                             'vcenter': full_vcenter.split('.')[0],
                             'taken_by': '', 
@@ -208,7 +243,7 @@ def fetch_trainer_pod_data(db: object) -> List[Dict]:
     host_map = _create_host_to_vcenter_map(db)
     credential_map = _fetch_credentials_from_course2()
     if today_weekday < 2:
-        logger.info("Day is before Wednesday. Using CURRENT week's data source ('allocation').")
+        logger.info("Day is before Wednesday. Using CURRENT week's data source ('currentallocation').")
         return _fetch_from_current_allocations(db, host_map, credential_map)
     else:
         logger.info("Day is on or after Wednesday. Using NEXT week's data source ('interimallocation').")
@@ -227,13 +262,23 @@ def _apply_style(cell, fill=None, font=None, alignment=None, border=None):
 
 def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
     """Generates the trainer pod allocation report in memory."""
+    if not trainer_pods:
+        logger.warning("No trainer pod data was provided to the report generator. Returning an empty report.")
+        # You might want to create a workbook with a message like "No Data Found"
+        wb = Workbook()
+        sheet = wb.active
+        sheet['A1'] = "No Trainer Pod Data Found"
+        in_memory_fp = io.BytesIO()
+        wb.save(in_memory_fp)
+        in_memory_fp.seek(0)
+        return in_memory_fp
+
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Trainer Pod Allocation"
 
     num_columns = len(TRAINER_SHEET_HEADERS)
     
-    # --- Main Title ---
     sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=num_columns)
     title_cell = sheet["A1"]
     title_cell.value = "TRAINER POD ALLOCATION"
@@ -277,7 +322,6 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
             
             current_row += 1
 
-    # Set Column Widths
     header_to_col_letter = {header: get_column_letter(i) for i, header in enumerate(TRAINER_SHEET_HEADERS.keys(), 1)}
     
     sheet.column_dimensions[header_to_col_letter['Course Name']].width = 35
@@ -286,7 +330,7 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
     sheet.column_dimensions[header_to_col_letter['Password']].width = 15
     sheet.column_dimensions[header_to_col_letter['Version']].width = 25
     sheet.column_dimensions[header_to_col_letter['RAM']].width = 8
-    sheet.column_dimensions[header_to_col_letter['Class']].width = 10 # Adjusted width for a blank column
+    sheet.column_dimensions[header_to_col_letter['Class']].width = 10
     sheet.column_dimensions[header_to_col_letter['Host']].width = 25
     sheet.column_dimensions[header_to_col_letter['vCenter']].width = 20
     sheet.column_dimensions[header_to_col_letter["Don't Delete Until US Courses Complete"]].width = 40

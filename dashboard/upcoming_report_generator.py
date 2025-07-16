@@ -5,6 +5,7 @@
 
 import io
 import logging
+import re
 import requests
 import pymongo
 from flask import current_app
@@ -39,11 +40,6 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 def calculate_ram_summary(all_allocations: List[Dict], host_map: Dict) -> Dict[str, float]:
-    """
-    Note: This function calculates RAM totals in Python. It's kept for potential future use
-    but is no longer used for the primary "Allocated RAM" summary at the top of the report,
-    which now uses an Excel formula.
-    """
     allocated_ram_by_env = {env_key: 0 for env_key in host_map.keys()}
     for allocation in all_allocations:
         ram = convert_to_numeric(allocation.get("ram"))
@@ -86,8 +82,7 @@ def write_cell(sheet, row, col, value, trainer=False, use_green_fill=False, numb
     if number_format: cell.number_format = number_format
 
 def write_group_title(sheet, row, title):
-    # <<< FIX: Removed cell merging for group titles >>>
-    # The merge_cells line has been removed to prevent the title from spanning multiple columns.
+    # This function now only sets the font, not borders or fill.
     cell = sheet.cell(row=row, column=1, value=title)
     cell.font = Font(bold=True, size=14)
     return row + 1
@@ -103,7 +98,6 @@ def write_merged_header(sheet, row, col, header_text):
     sheet.cell(row=row, column=col, value=header_text)
 
 def write_summary_section(sheet, row_offset):
-    # <<< FIX: This function now writes Excel formulas for RAM totals >>>
     start_col = RAM_SUMMARY_START_COL
     env_keys = SUMMARY_ENV_ORDER
     headers = ["RAM Summary", "Total", *env_keys]
@@ -120,15 +114,15 @@ def write_summary_section(sheet, row_offset):
     sheet.cell(row=remaining_ram_row, column=start_col, value="Remaining RAM (GB)").font = Font(bold=True)
     total_col_letter = get_column_letter(start_col + 1)
     
-    first_data_row = 13 # Data rows start at row 13
-    last_data_row = 500 # Use a large number to ensure all data is included
+    first_data_row = 13
+    last_data_row = 500
 
     for i, env_key in enumerate(env_keys):
         col, col_letter = start_col + 2 + i, get_column_letter(start_col + 2 + i)
         available_ram = AVAILABLE_RAM_GB.get(env_key, 0)
         write_cell(sheet, available_ram_row, col, available_ram, is_summary=False, number_format='0')
         
-        formula_ram = f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})/2"
+        formula_ram = f"=SUM({col_letter}{first_data_row}:{col_letter}{last_data_row})"
         write_cell(sheet, allocated_ram_row, col, formula_ram, is_summary=False, number_format='0.0')
         
         formula_pct = f"=IF({col_letter}{available_ram_row}>0, {col_letter}{allocated_ram_row}/{col_letter}{available_ram_row}, 0)"
@@ -151,6 +145,7 @@ def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trai
     trainer_flag, green_flag = (True, False) if is_trainer else (False, use_green_fill)
     virtual_hosts_str = entry.get("virtual_hosts", "").lower() if entry.get("virtual_hosts") else ""
     col = 1
+    
     for h in header_keys:
         if h == "Start/End Pod":
             pod = entry.get("start_end_pod", "")
@@ -162,6 +157,7 @@ def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trai
             write_cell(sheet, row, col, right, trainer=trainer_flag, use_green_fill=green_flag); col += 1
         elif h in host_map:
             host_name_for_this_column = host_map[h].lower()
+            hosts_list = [h.strip().lower() for h in virtual_hosts_str.split(',') if h.strip()]
             if host_name_for_this_column in virtual_hosts_str:
                 ram_col, pods_col = get_column_letter(header_pos["RAM"]), get_column_letter(header_pos["Vendor Pods"])
                 formula = f"=IF({pods_col}{row}<=1, {ram_col}{row}, {ram_col}{row} + ({pods_col}{row}-1)*{ram_col}{row}/2)"
@@ -176,10 +172,10 @@ def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trai
             write_cell(sheet, row, col, val_to_write, trainer_flag, green_flag, number_format=num_format)
             col += 1
 
-def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total_or_formula, group_host_ram_totals, group_name, group_end_col):
-    # <<< FIX: This function now accepts an Excel formula for the pod total >>>
+def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total_or_formula, group_host_ram_totals, group_name, group_end_col, data_start_row, data_end_row):
     vendor_col = header_pos.get("Vendor Pods")
-    has_pod_summary = vendor_col and (group_pod_total_or_formula is not None)
+    students_col = header_pos.get("Students")
+    has_pod_summary = vendor_col and students_col and (group_pod_total_or_formula is not None)
     has_ram_summary = sum(group_host_ram_totals.values()) > 0
     if not (has_pod_summary or has_ram_summary): return start_row
     
@@ -193,33 +189,67 @@ def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total_or_f
             cell = sheet.cell(row=r, column=c)
             cell.alignment = ExcelStyle.CENTER_ALIGNMENT.value
             cell.border = border_top if r in [label_start, value_start] else border_bottom
+    
     if has_pod_summary:
-        merge_start, merge_end = vendor_col - 1, vendor_col + 1
+        merge_start = students_col
+        merge_end = vendor_col
+        
         sheet.merge_cells(start_row=label_start, start_column=merge_start, end_row=label_end, end_column=merge_end)
         label_cell = sheet.cell(row=label_start, column=merge_start, value="Total Pods")
-        label_cell.font, label_cell.alignment, label_cell.fill = Font(bold=True, size=16), Alignment(horizontal='center', vertical='center'), ExcelStyle.LIGHT_BLUE_FILL.value
+        label_cell.font = Font(bold=True, size=20)
+        label_cell.alignment = Alignment(horizontal='center', vertical='center')
+        label_cell.fill = ExcelStyle.LIGHT_BLUE_FILL.value
+
         sheet.merge_cells(start_row=value_start, start_column=merge_start, end_row=value_end, end_column=merge_end)
         
         value_cell = sheet.cell(row=value_start, column=merge_start, value=group_pod_total_or_formula)
-        value_cell.font, value_cell.alignment, value_cell.fill = Font(bold=True, size=14), Alignment(horizontal='center', vertical='center'), ExcelStyle.LIGHT_BLUE_FILL.value
+        value_cell.font = Font(bold=True, size=20)
+        value_cell.alignment = Alignment(horizontal='center', vertical='center')
+        value_cell.fill = ExcelStyle.LIGHT_BLUE_FILL.value
 
     if has_ram_summary:
         for host_key, host_ram in group_host_ram_totals.items():
             if host_col := header_pos.get(host_key):
                 cell_top, cell_bottom = sheet.cell(row=value_start, column=host_col), sheet.cell(row=value_end, column=host_col)
-                cell_bottom.value, cell_bottom.number_format, cell_bottom.font = host_ram if host_ram > 0 else 0, '0', Font(bold=True, color="FFFF00")
-                cell_top.fill, cell_bottom.fill = ExcelStyle.LIGHT_BLUE_FILL.value, ExcelStyle.LIGHT_BLUE_FILL.value
+                if data_start_row <= data_end_row:
+                    host_col_letter = get_column_letter(host_col)
+                    formula = f"=SUM({host_col_letter}{data_start_row}:{host_col_letter}{data_end_row})"
+                    cell_bottom.value = formula
+                else:
+                    cell_bottom.value = 0
+                
+                cell_bottom.number_format = '0.0'
+                cell_bottom.font = Font(bold=True, color="FFFF00")
+                cell_top.fill = ExcelStyle.LIGHT_BLUE_FILL.value
+                cell_bottom.fill = ExcelStyle.LIGHT_BLUE_FILL.value
     return start_row + 4
 
 def apply_outer_border(sheet, start_row, end_row, start_col, end_col):
-    medium, no_side = Side(style='medium'), Side(style=None)
-    for r in range(start_row, end_row + 1):
-        for c in range(start_col, end_col + 1):
-            cell = sheet.cell(row=r, column=c)
-            b = cell.border
-            is_top, is_bottom, is_left, is_right = (r == start_row), (r == end_row), (c == start_col), (c == end_col)
-            if is_top or is_bottom or is_left or is_right:
-                cell.border = Border(left=medium if is_left else b.left, right=medium if is_right else b.right, top=no_side if is_top else b.top, bottom=medium if is_bottom else b.bottom)
+    """
+    Applies an outer border to a range of cells.
+    The top border is thin, while the other sides are medium.
+    This version correctly handles existing borders in cells.
+    """
+    thin_side = Side(style='thin')
+    medium_side = Side(style='medium')
+
+    # Helper to copy and modify a border safely
+    def set_border_side(cell, top=None, left=None, right=None, bottom=None):
+        border = cell.border.copy()
+        if top: border.top = top
+        if left: border.left = left
+        if right: border.right = right
+        if bottom: border.bottom = bottom
+        cell.border = border
+
+    # Apply borders to the four edges of the range
+    for col in range(start_col, end_col + 1):
+        set_border_side(sheet.cell(row=start_row, column=col), top=thin_side)
+        set_border_side(sheet.cell(row=end_row, column=col), bottom=medium_side)
+    
+    for row in range(start_row, end_row + 1):
+        set_border_side(sheet.cell(row=row, column=start_col), left=medium_side)
+        set_border_side(sheet.cell(row=row, column=end_col), right=medium_side)
 
 def determine_us_au_location(virtual_hosts_str: str) -> str:
     if not virtual_hosts_str: return ""
@@ -256,6 +286,36 @@ def _find_value_across_docs(docs: list, key_priority_list: list):
             if value is not None and value != '':
                 return value
     return None
+
+def _extract_apm_command_value(doc: Dict) -> str:
+    try:
+        apm_commands = doc.get("apm_commands")
+        if not apm_commands or not isinstance(apm_commands, list) or not apm_commands[0]:
+            return ""
+        
+        command_string = apm_commands[0]
+        if not isinstance(command_string, str):
+            return ""
+
+        quoted_parts = re.findall(r'"(.*?)"', command_string)
+        
+        if len(quoted_parts) >= 4:
+            return quoted_parts[-4]
+        else:
+            logger.warning(f"APM command string has fewer than 4 quoted parts: {command_string}")
+            return ""
+            
+    except (IndexError, TypeError) as e:
+        logger.debug(f"Could not extract APM command value from doc: {e}")
+        return ""
+    return ""
+
+def _find_apm_command_across_docs(docs: list) -> str:
+    for doc in docs:
+        value = _extract_apm_command_value(doc)
+        if value:
+            return value
+    return ""
 
 # ==============================================================================
 # CREDENTIAL HANDLING
@@ -316,6 +376,8 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
         shared_host_str = ", ".join(trainer_hosts)
         trainer_vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in trainer_hosts if h)))
         shared_vcenter_str = ", ".join(filter(None, trainer_vcenters))
+        if shared_host_str and not shared_vcenter_str:
+            logger.warning(f"vCenter lookup failed for trainer pod '{doc.get('sf_course_code')}' with hosts '{shared_host_str}'.")
         if not related_courses:
              logger.warning(f"Trainer pod doc {doc.get('sf_course_code')} has no related_student_courses. Cannot link data reliably.")
         for course_code in related_courses:
@@ -328,6 +390,7 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
             'username': shared_username, 'password': shared_password, 'class_number': "", 'students': len(related_courses),
             'vendor_pods': doc.get('effective_pods_req', len(pod_ranges) or 0), 'ram': shared_ram, 'virtual_hosts': shared_host_str,
             'vcenter': shared_vcenter_str, 'pod_type': 'trainer', 'version': doc.get('final_labbuild_course'), 'course_version': doc.get('final_labbuild_course'),
+            'apm_command_value': _extract_apm_command_value(doc),
         }
         processed_trainer_pods.append(trainer_pod_entry)
     logger.info(f"Built trainer_data_map for {len(trainer_data_map)} student courses.")
@@ -350,11 +413,41 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
             course_version = base_doc.get('final_labbuild_course')
             if course_version in ram_lookup_map:
                 final_ram = ram_lookup_map.get(course_version)
-        hosts_from_assignments = sorted(set(a.get('host') for a in data['assignments'] if a.get('host')))
-        final_host_str = info_from_trainer.get('virtual_hosts') or ", ".join(hosts_from_assignments)
+        
+        # --- START OF VENDOR-SPECIFIC FIX ---
+        # 1. Start with the host string from a linked trainer pod, if available.
+        final_host_str = info_from_trainer.get('virtual_hosts')
+
+        # 2. Determine if the course is a "Check Point" course.
+        course_type = base_doc.get('sf_course_type', '').lower()
+        is_cp_course = 'check point' in course_type
+
+        # 3. For CP courses, ALWAYS overwrite the host string with data from assignments,
+        #    as the trainer data can be unreliable. For other courses, only use assignments
+        #    if the trainer data was missing.
+        if is_cp_course or not final_host_str:
+            hosts_from_assignments = sorted(set(a.get('host') for a in data['assignments'] if a.get('host')))
+            if hosts_from_assignments:
+                final_host_str = ", ".join(hosts_from_assignments)
+
+        # 4. As a final fallback for any course, search for a 'virtual_hosts' field
+        #    on the course documents themselves if no host string has been found yet.
+        if not final_host_str:
+            final_host_str = _find_value_across_docs(data['docs'], ['virtual_hosts']) or ""
+        # --- END OF VENDOR-SPECIFIC FIX ---
+
         final_hosts_list = [h.strip() for h in final_host_str.split(',') if h.strip()]
         vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in final_hosts_list if h)))
         final_vcenter_str = ", ".join(filter(None, vcenters))
+        
+        if final_host_str and not final_vcenter_str:
+            logger.warning(
+                f"VCENTER LOOKUP FAILED for course '{code}'. "
+                f"Hosts found: '{final_host_str}'. "
+                f"Failed to find a vCenter for these hosts in the map. "
+                f"Please check if these host identifiers exist in the 'hosts' collection."
+            )
+            
         pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in data['assignments'] if a.get('start_pod')]
         us_au_loc = determine_us_au_location(final_host_str)
         if not us_au_loc and code:
@@ -368,6 +461,7 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
             'username': final_username, 'password': final_password, 'class_number': base_doc.get('f5_class_number'), 'students': base_doc.get('sf_pax_count', 0),
             'vendor_pods': base_doc.get('effective_pods_req', len(pod_ranges) or 0), 'ram': final_ram, 'virtual_hosts': final_host_str,
             'vcenter': final_vcenter_str, 'pod_type': 'default', 'version': base_doc.get('final_labbuild_course'), 'course_version': base_doc.get('final_labbuild_course'),
+            'apm_command_value': _find_apm_command_across_docs(data['docs']),
         }
         processed_standard_courses.append(course)
     logger.info(f"Finished processing. Returning {len(processed_standard_courses)} standard courses and {len(processed_trainer_pods)} trainer pods.")
@@ -386,6 +480,8 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
         hosts = sorted(list(set(p.get('host') for p in pod_details_list if p.get('host'))))
         vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in hosts if h)))
         final_vcenter_str = ", ".join(filter(None, vcenters))
+        if hosts and not final_vcenter_str:
+            logger.warning(f"vCenter lookup failed for extended course '{doc.get('tag', '')}' with hosts '{', '.join(hosts)}'.")
         start_end_pod = ""
         if pod_numbers:
             start_end_pod = f"{pod_numbers[0]}-{pod_numbers[-1]}" if len(pod_numbers) > 1 else str(pod_numbers[0])
@@ -402,6 +498,7 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
             'username': course_details.get('apm_username'), 'password': course_details.get('apm_password'), 'class_number': None, 'students': len(pod_numbers),
             'vendor_pods': len(pod_numbers), 'ram': ram_value, 'virtual_hosts': ", ".join(hosts), 'vcenter': final_vcenter_str,
             'pod_type': 'extended', 'version': course_details.get('course_name'), 'course_version': course_details.get('course_name'),
+            'apm_command_value': '',
         }
         extended_courses.append(course)
     return extended_courses
@@ -410,37 +507,45 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
 # EXCEL GENERATION & MAIN ORCHESTRATION
 # ==============================================================================
 def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[Dict], extended_pods: List[Dict], host_map: Dict) -> io.BytesIO:
-    # <<< FIX: This function now generates Excel formulas for summaries >>>
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Upcoming Labs"
     
     all_data = course_allocations + trainer_pods + extended_pods
-    expanded_data = []
-    for entry in all_data:
-        hosts_val = entry.get("virtual_hosts")
-        hosts = hosts_val if isinstance(hosts_val, str) else ""
-        host_list = [h.strip() for h in hosts.split(",") if h.strip()]
-        if len(host_list) <= 1: expanded_data.append(entry)
-        else:
-            for host in host_list:
-                new_entry = entry.copy()
-                new_entry["virtual_hosts"] = host
-                expanded_data.append(new_entry)
-    all_data = expanded_data
+    
     grouped = {g: [] for g in ExcelStyle.DEFAULT_COURSE_GROUPS.value}
     for entry in all_data:
         for gname, fn in ExcelStyle.DEFAULT_COURSE_GROUPS.value.items():
             if fn(entry.get("course_code", "")):
                 grouped[gname].append(entry)
                 break
+                
     group_order, current_row = EXCEL_GROUP_ORDER, 12
     for group_name in group_order:
         if not (records := grouped.get(group_name, [])): continue
+        
+        current_row += 1 
+        
         group_start_row = current_row
+        
         logger.info(f"Writing group: {group_name} with {len(records)} records")
         current_row = write_group_title(sheet, current_row, group_name)
-        headers = ExcelStyle.DEFAULT_HEADER_COURSE_MAPPING.value[group_name]
+        
+        headers = ExcelStyle.DEFAULT_HEADER_COURSE_MAPPING.value[group_name].copy()
+        
+        # For ANY group that has a "Course Version" column, replace it with a "vCenter" column.
+        if "Course Version" in headers:
+            new_headers = {}
+            for header, data_key in headers.items():
+                if header == "Course Version":
+                    new_headers["vCenter"] = "vcenter"
+                else:
+                    new_headers[header] = data_key
+            headers = new_headers
+        
+        if "Group" in headers:
+            headers["Group"] = "apm_command_value"
+
         header_keys, col_idx, header_pos, group_end_col = list(headers), 1, {}, 0
         for h in header_keys:
             header_pos[h], width = col_idx, 3 if h == "Start/End Pod" else 1
@@ -450,7 +555,8 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
         for h in header_keys:
             if h == "Start/End Pod": write_merged_header(sheet, current_row, col, h); col += 3
             else:
-                cell = sheet.cell(row=current_row, column=col, value=h)
+                header_text = "APM Commands" if h == "Group" else h
+                cell = sheet.cell(row=current_row, column=col, value=header_text)
                 cell.font = Font(bold=True)
                 apply_style(cell, is_summary=True)
                 col += 1
@@ -490,7 +596,7 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
             pod_total_formula = f"=SUM({vendor_pods_col_letter}{data_start_row}:{vendor_pods_col_letter}{data_end_row})"
 
         summary_start_row = current_row
-        current_row = write_group_summary_boxes(sheet, summary_start_row, header_pos, pod_total_formula, group_host_ram_totals, group_name, group_end_col)
+        current_row = write_group_summary_boxes(sheet, summary_start_row, header_pos, pod_total_formula, group_host_ram_totals, group_name, group_end_col, data_start_row, data_end_row)
         end_row = current_row - 1 if summary_start_row < current_row else summary_start_row - 1
         apply_outer_border(sheet, group_start_row, end_row, 1, group_end_col)
         current_row += 1
@@ -526,14 +632,13 @@ def get_upcoming_report_data(db):
         locations_data = list(db["locations"].find({}))
         host_docs = list(db[HOST_COLLECTION].find({}))
 
-        host_map_for_summary = {doc['host_shortcode'].capitalize(): doc['host_shortcode'] for doc in host_docs if 'host_shortcode' in doc and doc.get('include_for_build') == 'true'}
+        host_map_for_summary = {doc['host_shortcode'].capitalize(): doc['host_shortcode'] for doc in host_docs if 'host_shortcode' in doc and str(doc.get('include_for_build')).lower() == 'true'}
         location_map = {loc['code']: loc['name'] for loc in locations_data if 'code' in loc and 'name' in loc}
         
-        # <<< FIX: Create a robust, case-insensitive vCenter map with shortened names. >>>
         host_vcenter_map = {}
         logger.info("Building robust host-to-vCenter lookup map...")
         for doc in host_docs:
-            vcenter_fqdn = doc.get('vcenter')
+            vcenter_fqdn = doc.get('vcenter') or doc.get('vcentre')
             if not (vcenter_fqdn and isinstance(vcenter_fqdn, str)):
                 continue
             short_vcenter = vcenter_fqdn.split('.')[0]
@@ -541,8 +646,11 @@ def get_upcoming_report_data(db):
                 identifier = doc.get(key)
                 if identifier and isinstance(identifier, str):
                     host_vcenter_map[identifier.lower()] = short_vcenter
-        logger.info(f"Built vCenter map with {len(host_vcenter_map)} keys for reliable lookup.")
         
+        logger.info(f"Built vCenter map with {len(host_vcenter_map)} keys. Keys are: {list(host_vcenter_map.keys())}")
+        if not host_vcenter_map:
+            logger.warning("The host-to-vCenter map is EMPTY. The 'vCenter' column in the report will be blank.")
+            
         vendor_map = get_vendor_prefix_map()
         apm_data = fetch_apm_credentials()
         apm_lookup_by_code = build_apm_lookup(apm_data)
