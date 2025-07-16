@@ -62,6 +62,12 @@
                         {# --- END OF MODIFICATION --- #}
 
                         <td class="text-end btn-action-group">
+                            <button type="button" class="btn btn-sm btn-info" 
+                                    data-bs-toggle="modal" data-bs-target="#ruleModal"
+                                    data-mode="clone" data-rule-json='{{ rule | tojson }}'
+                                    title="Clone Rule">
+                                <i class="fas fa-clone"></i>
+                            </button>
                             <button type="button" class="btn btn-sm btn-warning edit-rule-btn" 
                                     data-bs-toggle="modal" data-bs-target="#ruleModal"
                                     data-mode="edit" data-rule-json='{{ rule | tojson }}'>
