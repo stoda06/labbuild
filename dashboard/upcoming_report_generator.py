@@ -352,7 +352,7 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
     trainer_data_map = {}
     standard_docs_raw = []
     trainer_docs_raw = []
-    
+
     for doc in documents:
         course_code_value = doc.get('sf_course_code')
         if course_code_value and '-trainer pod' in str(course_code_value).lower():
@@ -379,17 +379,36 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
         if shared_host_str and not shared_vcenter_str:
             logger.warning(f"vCenter lookup failed for trainer pod '{doc.get('sf_course_code')}' with hosts '{shared_host_str}'.")
         if not related_courses:
-             logger.warning(f"Trainer pod doc {doc.get('sf_course_code')} has no related_student_courses. Cannot link data reliably.")
+            logger.warning(f"Trainer pod doc {doc.get('sf_course_code')} has no related_student_courses. Cannot link data reliably.")
         for course_code in related_courses:
-            trainer_data_map[course_code] = { 'username': shared_username, 'password': shared_password, 'ram': shared_ram, 'virtual_hosts': shared_host_str }
+            trainer_data_map[course_code] = {
+                'username': shared_username,
+                'password': shared_password,
+                'ram': shared_ram,
+                'virtual_hosts': shared_host_str
+            }
         pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in doc.get('assignments', []) if a.get('start_pod')]
         us_au_loc = determine_us_au_location(shared_host_str)
         trainer_pod_entry = {
-            'course_code': grouping_course_code, 'location': "", 'us_au_location': us_au_loc, 'course_start_date': "", 'last_day': "",
-            'trainer_name': "", 'course_name': doc.get('sf_course_type', ''), 'start_end_pod': ", ".join(pod_ranges),
-            'username': shared_username, 'password': shared_password, 'class_number': "", 'students': len(related_courses),
-            'vendor_pods': doc.get('effective_pods_req', len(pod_ranges) or 0), 'ram': shared_ram, 'virtual_hosts': shared_host_str,
-            'vcenter': shared_vcenter_str, 'pod_type': 'trainer', 'version': doc.get('final_labbuild_course'), 'course_version': doc.get('final_labbuild_course'),
+            'course_code': grouping_course_code,
+            'location': "",
+            'us_au_location': us_au_loc,
+            'course_start_date': "",
+            'last_day': "",
+            'trainer_name': "",
+            'course_name': doc.get('sf_course_type', ''),
+            'start_end_pod': ", ".join(pod_ranges),
+            'username': shared_username,
+            'password': shared_password,
+            'class_number': "",
+            'students': len(related_courses),
+            'vendor_pods': doc.get('effective_pods_req', len(pod_ranges) or 0),
+            'ram': shared_ram,
+            'virtual_hosts': shared_host_str,
+            'vcenter': shared_vcenter_str,
+            'pod_type': 'trainer',
+            'version': doc.get('final_labbuild_course'),
+            'course_version': doc.get('final_labbuild_course'),
             'apm_command_value': _extract_apm_command_value(doc),
         }
         processed_trainer_pods.append(trainer_pod_entry)
@@ -400,7 +419,10 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
         if code := doc.get('sf_course_code'):
             grouped_courses[code]['docs'].append(doc)
             grouped_courses[code]['assignments'].extend(doc.get('assignments', []))
+
     processed_standard_courses = []
+    seen_combinations = set()
+
     logger.info(f"Processing {len(grouped_courses)} unique standard course codes.")
     for code, data in grouped_courses.items():
         base_doc = data['docs'][0]
@@ -413,59 +435,70 @@ def unpack_interim_allocations(documents, vendor_map, location_map, apm_lookup_b
             course_version = base_doc.get('final_labbuild_course')
             if course_version in ram_lookup_map:
                 final_ram = ram_lookup_map.get(course_version)
-        
-        # --- START OF VENDOR-SPECIFIC FIX ---
-        # 1. Start with the host string from a linked trainer pod, if available.
-        final_host_str = info_from_trainer.get('virtual_hosts')
 
-        # 2. Determine if the course is a "Check Point" course.
+        final_host_str = info_from_trainer.get('virtual_hosts')
         course_type = base_doc.get('sf_course_type', '').lower()
         is_cp_course = 'check point' in course_type
-
-        # 3. For CP courses, ALWAYS overwrite the host string with data from assignments,
-        #    as the trainer data can be unreliable. For other courses, only use assignments
-        #    if the trainer data was missing.
         if is_cp_course or not final_host_str:
             hosts_from_assignments = sorted(set(a.get('host') for a in data['assignments'] if a.get('host')))
             if hosts_from_assignments:
                 final_host_str = ", ".join(hosts_from_assignments)
-
-        # 4. As a final fallback for any course, search for a 'virtual_hosts' field
-        #    on the course documents themselves if no host string has been found yet.
         if not final_host_str:
             final_host_str = _find_value_across_docs(data['docs'], ['virtual_hosts']) or ""
-        # --- END OF VENDOR-SPECIFIC FIX ---
+
+        key = (code, final_host_str)
+        if key in seen_combinations:
+            logger.debug(f"Skipping duplicate course entry for code '{code}' with hosts '{final_host_str}'")
+            continue
+        seen_combinations.add(key)
 
         final_hosts_list = [h.strip() for h in final_host_str.split(',') if h.strip()]
         vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in final_hosts_list if h)))
         final_vcenter_str = ", ".join(filter(None, vcenters))
-        
+
         if final_host_str and not final_vcenter_str:
             logger.warning(
                 f"VCENTER LOOKUP FAILED for course '{code}'. "
                 f"Hosts found: '{final_host_str}'. "
-                f"Failed to find a vCenter for these hosts in the map. "
-                f"Please check if these host identifiers exist in the 'hosts' collection."
+                f"Failed to find a vCenter for these hosts in the map."
             )
-            
+
         pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in data['assignments'] if a.get('start_pod')]
         us_au_loc = determine_us_au_location(final_host_str)
         if not us_au_loc and code:
             code_lower = code.lower()
-            if code_lower.startswith('au-') or '-au-' in code_lower: us_au_loc = "AU"
-            elif code_lower.startswith('us-') or '-us-' in code_lower: us_au_loc = "US"
+            if code_lower.startswith('au-') or '-au-' in code_lower:
+                us_au_loc = "AU"
+            elif code_lower.startswith('us-') or '-us-' in code_lower:
+                us_au_loc = "US"
+
         course = {
-            'course_code': code, 'location': find_location_from_code(code, location_map), 'us_au_location': us_au_loc,
-            'course_start_date': format_date(base_doc.get('sf_start_date')), 'last_day': format_date(base_doc.get('sf_end_date')),
-            'trainer_name': base_doc.get('sf_trainer_name'), 'course_name': base_doc.get('sf_course_type'), 'start_end_pod': ", ".join(pod_ranges),
-            'username': final_username, 'password': final_password, 'class_number': base_doc.get('f5_class_number'), 'students': base_doc.get('sf_pax_count', 0),
-            'vendor_pods': base_doc.get('effective_pods_req', len(pod_ranges) or 0), 'ram': final_ram, 'virtual_hosts': final_host_str,
-            'vcenter': final_vcenter_str, 'pod_type': 'default', 'version': base_doc.get('final_labbuild_course'), 'course_version': base_doc.get('final_labbuild_course'),
+            'course_code': code,
+            'location': find_location_from_code(code, location_map),
+            'us_au_location': us_au_loc,
+            'course_start_date': format_date(base_doc.get('sf_start_date')),
+            'last_day': format_date(base_doc.get('sf_end_date')),
+            'trainer_name': base_doc.get('sf_trainer_name'),
+            'course_name': base_doc.get('sf_course_type'),
+            'start_end_pod': ", ".join(pod_ranges),
+            'username': final_username,
+            'password': final_password,
+            'class_number': base_doc.get('f5_class_number'),
+            'students': base_doc.get('sf_pax_count', 0),
+            'vendor_pods': base_doc.get('effective_pods_req', len(pod_ranges) or 0),
+            'ram': final_ram,
+            'virtual_hosts': final_host_str,
+            'vcenter': final_vcenter_str,
+            'pod_type': 'default',
+            'version': base_doc.get('final_labbuild_course'),
+            'course_version': base_doc.get('final_labbuild_course'),
             'apm_command_value': _find_apm_command_across_docs(data['docs']),
         }
         processed_standard_courses.append(course)
+
     logger.info(f"Finished processing. Returning {len(processed_standard_courses)} standard courses and {len(processed_trainer_pods)} trainer pods.")
     return processed_standard_courses, processed_trainer_pods
+
 
 def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_lookup_map: Dict, host_vcenter_map: Dict) -> List[Dict]:
     extended_courses = []
@@ -510,30 +543,30 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Upcoming Labs"
-    
+
     all_data = course_allocations + trainer_pods + extended_pods
-    
+
     grouped = {g: [] for g in ExcelStyle.DEFAULT_COURSE_GROUPS.value}
     for entry in all_data:
         for gname, fn in ExcelStyle.DEFAULT_COURSE_GROUPS.value.items():
             if fn(entry.get("course_code", "")):
                 grouped[gname].append(entry)
                 break
-                
+
     group_order, current_row = EXCEL_GROUP_ORDER, 12
     for group_name in group_order:
-        if not (records := grouped.get(group_name, [])): continue
-        
-        current_row += 1 
-        
+        records = grouped.get(group_name, [])
+        if not records:
+            continue
+
+        current_row += 1
         group_start_row = current_row
-        
+
         logger.info(f"Writing group: {group_name} with {len(records)} records")
         current_row = write_group_title(sheet, current_row, group_name)
-        
+
         headers = ExcelStyle.DEFAULT_HEADER_COURSE_MAPPING.value[group_name].copy()
-        
-        # For ANY group that has a "Course Version" column, replace it with a "vCenter" column.
+
         if "Course Version" in headers:
             new_headers = {}
             for header, data_key in headers.items():
@@ -542,53 +575,69 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
                 else:
                     new_headers[header] = data_key
             headers = new_headers
-        
+
         if "Group" in headers:
             headers["Group"] = "apm_command_value"
 
         header_keys, col_idx, header_pos, group_end_col = list(headers), 1, {}, 0
         for h in header_keys:
-            header_pos[h], width = col_idx, 3 if h == "Start/End Pod" else 1
+            header_pos[h] = col_idx
+            width = 3 if h == "Start/End Pod" else 1
             col_idx += width
             group_end_col += width
+
+        header_row = current_row  # Save header row for later patch
+
         col = 1
         for h in header_keys:
-            if h == "Start/End Pod": write_merged_header(sheet, current_row, col, h); col += 3
+            if h == "Start/End Pod":
+                write_merged_header(sheet, current_row, col, h)
+                col += 3
             else:
                 header_text = "APM Commands" if h == "Group" else h
                 cell = sheet.cell(row=current_row, column=col, value=header_text)
                 cell.font = Font(bold=True)
                 apply_style(cell, is_summary=True)
                 col += 1
+
         current_row += 1
         data_start_row = current_row
+
         group_host_ram_totals = {k: 0 for k in host_map}
         non_trainer_pods = [e for e in records if e.get("pod_type") != "trainer"]
         trainer_pods_in_group = [e for e in records if e.get("pod_type") == "trainer"]
-        
+
         for entry in non_trainer_pods:
             _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, False, entry.get("pod_type") == "extended", host_map)
             if (entry_ram := convert_to_numeric(entry.get("ram")) or 0) > 0:
                 for host_key, host_name in host_map.items():
                     if host_name.lower() in (entry.get("virtual_hosts", "") or "").lower():
                         total_pods_for_entry = convert_to_numeric(entry.get("vendor_pods")) or 1
-                        if total_pods_for_entry <= 1: group_host_ram_totals[host_key] += entry_ram
-                        else: group_host_ram_totals[host_key] += entry_ram + (total_pods_for_entry - 1) * entry_ram / 2
+                        if total_pods_for_entry <= 1:
+                            group_host_ram_totals[host_key] += entry_ram
+                        else:
+                            group_host_ram_totals[host_key] += entry_ram + (total_pods_for_entry - 1) * entry_ram / 2
             current_row += 1
+
         if non_trainer_pods and trainer_pods_in_group:
-            for c in range(1, group_end_col + 1): sheet.cell(row=current_row, column=c).border = ExcelStyle.THIN_BORDER.value
+            for c in range(1, group_end_col + 1):
+                sheet.cell(row=current_row, column=c).border = ExcelStyle.THIN_BORDER.value
             current_row += 1
+
         for entry in trainer_pods_in_group:
             _write_data_row(sheet, current_row, entry, headers, header_keys, header_pos, True, False, host_map)
             if (entry_ram := convert_to_numeric(entry.get("ram")) or 0) > 0:
                 for host_key, host_name in host_map.items():
                     if host_name.lower() in (entry.get("virtual_hosts", "") or "").lower():
                         total_pods_for_entry = convert_to_numeric(entry.get("vendor_pods")) or 1
-                        if total_pods_for_entry <= 1: group_host_ram_totals[host_key] += entry_ram
-                        else: group_host_ram_totals[host_key] += entry_ram + (total_pods_for_entry - 1) * entry_ram / 2
+                        if total_pods_for_entry <= 1:
+                            group_host_ram_totals[host_key] += entry_ram
+                        else:
+                            group_host_ram_totals[host_key] += entry_ram + (total_pods_for_entry - 1) * entry_ram / 2
             current_row += 1
+
         data_end_row = current_row - 1
-        
+
         pod_total_formula = 0
         vendor_pods_col_num = header_pos.get("Vendor Pods")
         if vendor_pods_col_num and data_start_row <= data_end_row:
@@ -598,17 +647,43 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
         summary_start_row = current_row
         current_row = write_group_summary_boxes(sheet, summary_start_row, header_pos, pod_total_formula, group_host_ram_totals, group_name, group_end_col, data_start_row, data_end_row)
         end_row = current_row - 1 if summary_start_row < current_row else summary_start_row - 1
-        apply_outer_border(sheet, group_start_row, end_row, 1, group_end_col)
+
+        # 🔧 Apply outer border starting one row below title row to avoid unwanted top border above title
+        apply_outer_border(sheet, group_start_row + 1, end_row, 1, group_end_col)
+
+        # 🩹 Patch: remove right border on the cell above 'Tr' header
+        col_num = 1
+        for h in header_keys:
+            if h == "Start/End Pod":
+                col_num += 3
+            else:
+                if h == "Tr":
+                    tr_cell = sheet.cell(row=group_start_row, column=col_num)  # ← patch on title row itself
+                    existing_border = tr_cell.border
+                    patched_border = Border(
+                        left=existing_border.left,
+                        right=Side(style=None),
+                        top=existing_border.top,
+                        bottom=existing_border.bottom
+                    )
+                    tr_cell.border = patched_border
+                    break
+                col_num += 1
+
         current_row += 1
-        
+
     write_summary_section(sheet, 2)
-    
+
     for col_letter, width in EXCEL_COLUMN_WIDTHS.items():
         sheet.column_dimensions[col_letter].width = width
+
     in_memory_fp = io.BytesIO()
     wb.save(in_memory_fp)
     in_memory_fp.seek(0)
     return in_memory_fp
+
+
+
 
 def get_upcoming_report_data(db):
     try:
