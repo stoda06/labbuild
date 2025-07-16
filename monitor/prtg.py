@@ -86,6 +86,36 @@ class PRTGManager:
             if device['device'] == clone_name:
                 return device['objid']
         return None
+    
+    def search_device_globally(self, device_name):
+        """
+        Searches for all devices matching a name across the entire PRTG instance.
+
+        This is used for teardown operations where the parent container ID is not known.
+
+        Args:
+            device_name (str): The exact name of the device to search for.
+
+        Returns:
+            list: A list of device IDs (objid) that match the name.
+        """
+        search_url = f"{self.prtg_url}/api/table.json"
+        search_params = {
+            'content': 'devices',
+            'output': 'json',
+            'columns': 'objid',  # We only need the ID for deletion
+            'filter_name': device_name,  # Exact match on the device name
+            'apitoken': self.api_token
+        }
+        try:
+            response = self.session.get(search_url, params=search_params, verify=False, timeout=60)
+            response.raise_for_status()
+            devices = response.json().get('devices', [])
+            # Return a list of all found object IDs
+            return [device['objid'] for device in devices]
+        except Exception as e:
+            self.logger.error(f"Failed to perform global search for device '{device_name}' on {self.prtg_url}: {e}")
+            return []
 
     def clone_device(self, obj_id, container_id, clone_name):
         """
@@ -518,58 +548,76 @@ class PRTGManager:
             return False
 
     @staticmethod
-    def delete_monitor(prtg_monitor_url, db_client):
+    def delete_monitor(monitor_name: str, vendor_shortcode: str, db_client) -> bool:
         """
-        Deletes a PRTG monitor based on the provided monitor URL.
+        Deletes all PRTG monitors with a specific name across all servers configured
+        for a given vendor.
 
-        This method extracts the server base URL and the device ID from the given monitor URL.
-        It then queries the database (using the provided MongoDB client) to retrieve the PRTG server
-        configuration (and associated API token) based on the server URL. Finally, it instantiates a
-        PRTGManager for that server and deletes the monitor (device) using its device ID.
+        This method queries the database to find all PRTG servers associated with the
+        vendor_shortcode, then connects to each server to find and delete any device
+        matching the monitor_name.
 
         Args:
-            prtg_monitor_url (str): The full URL of the PRTG monitor 
-                (e.g., "https://server/device.htm?id=1234").
+            monitor_name (str): The name of the monitor(s) to delete.
+            vendor_shortcode (str): The vendor code (e.g., 'cp', 'pa', 'f5', 'ot') to look up servers.
             db_client (MongoClient): A MongoDB client instance for accessing the PRTG server configuration.
 
         Returns:
-            bool: True if the monitor was successfully deleted; False otherwise.
+            bool: True if all found monitors were deleted successfully or if none were found.
+                  False if any error occurred during the process.
         """
-
-        # Parse the monitor URL to extract its components.
-        parsed_url = urlparse(prtg_monitor_url)
-        # Reconstruct the base server URL from the scheme and network location.
-        server_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        # Extract the query parameters from the URL.
-        query_params = parse_qs(parsed_url.query)
-        # Extract the device ID from the query parameters (key 'id').
-        device_id = query_params.get('id', [None])[0]
-        if not device_id:
-            logger.error("Device ID not found in the provided monitor URL.")
+        if not monitor_name or not vendor_shortcode or not db_client:
+            logger.error("delete_monitor called with invalid arguments (name, vendor, or db_client missing).")
             return False
 
-        # Access the 'prtg' collection in the labbuild_db.
-        db = db_client["labbuild_db"]
-        collection = db["prtg"]
-
-        # Query for a record that contains a server with the matching URL.
-        server_record = collection.find_one({"servers.url": server_url})
-        if not server_record:
-            logger.error("No PRTG server configuration found for server URL: %s", server_url)
+        # --- 1. Fetch PRTG server configurations for the specified vendor ---
+        try:
+            db = db_client["labbuild_db"]
+            collection = db["prtg"]
+            prtg_conf = collection.find_one({"vendor_shortcode": vendor_shortcode})
+            if not prtg_conf or not prtg_conf.get("servers"):
+                logger.warning(f"No PRTG server configuration found for vendor '{vendor_shortcode}'. Cannot delete monitor '{monitor_name}'.")
+                # Return True because the desired state (monitor doesn't exist) is met.
+                return True
+            all_vendor_servers = prtg_conf["servers"]
+        except Exception as e:
+            logger.error(f"Database error fetching PRTG config for vendor '{vendor_shortcode}': {e}", exc_info=True)
             return False
 
-        # Find the API token from the matching server in the servers list.
-        api_token = None
-        for server in server_record.get("servers", []):
-            if server.get("url") == server_url:
-                api_token = server.get("apitoken")
-                break
+        # --- 2. Iterate through each configured server for the vendor and delete monitors ---
+        overall_success = True
+        total_deleted_count = 0
+        logger.info(f"Starting deletion process for monitor name '{monitor_name}' across all '{vendor_shortcode}' servers.")
 
-        if not api_token:
-            logger.error("API token not found for server URL: %s", server_url)
-            return False
+        for server in all_vendor_servers:
+            server_url = server.get("url")
+            api_token = server.get("apitoken")
+            server_name_log = server.get("name", server_url)
 
-        # Instantiate a PRTGManager with the found API token.
-        prtg_manager = PRTGManager(server_url, api_token)
-        # Delete the monitor (device) using the extracted device ID.
-        return prtg_manager.delete_monitor_by_id(device_id)
+            if not server_url or not api_token:
+                logger.warning(f"Skipping server {server_name_log}: configuration is incomplete (missing URL or API token).")
+                continue
+
+            try:
+                prtg_mgr = PRTGManager(server_url, api_token)
+                # Use the new global search to find all instances of the monitor on this server
+                device_ids = prtg_mgr.search_device_globally(monitor_name)
+
+                if not device_ids:
+                    logger.info(f"Monitor '{monitor_name}' not found on server {server_name_log}.")
+                    continue
+
+                logger.info(f"Found {len(device_ids)} instance(s) of '{monitor_name}' on server {server_name_log}. Deleting...")
+                for device_id in device_ids:
+                    if prtg_mgr.delete_monitor_by_id(device_id):
+                        logger.info(f"  - Successfully deleted monitor ID {device_id} from {server_name_log}.")
+                        total_deleted_count += 1
+                    else:
+                        logger.error(f"  - FAILED to delete monitor ID {device_id} from {server_name_log}.")
+                        overall_success = False  # Mark failure if any single deletion fails
+            except Exception as e:
+                logger.error(f"An error occurred while processing server {server_name_log} for monitor '{monitor_name}': {e}")
+                overall_success = False
+
+        logger.info(f"Deletion process for '{monitor_name}' complete. Total monitors deleted: {total_deleted_count}.")
+        return overall_success
