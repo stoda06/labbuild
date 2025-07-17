@@ -211,7 +211,8 @@ def main():
                         help='Ending pod/class number for filtering list.')
     parser.add_argument('--test', action='store_true',
                         help='Test allocation validity: check VR VM existence and remove invalid DB entries (use with -l).')
-    parser.add_argument('--operation',
+    parser.add_argument('--vendor-operation',
+                        dest='vendor_operation',
                         choices=['rebuild', 'teardown', 'start', 'stop'],
                         help='Perform a batch operation on all valid allocations for the specified vendor (use with -l).')
     # Global verbose flag
@@ -299,13 +300,14 @@ def main():
 
 
     # --- Mode Handling: Listing or Command ---
-    if args.list_allocations and args.operation:
+    if args.list_allocations and args.vendor_operation:
         if not args.vendor:
-            parser.error("Vendor-level operations (-l --operation) require the vendor (-v) argument.")
+            # --- MODIFICATION: Updated error message for clarity ---
+            parser.error("Vendor-level operations (-l --vendor-operation) require the vendor (-v) argument.")
         logger = setup_logger() # Minimal setup
         log_level = logging.DEBUG if args.verbose else logging.INFO
         logger.setLevel(log_level)
-        perform_vendor_level_operation(args.vendor, args.operation, args.verbose)
+        perform_vendor_level_operation(args.vendor, args.vendor_operation, args.verbose)
         sys.exit(0)
     # --- END UPDATED LOGIC ---
     elif args.list_allocations: # Original listing logic
@@ -332,8 +334,8 @@ def main():
         parser.error("--test flag cannot be used with commands (setup, manage, teardown).")
     
     # Ensure --operation is not used with commands
-    if args.operation and args.command:
-         parser.error("--operation flag cannot be used with commands (setup, manage, teardown). Use with -l.")
+    if hasattr(args, 'vendor_operation') and args.vendor_operation and args.command:
+         parser.error("--vendor-operation flag cannot be used with commands (setup, manage, teardown). Use with -l.")
 
     # --- Vendor is Required for Commands (also checked in common_parser parent) ---
     if args.command in ['setup', 'manage', 'teardown'] and not args.vendor:
@@ -481,18 +483,20 @@ def main():
         # --- THIS IS THE CORRECTED LOGIC FOR CALCULATING SUMMARY ---
         if args.command == 'test':
             if isinstance(all_results, list):
-                # Group results by pod/class identifier
-                results_by_pod = defaultdict(list)
+                # Group results by the job identifier (pod or class)
+                # A "job" is one run of the test script, e.g., for one pod or one F5 class.
+                results_by_job = defaultdict(list)
                 for r in all_results:
                     if isinstance(r, dict):
-                        pod_id = r.get('pod') or r.get('class')
-                        if pod_id is not None:
-                            results_by_pod[pod_id].append(r)
-
-                # Determine final status for each pod
-                for pod_id, results in results_by_pod.items():
-                    # A pod fails if ANY of its component checks fail
-                    if any(res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN'] for res in results):
+                        # For F5, the job is the class. For others, it's the pod.
+                        job_id = r.get('class_number') or r.get('pod')
+                        if job_id is not None:
+                            results_by_job[job_id].append(r)
+                
+                # Determine final status for each job
+                for job_id, results in results_by_job.items():
+                    # A job fails if ANY of its component checks fail (are not UP/SUCCESS/OPEN/SKIPPED)
+                    if any(res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN'] and not res.get('status', '').upper().startswith('SKIPPED') for res in results):
                         total_failure += 1
                     else:
                         total_success += 1
@@ -506,20 +510,13 @@ def main():
             for comp_name in component_list_result.get("components", []):
                 print(f"  - {comp_name}")
             print("\nUse the -c flag with one or more component names (comma-separated).")
-            overall_status = "completed" # Listing is considered complete
-            total_success, total_failure, total_skipped = 0, 0, 0 # No pod actions taken
+            # No pod actions taken for component listing
+            total_success, total_failure, total_skipped = 0, 0, 0 
         elif isinstance(all_results, list):
             # Original processing for setup, teardown, manage
             total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "success")
             total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "failed")
             total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") in ["skipped", "cancelled", "completed_no_tasks", "completed_db_list"])
-
-            if total_failure > 0: overall_status = "completed_with_errors"
-            elif total_success > 0: overall_status = "completed"
-            elif total_skipped > 0: overall_status = "completed" # Includes skipped only case
-            elif not all_results: overall_status = "completed_no_tasks"
-            else: overall_status = "completed" # Default catch-all
-            logger.info(f"Command '{args.command}' result summary: Success={total_success}, Failed={total_failure}, Skipped={total_skipped}")
         else:
             logger.warning(f"Command function '{args.command}' did not return a list. Result: {all_results}")
             overall_status = "unknown"
@@ -527,17 +524,17 @@ def main():
         # Determine overall status based on counts
         if total_failure > 0: 
             overall_status = "completed_with_errors"
-        elif total_success > 0: 
+        elif total_success > 0 or (total_skipped > 0 and not all_results):
             overall_status = "completed"
-        elif total_skipped > 0: 
-            overall_status = "completed" # Includes skipped only case
         elif not all_results: 
             overall_status = "completed_no_tasks"
-        else: # Fallback if no failures/successes but results exist (e.g., all skipped)
-            overall_status = "completed" 
+        # Handle cases where all results are skipped
+        elif len(all_results) > 0 and (total_success + total_failure == 0):
+             overall_status = "completed"
+        else: # Fallback
+            overall_status = "completed"
 
         logger.info(f"Command '{args.command}' result summary: Success={total_success}, Failed={total_failure}, Skipped={total_skipped}")
-
 
     except KeyboardInterrupt:
         print("\nTerminated by user.")

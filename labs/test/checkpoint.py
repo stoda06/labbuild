@@ -3,7 +3,7 @@
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 from tabulate import tabulate
-import ssl, argparse, sys, pexpect, concurrent.futures, threading
+import ssl, argparse, sys, pexpect, concurrent.futures, threading, re
 from pymongo import MongoClient
 from db_utils import get_vcenter_by_host
 
@@ -139,9 +139,7 @@ def resolve_pod_ip(ip_raw, pod):
     return ip_raw
 
 def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
-    # --- MODIFIED ---
     host = f"cpvr{pod}.us" if host_key in ["hotshot", "trypticon"] else f"cpvr{pod}"
-    # --- END MODIFICATION ---
     
     check_results = []
     # Add skipped components to results first
@@ -182,6 +180,18 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                         child.sendline(f"arping -c 3 -I {iface} {ip}")
                         child.expect(r"vr:~#")
                         status = "UP" if "Unicast reply" in child.before.decode() else "DOWN"
+                elif port.lower() == "ping":
+                    child.sendline(f"ping -c 3 -W 2 {ip}") # Added -W 2 for a 2-second wait per ping
+                    child.expect(r"vr:~#", timeout=15)
+                    output = child.before.decode()
+                    # Regex to find the summary line, e.g., "3 packets transmitted, 3 packets received"
+                    match = re.search(r"(\d+)\s+packets\s+transmitted,\s+(\d+)\s+packets\s+received", output)
+                    if match:
+                        received = int(match.group(2))
+                        status = "UP" if received > 0 else "DOWN"
+                    else:
+                        # Fallback for unexpected output formats
+                        status = "DOWN"
                 else:
                     child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
                     child.expect(r"vr:~#")

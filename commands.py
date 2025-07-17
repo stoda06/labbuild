@@ -22,7 +22,7 @@ from monitor.prtg import PRTGManager
 from constants import DB_NAME, ALLOCATION_COLLECTION
 
 import labs.setup.checkpoint as checkpoint 
-from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker, _format_pod_ranges
+from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker
 import labs.manage.vm_operations as vm_operations
 
 logger = logging.getLogger('labbuild.commands')
@@ -34,6 +34,35 @@ TEMP_COURSE_CONFIG_COLLECTION = "temp_courseconfig"
 COMPONENT_LIST_STATUS = "component_list_displayed"
 RED = '\033[91m'
 ENDC = '\033[0m'
+
+# --- NEW HELPER FUNCTION ---
+def _format_pod_ranges(numbers: List[int]) -> str:
+    """Converts a list of numbers into a compact range string. e.g., [1,2,3,5] -> '1-3, 5'"""
+    if not numbers:
+        return ""
+    
+    numbers = sorted(list(set(numbers))) # Sort and remove duplicates
+    ranges = []
+    start_range = numbers[0]
+    
+    for i in range(1, len(numbers)):
+        if numbers[i] != numbers[i-1] + 1:
+            end_range = numbers[i-1]
+            if start_range == end_range:
+                ranges.append(str(start_range))
+            else:
+                ranges.append(f"{start_range}-{end_range}")
+            start_range = numbers[i]
+    
+    # Add the last range
+    end_range = numbers[-1]
+    if start_range == end_range:
+        ranges.append(str(start_range))
+    else:
+        ranges.append(f"{start_range}-{end_range}")
+        
+    return ", ".join(ranges)
+
 
 def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[OperationLogger] = None) -> List[Dict[str, Any]]:
     """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
