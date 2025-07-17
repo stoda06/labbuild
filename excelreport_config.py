@@ -9,10 +9,10 @@ LOG_LEVEL_GENERATE_EXCEL = logging.DEBUG
 
 HOST_MAP = {
     "Ni": "nightbird", "Cl": "cliffjumper", "Ul": "ultramagnus",
-    "Un": "unicron", "Ho": "hotshot", "Tr": "Trainer"
+    "Un": "unicron", "Ho": "hotshot", "Tr": "trypticon"
 }
 AU_HOST_NAMES = ["nightbird", "cliffjumper", "ultramagnus", "unicron"]
-US_HOST_NAMES = ["hotshot"]
+US_HOST_NAMES = ["hotshot","trypticon"]
 
 AVAILABLE_RAM_GB = {
     "Ni": 1800, "Cl": 500, "Ul": 2000, "Un": 2000, "Ho": 2000, "Tr": 2000,
@@ -54,7 +54,7 @@ DEFAULT_CP_HEADER = {
     "Course Name": 'course_name', "Start/End Pod": 'start_end_pod',
     "Username": 'username', "Password": 'password', "Class": 'class_number',
     "Students": 'students', "Vendor Pods": 'vendor_pods', "Group": 'course_type',
-    "Version": 'version', "vcenter": 'vcenter_name', "RAM": 'ram', "Virtual Hosts": 'virtual_hosts',
+    "Version": 'version', "vCenter": 'vcenter', "RAM": 'ram', "Virtual Hosts": 'virtual_hosts',
     "Ni": '', "Cl": '', "Ul": '', "Un": '', "Ho": '', "Tr": ''
 }
 
@@ -85,6 +85,16 @@ DEFAULT_COURSE_GROUPS = {
 # ==============================================================================
 # EXCEL REPORT: STYLING ENUM
 # ==============================================================================
+# excelreport_config.py
+
+from enum import Enum
+from openpyxl.styles import PatternFill, Border, Side, Alignment
+# Note: The logging import is not used in this class, but leaving it is fine.
+import logging 
+
+# ==============================================================================
+# EXCEL REPORT: STYLING ENUM
+# ==============================================================================
 class ExcelStyle(Enum):
     SHEET_TITLE = "Sheet1"
     FONT_SIZE_BOLD = 14
@@ -103,6 +113,11 @@ class ExcelStyle(Enum):
     CENTER_ALIGNMENT = Alignment(horizontal='center', vertical='center')
     LIGHT_BLUE_FILL = PatternFill(start_color="FF00B0F0", end_color="FF00B0F0", fill_type="solid")
     GREEN_FILL = PatternFill(start_color="FF70AD47", end_color="FF70AD47", fill_type="solid")
+    SUMMARY_BOX_FILL = PatternFill(start_color="FFB4A7D6", end_color="FFB4A7D6", fill_type="solid") # Light Purple
+    
+    # The new style that is causing the error because the server hasn't reloaded it
+    HEADER_FILL = PatternFill(start_color="FFF8CBAD", end_color="FFF8CBAD", fill_type="solid") # Light Orange
+
     DEFAULT_COURSE_GROUPS = DEFAULT_COURSE_GROUPS
     DEFAULT_HEADER_COURSE_MAPPING = {
         "AV Courses": DEFAULT_GENERIC_HEADER,
@@ -112,7 +127,6 @@ class ExcelStyle(Enum):
         "F5 Courses": DEFAULT_F5_HEADER,
         "PR Courses": DEFAULT_GENERIC_HEADER,
     }
-
 # ==============================================================================
 # TRAINER POD REPORT CONSTANTS
 # ==============================================================================
