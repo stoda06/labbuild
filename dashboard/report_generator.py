@@ -13,6 +13,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
+
 from constants import (
     INTERIM_ALLOCATION_COLLECTION,
     ALLOCATION_COLLECTION,

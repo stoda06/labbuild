@@ -920,7 +920,7 @@ def export_upcoming_lab_report():
 
         # 3. Prepare the filename
         next_monday_str = get_next_monday_date_str("%Y%m%d")
-        filename = f"Upcoming Lab Build - {next_monday_str}.xlsx"
+        filename = f"Lab Build - {next_monday_str}.xlsx"
 
         # 4. Create and return a Flask Response to trigger the download
         return Response(

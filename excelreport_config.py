@@ -116,7 +116,7 @@ class ExcelStyle(Enum):
     SUMMARY_BOX_FILL = PatternFill(start_color="FFB4A7D6", end_color="FFB4A7D6", fill_type="solid") # Light Purple
     
     # The new style that is causing the error because the server hasn't reloaded it
-    HEADER_FILL = PatternFill(start_color="FFF8CBAD", end_color="FFF8CBAD", fill_type="solid") # Light Orange
+    HEADER_FILL = PatternFill(start_color="B4C6E7", end_color="B4C6E7", fill_type="solid")
 
     DEFAULT_COURSE_GROUPS = DEFAULT_COURSE_GROUPS
     DEFAULT_HEADER_COURSE_MAPPING = {
