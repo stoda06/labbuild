@@ -137,7 +137,6 @@ def write_summary_section(sheet, row_offset, total_ram_by_host: Dict[str, float]
         available_ram = AVAILABLE_RAM_GB.get(env_key, 0)
         write_cell(sheet, available_ram_row, col, available_ram, is_summary=False, number_format='0')
         
-        # --- MODIFIED: Use the pre-calculated total instead of a formula ---
         allocated_ram_value = total_ram_by_host.get(env_key, 0)
         write_cell(sheet, allocated_ram_row, col, allocated_ram_value, is_summary=False, number_format='0.0')
         
@@ -147,7 +146,6 @@ def write_summary_section(sheet, row_offset, total_ram_by_host: Dict[str, float]
         formula_rem = f"={col_letter}{available_ram_row}-{col_letter}{allocated_ram_row}"
         write_cell(sheet, remaining_ram_row, col, formula_rem, is_summary=False, number_format='0.0')
         
-    # The formulas for the "Total" column are still fine as they sum across the summary row itself
     first_env, last_env = get_column_letter(start_col + 2), get_column_letter(start_col + 1 + len(env_keys))
     write_cell(sheet, available_ram_row, start_col + 1, f"=SUM({first_env}{available_ram_row}:{last_env}{available_ram_row})", number_format='0')
     write_cell(sheet, allocated_ram_row, start_col + 1, f"=SUM({first_env}{allocated_ram_row}:{last_env}{allocated_ram_row})", number_format='0.0')
@@ -159,6 +157,89 @@ def write_summary_section(sheet, row_offset, total_ram_by_host: Dict[str, float]
             cell = sheet.cell(row=r, column=c)
             cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
             cell.font = Font(bold=True, color="FF0000")
+
+    # ✅ Add clean outer border around entire RAM summary block
+    end_row = remaining_ram_row
+    end_col = start_col + 1 + len(env_keys)
+
+    apply_outer_border(
+        sheet,
+        start_row=row_offset,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col
+    )
+
+def write_overview_summary(sheet, trainer_pods, standard_pods, extended_pods):
+    start_row = 1
+    col = 1
+
+    trainer_pods_count = sum(convert_to_numeric(p.get('vendor_pods') or 0) for p in trainer_pods)
+    extended_pods_count = sum(convert_to_numeric(p.get('vendor_pods') or 0) for p in extended_pods)
+    standard_pods_count = sum(convert_to_numeric(p.get('vendor_pods') or 0) for p in standard_pods)
+
+    total_pods = trainer_pods_count + extended_pods_count + standard_pods_count
+
+    total_ram = 0
+    for pod in trainer_pods + standard_pods + extended_pods:
+        ram = convert_to_numeric(pod.get('ram')) or 0
+        pods = convert_to_numeric(pod.get('vendor_pods')) or 1
+        if pods <= 1:
+            total_ram += ram
+        else:
+            total_ram += ram + (pods - 1) * ram / 2
+
+    total_available_ram = sum(AVAILABLE_RAM_GB.values())
+    total_ram_pct = round((total_ram / total_available_ram) * 100) if total_available_ram else 0
+
+    summary_data = [
+        ("Trainer Pods (Blue)", trainer_pods_count, ExcelStyle.LIGHT_BLUE_FILL.value),
+        ("Extended Pods (Green)", extended_pods_count, ExcelStyle.GREEN_FILL.value),
+        ("Standard Pods", standard_pods_count, None),
+        ("Total Pods", total_pods, None),
+        ("Total RAM (%)", f"{total_ram_pct}%", None)
+    ]
+
+    row = start_row
+    section_title_cell = sheet.cell(row=row, column=col, value="Overview Summary")
+    section_title_cell.font = Font(bold=True, size=14)
+    section_title_cell.alignment = Alignment(horizontal='left')
+    sheet.merge_cells(start_row=row, start_column=col, end_row=row, end_column=col+1)
+    row += 1
+
+    for label, value, fill in summary_data:
+        label_cell = sheet.cell(row=row, column=col, value=label)
+        label_cell.alignment = Alignment(horizontal='left')
+        label_cell.font = Font(bold=True)
+
+        value_cell = sheet.cell(row=row, column=col + 1, value=value)
+        value_cell.alignment = Alignment(horizontal='center')
+
+        if fill:
+            label_cell.fill = fill
+            value_cell.fill = fill
+
+        # ✅ MODIFIED color logic for "Total RAM (%)" based on new thresholds
+        if label == "Total RAM (%)":
+            percent_value = int(str(value).replace("%", "").strip())
+            if percent_value > 90:
+                color = "FF0000"  # Red
+            elif percent_value >= 80:
+                color = "FFFF00"  # Yellow
+            else:
+                color = "92D050"  # Green
+
+            value_cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+
+        row += 1
+
+    end_row = row - 1
+    thin = Side(style='thin')
+    border = Border(top=thin, left=thin, right=thin, bottom=thin)
+    for r in range(start_row, end_row + 1):
+        for c in range(col, col + 2):
+            cell = sheet.cell(row=r, column=c)
+            cell.border = border
 
 def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trainer, use_green_fill, host_map: Dict):
     trainer_flag, green_flag = (True, False) if is_trainer else (False, use_green_fill)
@@ -190,13 +271,6 @@ def _write_data_row(sheet, row, entry, headers, header_keys, header_pos, is_trai
             num_format = '0.0' if h == "RAM" else None
             write_cell(sheet, row, col, val_to_write, trainer_flag, green_flag, number_format=num_format)
             col += 1
-
-
-
-
-
-
-
 
 # upcoming_report_generator.py
 
@@ -239,12 +313,15 @@ def write_group_summary_boxes(sheet, start_row, header_pos, group_pod_total_or_f
         for host_key, host_ram in group_host_ram_totals.items():
             if host_col := header_pos.get(host_key):
                 cell_top, cell_bottom = sheet.cell(row=value_start, column=host_col), sheet.cell(row=value_end, column=host_col)
-                cell_bottom.value = host_ram
+                
+                # ✅ Create a SUM formula for the host's RAM column for the current group
+                host_col_letter = get_column_letter(host_col)
+                cell_bottom.value = f"=SUM({host_col_letter}{data_start_row}:{host_col_letter}{data_end_row})" if data_start_row <= data_end_row else 0.0
                 
                 cell_bottom.number_format = '0.0'
                 cell_bottom.font = Font(bold=True, color="FFFF00")
-                cell_top.fill = ExcelStyle.LIGHT_BLUE_FILL.value      # <-- MODIFIED
-                cell_bottom.fill = ExcelStyle.LIGHT_BLUE_FILL.value  # <-- MODIFIED
+                cell_top.fill = ExcelStyle.LIGHT_BLUE_FILL.value
+                cell_bottom.fill = ExcelStyle.LIGHT_BLUE_FILL.value
     return start_row + 4
 
 def apply_outer_border(sheet, start_row, end_row, start_col, end_col):
@@ -495,7 +572,6 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
                 grouped[gname].append(entry)
                 break
 
-    # --- NEW: Initialize a dictionary for the grand totals ---
     total_ram_by_host = {k: 0 for k in host_map}
 
     group_order, current_row = EXCEL_GROUP_ORDER, 12
@@ -510,7 +586,6 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
         logger.info(f"Writing group: {group_name} with {len(records)} records")
         current_row = write_group_title(sheet, current_row, group_name)
         
-        # ... (the rest of the header writing code is unchanged) ...
         headers = ExcelStyle.DEFAULT_HEADER_COURSE_MAPPING.value[group_name].copy()
 
         if "Course Version" in headers:
@@ -580,7 +655,6 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
 
         data_end_row = current_row - 1
 
-        # --- NEW: Accumulate the group totals into the grand total ---
         for host_key, ram in group_host_ram_totals.items():
             total_ram_by_host[host_key] += ram
 
@@ -596,13 +670,26 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
             group_name, group_end_col, data_start_row, data_end_row
         )
         end_row = current_row - 1 if summary_start_row < current_row else summary_start_row - 1
-        
+
         apply_outer_border(sheet, group_start_row + 1, end_row, 1, group_end_col)
 
         current_row += 1
 
-    # --- MODIFIED: Pass the grand totals to the summary function ---
+    # Write overview and RAM summary sections
+    write_overview_summary(sheet, trainer_pods, course_allocations, extended_pods)
     write_summary_section(sheet, 2, total_ram_by_host)
+
+    # ✅ NEW: Patch "Allocated RAM (GB)" row in RAM Summary section with dynamic formulas
+    allocated_ram_row = 4  # Adjust if your summary section starts elsewhere
+    courses_data_start_row = 15  # Adjust if your first courses section starts at another row
+
+    for i, env_key in enumerate(SUMMARY_ENV_ORDER):
+        col_idx = RAM_SUMMARY_START_COL + 2 + i
+        col_letter = get_column_letter(col_idx)
+        formula = f"=SUM({col_letter}{courses_data_start_row}:{col_letter}1000)"
+        cell = sheet.cell(row=allocated_ram_row, column=col_idx)
+        cell.value = formula
+        cell.number_format = '0.0'
 
     for col_letter, width in EXCEL_COLUMN_WIDTHS.items():
         sheet.column_dimensions[col_letter].width = width
@@ -611,7 +698,6 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
     wb.save(in_memory_fp)
     in_memory_fp.seek(0)
     return in_memory_fp
-
 
 # labbuild/dashboard/upcoming_report_generator.py
 
