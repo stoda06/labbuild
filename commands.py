@@ -194,6 +194,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     all_results.extend(results)
                     for res in results:
                         status_upper = res.get('status', '').upper()
+                        # --- MODIFIED: Added more failure statuses to the check ---
                         if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
@@ -213,9 +214,13 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
                 status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
+                # --- MODIFIED: Use .get() for optional keys to prevent errors ---
                 error_table_data.append([
-                    pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'),
-                    fail.get('port', 'N/A'), status
+                    pod_id,
+                    fail.get('component', 'N/A'),
+                    fail.get('ip', 'N/A'),
+                    fail.get('port', 'N/A'),
+                    status
                 ])
             print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
             print("="*80)
@@ -319,6 +324,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     all_results.extend(results)
                     for res in results:
                         status_upper = res.get('status', '').upper()
+                        # --- MODIFIED: Added more failure statuses to the check ---
                         if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
@@ -338,7 +344,14 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
                 status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
-                error_table_data.append([pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'), fail.get('port', 'N/A'), status])
+                # --- MODIFIED: Use .get() for optional keys to prevent errors ---
+                error_table_data.append([
+                    pod_id,
+                    fail.get('component', 'N/A'),
+                    fail.get('ip', 'N/A'),
+                    fail.get('port', 'N/A'),
+                    status
+                ])
             print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
             print("="*80)
         else:
