@@ -61,7 +61,8 @@ def get_role_name(content, role_id):
     for role in content.authorizationManager.roleList:
         if role.roleId == role_id: return role.name
     return None
-def get_vms_count_in_folder(folder): return len([vm for vm in folder.childEntity if isinstance(vm, vim.VirtualMachine)])
+def get_vms_count_in_folder(folder):
+    return len([vm for vm in folder.childEntity if isinstance(vm, vim.VirtualMachine)])
 def get_vms_count_in_resource_pool(resource_pool, verbose, print_lock):
     try:
         results = [(vm.name, vm.runtime.powerState) for vm in resource_pool.vm]
@@ -140,65 +141,81 @@ def resolve_pod_ip(ip_raw, pod):
 
 def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
     host = f"cpvr{pod}.us" if host_key in ["hotshot", "trypticon"] else f"cpvr{pod}"
-    
+
+    # Define a single regex pattern that matches either of the known SSH prompts.
+    # The '|' character acts as an "OR".
+    # This makes the script robust enough to handle different host configurations.
+    ssh_prompt_pattern = r"(?:\[root@pod-vr ~\]# |vr:~# )"
+
     check_results = []
     # Add skipped components to results first
     for name, raw_ip, port in ignore_list:
         ip = resolve_pod_ip(raw_ip, pod)
         check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': 'SKIPPED (Powered Off)', 'host': host})
 
-    # Only attempt SSH if there are components to test
     if components:
         if verbose:
             with print_lock:
                 print(f"\n🔐 Connecting to {host} via SSH...")
         try:
-            child = pexpect.spawn(f"ssh {host}", timeout=30)
-            i = child.expect([r"Are you sure you want to continue connecting.*", r"vr:~#", r"[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=20)
-            if i == 0:
+            child = pexpect.spawn(f"ssh {host}", timeout=30, encoding='utf-8')
+
+            # Expect either the "Are you sure" message, one of the valid prompts, a password prompt, or failure.
+            login_patterns = [
+                r"Are you sure you want to continue connecting.*",
+                ssh_prompt_pattern,  # Using the dynamic pattern here
+                r"[Pp]assword:",
+                pexpect.EOF,
+                pexpect.TIMEOUT
+            ]
+            i = child.expect(login_patterns, timeout=20)
+
+            if i == 0:  # Matched "Are you sure..."
                 child.sendline("yes")
-                child.expect(r"vr:~#")
-            elif i == 1:
+                child.expect(ssh_prompt_pattern)  # Wait for the dynamic prompt
+            elif i == 1:  # Matched a shell prompt directly
                 if verbose:
                     with print_lock:
                         print(f"✅ SSH to {host} successful")
-            else:
+            else:  # Matched password, EOF, or timeout
                 with print_lock:
-                    print(f"❌ Failed to connect to {host}.")
+                    print(f"❌ Failed to connect to {host}. Reason: {child.before}")
                 check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host, 'port': 22, 'status': 'FAILED', 'host': host})
                 return check_results
-            
+
             for name, raw_ip, port in components:
                 ip = resolve_pod_ip(raw_ip, pod)
                 status = "UNKNOWN"
                 if port.lower() == "arping":
                     subnet = ".".join(ip.split(".")[:3])
                     child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
-                    child.expect(r"vr:~#")
-                    iface = child.before.decode().strip().splitlines()[-1]
+                    child.expect(ssh_prompt_pattern)  # Use dynamic prompt
+                    output_lines = child.before.strip().splitlines()
+                    iface = output_lines[-1].strip() if output_lines and output_lines[-1].strip() else None
+
                     if iface:
                         child.sendline(f"arping -c 3 -I {iface} {ip}")
-                        child.expect(r"vr:~#")
-                        status = "UP" if "Unicast reply" in child.before.decode() else "DOWN"
+                        child.expect(ssh_prompt_pattern)  # Use dynamic prompt
+                        status = "UP" if "Unicast reply" in child.before else "DOWN"
+                    else:
+                        status = "DOWN (iface not found)"
                 elif port.lower() == "ping":
-                    child.sendline(f"ping -c 3 -W 2 {ip}") # Added -W 2 for a 2-second wait per ping
-                    child.expect(r"vr:~#", timeout=15)
-                    output = child.before.decode()
-                    # Regex to find the summary line, e.g., "3 packets transmitted, 3 packets received"
-                    match = re.search(r"(\d+)\s+packets\s+transmitted,\s+(\d+)\s+packets\s+received", output)
+                    child.sendline(f"ping -c 3 -W 2 {ip}")
+                    child.expect(ssh_prompt_pattern, timeout=15)  # Use dynamic prompt
+                    output = child.before
+                    match = re.search(r"(\d+)\s+packets\s+transmitted,\s+(\d+)\s+(received|packets\s+received)", output)
                     if match:
                         received = int(match.group(2))
                         status = "UP" if received > 0 else "DOWN"
                     else:
-                        # Fallback for unexpected output formats
                         status = "DOWN"
                 else:
                     child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
-                    child.expect(r"vr:~#")
-                    status = "UP" if "open" in child.before.decode() else "DOWN"
-                
+                    child.expect(ssh_prompt_pattern)  # Use dynamic prompt
+                    status = "UP" if "open" in child.before else "DOWN"
+
                 check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host})
-            
+
             child.sendline("exit")
             child.expect(pexpect.EOF)
             child.close()
@@ -215,7 +232,7 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
             table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
             formatted_rows = [[f"{RED}{cell}{END}" if row[4] not in ["UP", "SKIPPED (Powered Off)"] else cell for cell in row] for row in table_data]
             print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
-        
+
         powered_off_vms = [[name, str(state)] for name, state in vm_power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
         if powered_off_vms:
             print(f"\n🔌 VM Power State Summary for Pod {pod}")
@@ -241,13 +258,13 @@ def main(argv=None, print_lock=None):
         with print_lock:
             print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
         sys.exit(1)
-    
+
     pod_range, power_states = list(range(args.start, args.end + 1)), {}
     all_check_results = []
-    
+
     with print_lock:
         print(f"\n🌐 Connecting to vCenter: {vcenter_fqdn}")
-    
+
     full_table_data = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(threaded_fn_test_cp, pod, vcenter_fqdn, args.group, args.verbose, print_lock) for pod in pod_range]
@@ -273,7 +290,7 @@ def main(argv=None, print_lock=None):
                     continue
             future = executor.submit(perform_network_checks_over_ssh, pod, components, ignore_list, args.host, power_states.get(pod, {}), args.verbose, print_lock)
             futures.append(future)
-        
+
         for future in concurrent.futures.as_completed(futures):
             all_check_results.extend(future.result())
 
