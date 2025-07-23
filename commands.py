@@ -193,8 +193,9 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     results = future.result()
                     all_results.extend(results)
                     for res in results:
-                        status_upper = res.get('status', '').upper()
-                        # --- MODIFIED: Added more failure statuses to the check ---
+                        # --- MODIFIED: Handle case-insensitive keys for status ---
+                        status_val = res.get('status') or res.get('Status', '')
+                        status_upper = status_val.upper()
                         if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
@@ -213,11 +214,13 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             error_table_data = []
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
-                # --- MODIFIED: Use .get() for optional keys to prevent errors ---
+                # --- MODIFIED: Handle case-insensitive/alternative keys for report generation ---
+                status_val = fail.get('status') or fail.get('Status') or fail.get('error', 'Unknown')
+                status = f"{RED}{status_val}{ENDC}"
+                component_name = fail.get('component') or fail.get('vm_name') or fail.get('VM Name', 'N/A')
                 error_table_data.append([
                     pod_id,
-                    fail.get('component', 'N/A'),
+                    component_name,
                     fail.get('ip', 'N/A'),
                     fail.get('port', 'N/A'),
                     status
@@ -323,8 +326,9 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     results = future.result()
                     all_results.extend(results)
                     for res in results:
-                        status_upper = res.get('status', '').upper()
-                        # --- MODIFIED: Added more failure statuses to the check ---
+                        # --- MODIFIED: Handle case-insensitive keys for status ---
+                        status_val = res.get('status') or res.get('Status', '')
+                        status_upper = status_val.upper()
                         if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
@@ -343,11 +347,13 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             error_table_data = []
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
-                # --- MODIFIED: Use .get() for optional keys to prevent errors ---
+                # --- MODIFIED: Handle case-insensitive/alternative keys for report generation ---
+                status_val = fail.get('status') or fail.get('Status') or fail.get('error', 'Unknown')
+                status = f"{RED}{status_val}{ENDC}"
+                component_name = fail.get('component') or fail.get('vm_name') or fail.get('VM Name', 'N/A')
                 error_table_data.append([
                     pod_id,
-                    fail.get('component', 'N/A'),
+                    component_name,
                     fail.get('ip', 'N/A'),
                     fail.get('port', 'N/A'),
                     status

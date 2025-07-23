@@ -15,15 +15,16 @@ END = '\033[0m'
 def threaded_fn_test_cp(pod, vcenter_host, group, verbose, print_lock):
     try:
         si = SmartConnect(host=vcenter_host, user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$", sslContext=context)
-        result, power_map = fn_test_cp(pod, si, group, verbose, print_lock)
+        result, power_map, missing_vm_errors = fn_test_cp(pod, si, group, verbose, print_lock)
         Disconnect(si)
-        return pod, result, power_map
+        return pod, result, power_map, missing_vm_errors
     except Exception as e:
         with print_lock:
             print(f"❌ Error connecting to vCenter for pod {pod}: {e}")
-        return pod, [], {}
+        return pod, [], {}, []
 
 def compare_vms_with_components(pod, vms_in_pool, course_name, print_lock):
+    missing_vm_errors = []
     try:
         client = MongoClient("mongodb://labbuild_user:$$u1QBd6&372#$rF@builder:27017/?authSource=labbuild_db")
         db = client["labbuild_db"]; collection = db["temp_courseconfig"]
@@ -31,14 +32,26 @@ def compare_vms_with_components(pod, vms_in_pool, course_name, print_lock):
         if not course_doc or "components" not in course_doc:
             with print_lock:
                 print(f"❌ Unable to fetch components for course '{course_name}'")
-            return
+            return missing_vm_errors
         expected_vms = [comp.get("clone_name", "").replace("{X}", str(pod)) for comp in course_doc["components"] if "{X}" in comp.get("clone_name", "")]
         vm_set, expected_set = set(vms_in_pool), set(expected_vms)
         missing, extra = expected_set - vm_set, vm_set - expected_set
+
         if not missing and not extra:
             with print_lock:
                 print(f"\n✅ All expected components are present for Pod {pod}")
-            return
+            return missing_vm_errors
+
+        # Create error reports for missing VMs
+        for vm_name in sorted(missing):
+            missing_vm_errors.append({
+                'pod': pod,
+                'component': vm_name,
+                'status': 'MISSING FROM POOL',
+                'ip': 'N/A',
+                'port': 'N/A',
+            })
+
         diff_rows = [["Missing from pool", name] for name in sorted(missing)] + [["Unexpected in pool", name] for name in sorted(extra)]
         with print_lock:
             print(f"\n📌 VM vs Component Check for Pod {pod}")
@@ -46,6 +59,7 @@ def compare_vms_with_components(pod, vms_in_pool, course_name, print_lock):
     except Exception as e:
         with print_lock:
             print(f"❌ Error during VM comparison for pod {pod}: {e}")
+    return missing_vm_errors
 
 def get_entity_by_name(content, name, vimtype):
     container = content.viewManager.CreateContainerView(content.rootFolder, vimtype, True)
@@ -101,8 +115,8 @@ def fn_test_cp(pod, si, group, verbose, print_lock):
     rows_rp, vms, power_map = check_entity_permissions_and_vms(pod, content, rp_name, [vim.ResourcePool], username, verbose, print_lock)
     rows_folder, _, _ = check_entity_permissions_and_vms(pod, content, folder_name, [vim.Folder], username, verbose, print_lock)
     table_data.extend(rows_rp + rows_folder)
-    compare_vms_with_components(pod, vms, group, print_lock)
-    return table_data, power_map
+    missing_vm_errors = compare_vms_with_components(pod, vms, group, print_lock)
+    return table_data, power_map, missing_vm_errors
 
 def fetch_course_config(pod, group, verbose, print_lock):
     try:
@@ -269,9 +283,10 @@ def main(argv=None, print_lock=None):
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(threaded_fn_test_cp, pod, vcenter_fqdn, args.group, args.verbose, print_lock) for pod in pod_range]
         for future in concurrent.futures.as_completed(futures):
-            pod, table_rows, power_map = future.result()
+            pod, table_rows, power_map, missing_vm_errors = future.result()
             full_table_data.extend(table_rows)
             power_states[pod] = power_map
+            all_check_results.extend(missing_vm_errors)
 
     with print_lock:
         print("\n📊 Permissions and VM Count Summary\n")
