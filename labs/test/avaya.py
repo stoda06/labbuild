@@ -43,11 +43,12 @@ def get_course_components(course_name, pod, print_lock):
             return [], []
         components, skipped = [], []
         for c in doc["components"]:
-            name, ip, port = c.get("component_name"), c.get("podip"), c.get("podport")
-            if name and ip and port:
+            raw_name, ip, port = c.get("clone_name"), c.get("podip"), c.get("podport")
+            if raw_name and ip and port:
+                resolved_name = raw_name.replace("{X}", str(pod))
                 resolved_ip = resolve_ip(ip, pod, print_lock) if pod is not None else ip
-                components.append((name, resolved_ip, port))
-                log(f"Component parsed for pod {pod}: {name}, IP: {resolved_ip}, Port: {port}", print_lock)
+                components.append((resolved_name, resolved_ip, port))
+                log(f"Component parsed for pod {pod}: {resolved_name}, IP: {resolved_ip}, Port: {port}", print_lock)
             else:
                 skipped.append(c)
         return components, skipped
@@ -85,7 +86,7 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
         with print_lock:
             print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
 
-        for component, ip, port in components:
+        for clone_name, ip, port in components:
             status = "UNKNOWN"
             if port.lower() == "arping":
                 subnet = ".".join(ip.split(".")[:3])
@@ -101,15 +102,14 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
                 child.expect_exact("PROMPT>", timeout=20)
                 match = re.search(rf"{port}/tcp\s+(\w+)", child.before.decode(errors="ignore").lower())
                 status = match.group(1).upper() if match else "DOWN"
-            results.append({'pod': pod, 'component': component, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
+            results.append({'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
         child.sendline("exit")
         child.expect(pexpect.EOF, timeout=10)
         child.close()
     except Exception as e:
         with print_lock:
             print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
-        # --- FIX: Added 'host' key to the error dictionary ---
-        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED', 'host': host_fqdn})
+        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'port': 22, 'status': 'FAILED', 'host': host_fqdn})
 
     with print_lock:
         print(f"\n📊 Network Test Summary for Pod {pod}")

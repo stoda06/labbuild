@@ -6,7 +6,6 @@ from tabulate import tabulate
 import ssl, argparse, sys, pexpect, concurrent.futures, threading, re
 from pymongo import MongoClient
 from db_utils import get_vcenter_by_host
-from collections import defaultdict
 
 context = ssl._create_unverified_context()
 
@@ -16,16 +15,16 @@ END = '\033[0m'
 def threaded_fn_test_cp(pod, vcenter_host, group, verbose, print_lock):
     try:
         si = SmartConnect(host=vcenter_host, user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$", sslContext=context)
-        result, power_map, comparison_results = fn_test_cp(pod, si, group, verbose, print_lock)
+        result, power_map, missing_vm_errors = fn_test_cp(pod, si, group, verbose, print_lock)
         Disconnect(si)
-        return pod, result, power_map, comparison_results
+        return pod, result, power_map, missing_vm_errors
     except Exception as e:
         with print_lock:
             print(f"❌ Error connecting to vCenter for pod {pod}: {e}")
         return pod, [], {}, []
 
 def compare_vms_with_components(pod, vms_in_pool, course_name, print_lock):
-    comparison_results = []
+    missing_vm_errors = []
     try:
         client = MongoClient("mongodb://labbuild_user:$$u1QBd6&372#$rF@builder:27017/?authSource=labbuild_db")
         db = client["labbuild_db"]; collection = db["temp_courseconfig"]
@@ -33,31 +32,33 @@ def compare_vms_with_components(pod, vms_in_pool, course_name, print_lock):
         if not course_doc or "components" not in course_doc:
             with print_lock:
                 print(f"❌ Unable to fetch components for course '{course_name}'")
-            return []
+            return missing_vm_errors
         expected_vms = [comp.get("clone_name", "").replace("{X}", str(pod)) for comp in course_doc["components"] if "{X}" in comp.get("clone_name", "")]
         vm_set, expected_set = set(vms_in_pool), set(expected_vms)
         missing, extra = expected_set - vm_set, vm_set - expected_set
 
-        for name in sorted(missing):
-            comparison_results.append({'pod': pod, 'component': name, 'status': 'Missing from pool'})
-        for name in sorted(extra):
-            comparison_results.append({'pod': pod, 'component': name, 'status': 'Unexpected in pool'})
-
         if not missing and not extra:
             with print_lock:
                 print(f"\n✅ All expected components are present for Pod {pod}")
-            return []
+            return missing_vm_errors
+        
+        for vm_name in sorted(missing):
+            missing_vm_errors.append({
+                'pod': pod,
+                'component': vm_name,
+                'status': 'MISSING FROM POOL',
+                'ip': 'N/A',
+                'port': 'N/A',
+            })
 
         diff_rows = [["Missing from pool", name] for name in sorted(missing)] + [["Unexpected in pool", name] for name in sorted(extra)]
         with print_lock:
             print(f"\n📌 VM vs Component Check for Pod {pod}")
             print(tabulate(diff_rows, headers=["Status", "VM Name"], tablefmt="fancy_grid"))
-        
-        return comparison_results
     except Exception as e:
         with print_lock:
             print(f"❌ Error during VM comparison for pod {pod}: {e}")
-        return [{'pod': pod, 'component': 'VM Comparison', 'status': 'FAILED', 'error': str(e)}]
+    return missing_vm_errors
 
 def get_entity_by_name(content, name, vimtype):
     container = content.viewManager.CreateContainerView(content.rootFolder, vimtype, True)
@@ -73,7 +74,8 @@ def get_role_name(content, role_id):
     for role in content.authorizationManager.roleList:
         if role.roleId == role_id: return role.name
     return None
-def get_vms_count_in_folder(folder): return len([vm for vm in folder.childEntity if isinstance(vm, vim.VirtualMachine)])
+def get_vms_count_in_folder(folder):
+    return len([vm for vm in folder.childEntity if isinstance(vm, vim.VirtualMachine)])
 def get_vms_count_in_resource_pool(resource_pool, verbose, print_lock):
     try:
         results = [(vm.name, vm.runtime.powerState) for vm in resource_pool.vm]
@@ -112,8 +114,8 @@ def fn_test_cp(pod, si, group, verbose, print_lock):
     rows_rp, vms, power_map = check_entity_permissions_and_vms(pod, content, rp_name, [vim.ResourcePool], username, verbose, print_lock)
     rows_folder, _, _ = check_entity_permissions_and_vms(pod, content, folder_name, [vim.Folder], username, verbose, print_lock)
     table_data.extend(rows_rp + rows_folder)
-    comparison_results = compare_vms_with_components(pod, vms, group, print_lock)
-    return table_data, power_map, comparison_results
+    missing_vm_errors = compare_vms_with_components(pod, vms, group, print_lock)
+    return table_data, power_map, missing_vm_errors
 
 def fetch_course_config(pod, group, verbose, print_lock):
     try:
@@ -123,24 +125,29 @@ def fetch_course_config(pod, group, verbose, print_lock):
         if not course or "components" not in course:
             with print_lock:
                 print(f"❌ No components found for course '{group}'")
-            return None, [], []
-        
-        all_components = course.get("components", [])
-        
-        testable_components = []
+            return [], []
+        components = []
         ignore_list = []
-        for c in all_components:
+        for c in course["components"]:
+            raw_name = c.get("clone_name")
             if c.get("state") == "poweroff":
-                if c.get("podip") and c.get("podport"):
-                    ignore_list.append((c["component_name"], c["podip"], c["podport"]))
-            elif c.get("podip") and c.get("podport"):
-                testable_components.append((c["component_name"], c["podip"], c["podport"]))
-        
-        return all_components, testable_components, ignore_list
+                if raw_name and c.get("podip") and c.get("podport"):
+                    resolved_name = raw_name.replace("{X}", str(pod))
+                    ignore_list.append((resolved_name, c["podip"], c["podport"]))
+                elif verbose:
+                    with print_lock:
+                        print(f"⚠️ Skipping incomplete component config (powered off): {c.get('clone_name', 'UNKNOWN')}")
+            elif raw_name and c.get("podip") and c.get("podport"):
+                resolved_name = raw_name.replace("{X}", str(pod))
+                components.append((resolved_name, c["podip"], c["podport"]))
+            elif verbose:
+                with print_lock:
+                    print(f"⚠️ Skipping incomplete component config: {c.get('clone_name', 'UNKNOWN')}")
+        return components, ignore_list
     except Exception as e:
         with print_lock:
             print(f"❌ MongoDB query failed: {e}")
-        return None, [], []
+        return [], []
 
 def resolve_pod_ip(ip_raw, pod):
     if "+X" in ip_raw:
@@ -148,102 +155,95 @@ def resolve_pod_ip(ip_raw, pod):
         octets[-1] = str(int(octets[-1]) + pod); return ".".join(octets)
     return ip_raw
 
-def perform_network_checks_over_ssh(pod, all_course_components, testable_components, ignore_list, vm_power_map, comparison_results, verbose, print_lock):
-    # --- DYNAMIC VR HOSTNAME LOGIC ---
-    vr_component = next((c for c in all_course_components if 'vr' in c.get('component_name', '').lower()), None)
-    if not vr_component:
-        with print_lock: print(f"❌ VR component not found in course config for pod {pod}. Cannot perform SSH checks.")
-        # Return existing comparison results plus this new error
-        comparison_results.append({'pod': pod, 'component': 'SSH Prerequisite', 'status': 'VR component config not found'})
-        return comparison_results
-    
-    ssh_host = vr_component.get('clone_name', '').replace('{X}', str(pod))
-    # --- END DYNAMIC LOGIC ---
+def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
+    host = f"cpvr{pod}.us" if host_key in ["hotshot", "trypticon"] else f"cpvr{pod}"
 
     ssh_prompt_pattern = r"(?:\[root@pod-vr ~\]# |vr:~# )"
-    
-    check_results = comparison_results[:]
 
+    check_results = []
     for name, raw_ip, port in ignore_list:
         ip = resolve_pod_ip(raw_ip, pod)
-        check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': 'SKIPPED (Powered Off)', 'host': ssh_host})
+        check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': 'SKIPPED (Powered Off)', 'host': host})
 
-    # --- THIS IS THE CRITICAL FIX ---
-    # The entire SSH process is wrapped in a try/except block.
-    # If it fails at any point, it appends the error and returns the *full* list of results.
-    try:
+    if components:
         if verbose:
             with print_lock:
-                print(f"\n🔐 Connecting to {ssh_host} via SSH...")
-        
-        # Only attempt SSH if there are components to test.
-        if not testable_components:
-             return check_results
+                print(f"\n🔐 Connecting to {host} via SSH...")
+        try:
+            child = pexpect.spawn(f"ssh {host}", timeout=30, encoding='utf-8')
 
-        child = pexpect.spawn(f"ssh {ssh_host}", timeout=30, encoding='utf-8')
-        login_patterns = [r"Are you sure you want to continue connecting.*", ssh_prompt_pattern, r"[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT]
-        i = child.expect(login_patterns, timeout=20)
+            login_patterns = [
+                r"Are you sure you want to continue connecting.*",
+                ssh_prompt_pattern,
+                r"[Pp]assword:",
+                pexpect.EOF,
+                pexpect.TIMEOUT
+            ]
+            i = child.expect(login_patterns, timeout=20)
 
-        if i == 0:
-            child.sendline("yes")
-            child.expect(ssh_prompt_pattern)
-        elif i == 1:
-            if verbose:
-                with print_lock: print(f"✅ SSH to {ssh_host} successful")
-        else:
-            # This handles failed login (timeout, EOF, password prompt)
-            raise pexpect.exceptions.ExceptionPexpect(f"Failed to connect to {ssh_host}. Reason: {child.before.strip()}")
-        
-        for name, raw_ip, port in testable_components:
-            ip = resolve_pod_ip(raw_ip, pod)
-            status = "UNKNOWN"
-            if port.lower() == "arping":
-                subnet = ".".join(ip.split(".")[:3])
-                child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
+            if i == 0:
+                child.sendline("yes")
                 child.expect(ssh_prompt_pattern)
-                output_lines = child.before.strip().splitlines()
-                iface = output_lines[-1].strip() if output_lines and output_lines[-1].strip() else None
-                if iface:
-                    child.sendline(f"arping -c 3 -I {iface} {ip}")
-                    child.expect(ssh_prompt_pattern)
-                    status = "UP" if "Unicast reply" in child.before else "DOWN"
-                else:
-                    status = "DOWN (iface not found)"
-            elif port.lower() == "ping":
-                child.sendline(f"ping -c 3 -W 2 {ip}")
-                child.expect(ssh_prompt_pattern, timeout=15)
-                output = child.before
-                match = re.search(r"(\d+)\s+packets\s+transmitted,\s+(\d+)\s+(received|packets\s+received)", output)
-                status = "UP" if match and int(match.group(2)) > 0 else "DOWN"
+            elif i == 1:
+                if verbose:
+                    with print_lock:
+                        print(f"✅ SSH to {host} successful")
             else:
-                child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
-                child.expect(ssh_prompt_pattern)
-                status = "UP" if "open" in child.before else "DOWN"
-            check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': ssh_host})
-        
-        child.sendline("exit")
-        child.expect(pexpect.EOF)
-        child.close()
+                with print_lock:
+                    print(f"❌ Failed to connect to {host}. Reason: {child.before}")
+                check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host, 'port': 22, 'status': 'FAILED', 'host': host})
+                return check_results
 
-    except Exception as e:
-        with print_lock: print(f"❌ SSH or command execution failed on {ssh_host}: {e}")
-        # **THE FIX**: APPEND the failure to the existing results.
-        check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': ssh_host, 'port': 22, 'status': 'FAILED', 'error': str(e)})
-        # Return the combined list of all errors found so far.
-        return check_results
-    # --- END OF CRITICAL FIX ---
+            for name, raw_ip, port in components:
+                ip = resolve_pod_ip(raw_ip, pod)
+                status = "UNKNOWN"
+                if port.lower() == "arping":
+                    subnet = ".".join(ip.split(".")[:3])
+                    child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
+                    child.expect(ssh_prompt_pattern)
+                    output_lines = child.before.strip().splitlines()
+                    iface = output_lines[-1].strip() if output_lines and output_lines[-1].strip() else None
 
+                    if iface:
+                        child.sendline(f"arping -c 3 -I {iface} {ip}")
+                        child.expect(ssh_prompt_pattern)
+                        status = "UP" if "Unicast reply" in child.before else "DOWN"
+                    else:
+                        status = "DOWN (iface not found)"
+                elif port.lower() == "ping":
+                    child.sendline(f"ping -c 3 -W 2 {ip}")
+                    child.expect(ssh_prompt_pattern, timeout=15)
+                    output = child.before
+                    match = re.search(r"(\d+)\s+packets\s+transmitted,\s+(\d+)\s+(received|packets\s+received)", output)
+                    if match:
+                        received = int(match.group(2))
+                        status = "UP" if received > 0 else "DOWN"
+                    else:
+                        status = "DOWN"
+                else:
+                    child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
+                    child.expect(ssh_prompt_pattern)
+                    status = "UP" if "open" in child.before else "DOWN"
+
+                check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host})
+
+            child.sendline("exit")
+            child.expect(pexpect.EOF)
+            child.close()
+        except Exception as e:
+            with print_lock:
+                print(f"❌ SSH or command execution failed on {host}: {e}")
+            check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host, 'port': 22, 'status': 'FAILED', 'host': host})
+            return check_results
 
     with print_lock:
         if check_results:
-            displayable_results = [r for r in check_results if 'ip' in r and 'port' in r]
-            if displayable_results:
-                print(f"\n📊 Network Test Summary for Pod {pod}")
-                headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
-                table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in displayable_results]
-                formatted_rows = [[f"{RED}{cell}{END}" if row[4] not in ["UP", "SKIPPED (Powered Off)"] else cell for cell in row] for row in table_data]
-                print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
-        
+            print(f"\n📊 Network Test Summary for Pod {pod}")
+            headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
+            table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
+            formatted_rows = [[f"{RED}{cell}{END}" if row[4] not in ["UP", "SKIPPED (Powered Off)"] else cell for cell in row] for row in table_data]
+            print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
+
         powered_off_vms = [[name, str(state)] for name, state in vm_power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
         if powered_off_vms:
             print(f"\n🔌 VM Power State Summary for Pod {pod}")
@@ -269,23 +269,21 @@ def main(argv=None, print_lock=None):
         with print_lock:
             print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
         sys.exit(1)
-    
-    pod_range = list(range(args.start, args.end + 1))
-    power_states = {}
-    all_comparison_results = defaultdict(list)
+
+    pod_range, power_states = list(range(args.start, args.end + 1)), {}
     all_check_results = []
-    
+
     with print_lock:
         print(f"\n🌐 Connecting to vCenter: {vcenter_fqdn}")
-    
+
     full_table_data = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(threaded_fn_test_cp, pod, vcenter_fqdn, args.group, args.verbose, print_lock) for pod in pod_range]
         for future in concurrent.futures.as_completed(futures):
-            pod, table_rows, power_map, comparison_results = future.result()
+            pod, table_rows, power_map, missing_vm_errors = future.result()
             full_table_data.extend(table_rows)
             power_states[pod] = power_map
-            all_comparison_results[pod].extend(comparison_results)
+            all_check_results.extend(missing_vm_errors)
 
     with print_lock:
         print("\n📊 Permissions and VM Count Summary\n")
@@ -294,28 +292,17 @@ def main(argv=None, print_lock=None):
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = []
         for pod in pod_range:
-            all_course_components, testable_components, ignore_list = fetch_course_config(pod, args.group, args.verbose, print_lock)
-            
-            # If config fetch fails, we still need to pass through any existing comparison errors
-            if all_course_components is None:
-                all_check_results.extend(all_comparison_results.get(pod, []))
-                continue
-
+            components, ignore_list = fetch_course_config(pod, args.group, args.verbose, print_lock)
             if args.component:
                 selected_components = [c.strip() for c in args.component.split(',')]
-                testable_components = [c for c in testable_components if c[0] in selected_components]
-                if not testable_components:
-                    with print_lock: print(f"   - No matching components found for pod {pod}. Skipping network checks.")
-                    all_check_results.extend(all_comparison_results.get(pod, []))
+                components = [c for c in components if c[0] in selected_components]
+                if not components:
+                    with print_lock:
+                        print(f"   - No matching components found for pod {pod}. Skipping network checks for this pod.")
                     continue
-            
-            future = executor.submit(perform_network_checks_over_ssh, 
-                                     pod, all_course_components, testable_components, ignore_list, 
-                                     power_states.get(pod, {}), 
-                                     all_comparison_results.get(pod, []),
-                                     args.verbose, print_lock)
+            future = executor.submit(perform_network_checks_over_ssh, pod, components, ignore_list, args.host, power_states.get(pod, {}), args.verbose, print_lock)
             futures.append(future)
-        
+
         for future in concurrent.futures.as_completed(futures):
             all_check_results.extend(future.result())
 
