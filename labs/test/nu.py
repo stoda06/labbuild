@@ -27,7 +27,7 @@ def get_course_components(course_name, print_lock):
             return []
         components = []
         for c in doc["components"]:
-            name, ip, port = c.get("component_name"), c.get("podip"), c.get("podport")
+            name, ip, port = c.get("clone_name"), c.get("podip"), c.get("podport")
             if name and ip and port:
                 components.append((name, ip, port))
                 log(f"Component parsed: {name}, IP: {ip}, Port: {port}", print_lock)
@@ -104,8 +104,9 @@ def run_ssh_checks(pod, components, host, print_lock):
         with print_lock:
             print(f"✅ Connected to {host_fqdn}")
         
-        for name, raw_ip, port in components:
+        for raw_clone_name, raw_ip, port in components:
             ip = resolve_ip(raw_ip, pod, host, print_lock)
+            clone_name = raw_clone_name.replace('{X}', str(pod))
             status = "UNKNOWN"
             if port.lower() == "arping":
                 subnet = ".".join(ip.split(".")[:3])
@@ -144,7 +145,7 @@ def run_ssh_checks(pod, components, host, print_lock):
                 child.expect(r"#\s*$", timeout=20)
                 nmap_output = child.before.decode()
                 status = "UP" if "open" in nmap_output.lower() else "DOWN"
-            results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
+            results.append({'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
         
         results.extend(run_cluster_status(child, "cluster1", "192.168.1.12", pod, print_lock))
         results.extend(run_cluster_status(child, "cluster2", "192.168.1.22", pod, print_lock))
@@ -154,8 +155,7 @@ def run_ssh_checks(pod, components, host, print_lock):
     except Exception as e:
         with print_lock:
             print(f"\n❌ SSH to {host_fqdn} failed: {e}")
-        # --- FIX: Added 'host' key to the error dictionary ---
-        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'status': 'FAILED', 'host': host_fqdn})
+        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'port': 22, 'status': 'FAILED', 'host': host_fqdn})
 
     with print_lock:
         print(f"\n📊 Network & Cluster Check Summary for Pod {pod}")

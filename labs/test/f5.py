@@ -38,13 +38,15 @@ def get_course_groups(course_name, print_lock):
     try:
         client = MongoClient("mongodb://labbuild_user:%24%24u1QBd6%26372%23%24rF@builder:27017/?authSource=labbuild_db")
         db = client["labbuild_db"]; doc = db["temp_courseconfig"].find_one({"course_name": course_name})
-        log(f"MongoDB raw result: {doc}", print_lock); groups = []
+        log(f"MongoDB raw result: {doc}"); groups = []
         if doc and "groups" in doc:
             for group in doc["groups"]:
                 group_name, comps = group.get("group_name", "Unknown"), []
                 for c in group.get("component", []):
-                    name, ip, port, clone_vm = c.get("component_name"), c.get("podip"), c.get("podport"), c.get("clone_vm")
-                    if name and ip and port and clone_vm: comps.append((name, ip, port, clone_vm)); log(f"[{group_name}] Component: {name}, IP: {ip}, Port: {port}", print_lock)
+                    c_name, clone_name, ip, port, clone_vm = c.get("component_name"), c.get("clone_name"), c.get("podip"), c.get("podport"), c.get("clone_vm")
+                    if c_name and clone_name and ip and port and clone_vm:
+                        comps.append((c_name, clone_name, ip, port, clone_vm))
+                        log(f"[{group_name}] Component: {clone_name}, IP: {ip}, Port: {port}", print_lock)
                 if comps: groups.append((group_name, comps))
         return groups
     except Exception as e:
@@ -87,9 +89,10 @@ def run_checks_for_pod(pod, grouped_components, ssh_target, host, class_num, pri
     
     # Outside checks
     for group_name, components in grouped_components:
-        for name, raw_ip, port, _ in components:
-            if group_name.lower() in ["bigip", "w10"] or (group_name.lower() == "srv" and name == "vr"):
-                ip_to_check = resolve_ip(raw_ip, class_num if name == "vr" else pod, host, print_lock)
+        for c_name, raw_clone_name, raw_ip, port, _ in components:
+            resolved_clone_name = raw_clone_name.replace('{X}', str(pod))
+            if group_name.lower() in ["bigip", "w10"] or (group_name.lower() == "srv" and c_name == "vr"):
+                ip_to_check = resolve_ip(raw_ip, class_num if c_name == "vr" else pod, host, print_lock)
                 status = "UNKNOWN"
                 try:
                     cmd = f"nmap -Pn -p {port} {ip_to_check}"
@@ -99,11 +102,11 @@ def run_checks_for_pod(pod, grouped_components, ssh_target, host, class_num, pri
                     status = "UP" if "open" in strip_ansi(child.before.decode()) else "DOWN"
                 except Exception as e:
                     with print_lock:
-                        print(f"⚠️ Error checking {name}: {e}")
+                        print(f"⚠️ Error checking {resolved_clone_name}: {e}")
                 
-                if name == "vr" and pod != first_pod:
+                if c_name == "vr" and pod != first_pod:
                     continue
-                check_results.append({'pod': pod, 'class': class_num, 'group': group_name, 'component': name, 'ip': ip_to_check, 'source': 'external', 'port': port, 'status': status})
+                check_results.append({'pod': pod, 'class': class_num, 'group': group_name, 'component': resolved_clone_name, 'ip': ip_to_check, 'source': 'external', 'port': port, 'status': status})
     
     # Inside SSH checks
     try:
@@ -112,8 +115,9 @@ def run_checks_for_pod(pod, grouped_components, ssh_target, host, class_num, pri
         with print_lock:
             print(f"✅ SSH to {ssh_target} successful for Pod {pod} checks.")
         for group_name, components in grouped_components:
-            for name, raw_ip, port, _ in components:
-                if group_name.lower() in ["bigip", "w10"] or (group_name.lower() == "srv" and name == "vr"):
+            for c_name, raw_clone_name, raw_ip, port, _ in components:
+                resolved_clone_name = raw_clone_name.replace('{X}', str(pod))
+                if group_name.lower() in ["bigip", "w10"] or (group_name.lower() == "srv" and c_name == "vr"):
                     continue
                 ip = resolve_ip(raw_ip, pod, host, print_lock)
                 status = "UNKNOWN"
@@ -125,15 +129,14 @@ def run_checks_for_pod(pod, grouped_components, ssh_target, host, class_num, pri
                     status = "UP" if "open" in strip_ansi(child.before.decode()) else "DOWN"
                 except Exception as e:
                     with print_lock:
-                        print(f"⚠️ Error checking {name} via SSH: {e}")
-                check_results.append({'pod': pod, 'class': class_num, 'group': group_name, 'component': name, 'ip': ip, 'source': ssh_target, 'port': port, 'status': status})
+                        print(f"⚠️ Error checking {resolved_clone_name} via SSH: {e}")
+                check_results.append({'pod': pod, 'class': class_num, 'group': group_name, 'component': resolved_clone_name, 'ip': ip, 'source': ssh_target, 'port': port, 'status': status})
         child.sendline("exit")
         child.close()
     except Exception as e:
         with print_lock:
             print(f"❌ SSH session to {ssh_target} failed: {e}")
-        # --- FIX: Added 'host' key to the error dictionary ---
-        check_results.append({'pod': pod, 'class': class_num, 'component': 'SSH Connection', 'ip': ssh_target, 'status': 'FAILED', 'host': ssh_target})
+        check_results.append({'pod': pod, 'class': class_num, 'component': 'SSH Connection', 'ip': ssh_target, 'port': 22, 'status': 'FAILED', 'host': ssh_target})
 
     return check_results
 
@@ -165,7 +168,8 @@ def main(argv=None, print_lock=None):
         filtered_groups, original_count, filtered_count = [], 0, 0
         for group_name, components in grouped_components:
             original_count += len(components)
-            filtered_comps = [c for c in components if c[0] in selected]
+            # Match against clone_name (index 1)
+            filtered_comps = [c for c in components if c[1] in selected]
             if filtered_comps:
                 filtered_groups.append((group_name, filtered_comps))
                 filtered_count += len(filtered_comps)
