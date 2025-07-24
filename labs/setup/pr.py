@@ -1,6 +1,9 @@
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.vm_manager import VmManager
+from pyVmomi import vim
 
+import logging
+logger = logging.getLogger(__name__)
 
 def update_network_dict(network_dict, pod_number):
     def replace_mac_octet(mac_address, pod_num):
@@ -32,72 +35,77 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
     pod_number = int(pod_config["pod_number"])
     snapshot_name = 'base'
     components_to_build = pod_config["components"]
-
-    # STEP 1: Create resource pool.
     parent_resource_pool = pod_config["group"]
     group_pool = parent_resource_pool + "-pod" + str(pod_number)
+
     if not rpm.create_resource_pool(parent_resource_pool, group_pool):
-        return False, "create_resource_pool", f"Failed creating resource pool {group_pool} under {parent_resource_pool}"
+        return False, "create_resource_pool", f"Failed creating resource pool {group_pool}"
 
-    # STEP 2: Filter components if needed.
     if selected_components:
-        components_to_build = [
-            component for component in components_to_build
-            if component["component_name"] in selected_components
-        ]
+        components_to_build = [c for c in components_to_build if c["component_name"] in selected_components]
 
-    # STEP 3: Process each component.
+    overall_component_success = True
+    component_errors = []
+    successful_clones = []
+
     for component in components_to_build:
-        clone_name = component["clone_name"]
+        try:
+            clone_name = component["clone_name"]
+            if rebuild:
+                if not vmm.delete_vm(clone_name):
+                    raise Exception(f"Rebuild failed: Could not delete VM {clone_name}")
 
-        # If rebuild is requested, delete the existing VM.
-        if rebuild:
-            if not vmm.delete_vm(clone_name):
-                return False, "delete_vm", f"Failed deleting VM {clone_name}"
+            if not vmm.get_obj([vim.VirtualMachine], component["base_vm"]):
+                raise Exception(f"Base VM '{component['base_vm']}' not found.")
+            
+            clone_successful = False
+            if not full:
+                if not vmm.snapshot_exists(component["base_vm"], snapshot_name) and not vmm.create_snapshot(component["base_vm"], snapshot_name, description="Base for linked clones"):
+                    raise Exception(f"Failed to create base snapshot on {component['base_vm']}")
+                clone_successful = vmm.create_linked_clone(component["base_vm"], clone_name, snapshot_name, group_pool)
+            else:
+                clone_successful = vmm.clone_vm(component["base_vm"], clone_name, group_pool)
 
-        # STEP 3a: Clone the VM.
-        if not full:
-            # Ensure the base snapshot exists.
-            if not vmm.snapshot_exists(component["base_vm"], snapshot_name):
-                if not vmm.create_snapshot(component["base_vm"], snapshot_name, description="Snapshot used for creating linked clones."):
-                    return False, "create_snapshot", f"Failed creating snapshot on base VM {component['base_vm']}"
-            if not vmm.create_linked_clone(component["base_vm"], clone_name, snapshot_name, group_pool):
-                return False, "create_linked_clone", f"Failed creating linked clone for {clone_name}"
-        else:
-            if not vmm.clone_vm(component["base_vm"], clone_name, group_pool):
-                return False, "clone_vm", f"Failed cloning VM for {clone_name}"
+            if not clone_successful:
+                raise Exception("Clone operation failed")
 
-        # STEP 3b: Update VM network.
-        vm_network = vmm.get_vm_network(component["base_vm"])
-        updated_vm_network = update_network_dict(vm_network, pod_number)
-        if not vmm.update_vm_network(clone_name, updated_vm_network):
-            return False, "update_vm_network", f"Failed updating network for {clone_name}"
-        if not vmm.connect_networks_to_vm(clone_name, updated_vm_network):
-            return False, "connect_networks_to_vm", f"Failed connecting networks for {clone_name}"
+            vm_network = vmm.get_vm_network(component["base_vm"])
+            updated_vm_network = update_network_dict(vm_network, pod_number)
+            if not vmm.update_vm_network(clone_name, updated_vm_network) or \
+               not vmm.connect_networks_to_vm(clone_name, updated_vm_network):
+                raise Exception("Failed to configure network")
 
-        # STEP 3c: Create a snapshot on the cloned VM (if not already present).
-        if not vmm.snapshot_exists(clone_name, snapshot_name):
             if not vmm.create_snapshot(clone_name, snapshot_name, description=f"Snapshot of {clone_name}"):
-                return False, "create_snapshot", f"Failed creating snapshot on {clone_name}"
+                raise Exception("Failed to create snapshot on clone")
 
-        # STEP 3d: Modify the CD drive.
-        drive_name = "CD/DVD drive 1"
-        iso_type = "Datastore ISO file"
-        iso_path = "podiso/pod-" + str(pod_number) + "-a.iso"
-        # Retrieve the current CD drive info.
-        cd_drive_info = vmm.get_cd_drive(clone_name)
-        if "datastore" in cd_drive_info.get("datastore", ""):
-            datastore_name = "datastore2-ho"
-        else:
-            datastore_name = "keg2"
-        if not vmm.modify_cd_drive(clone_name, drive_name, iso_type, datastore_name, iso_path, connected=True):
-            return False, "modify_cd_drive", f"Failed modifying CD drive for {clone_name}"
+            iso_path = f"podiso/pod-{pod_number}-a.iso"
+            datastore_name = "keg2" if "k2" in pod_config.get("host_fqdn", "") else "datastore2-ho"
+            if not vmm.modify_cd_drive(clone_name, "CD/DVD drive 1", "Datastore ISO file", datastore_name, iso_path, connected=True):
+                raise Exception("Failed to modify CD drive")
+            
+            successful_clones.append(component)
 
-    # STEP 4: Power on VMs for components not marked as "poweroff".
-    for component in components_to_build:
+        except Exception as e:
+            error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
+            logger.error(error_msg)
+            component_errors.append(error_msg)
+            overall_component_success = False
+            continue
+
+    power_on_failures = []
+    for component in successful_clones:
         if component.get("state") != "poweroff":
             if not vmm.poweron_vm(component["clone_name"]):
-                return False, "poweron_vm", f"Failed powering on {component['clone_name']}"
+                power_on_failures.append(component["clone_name"])
+    
+    if power_on_failures:
+        error_msg = f"Failed to power on VMs: {', '.join(power_on_failures)}"
+        component_errors.append(error_msg)
+        overall_component_success = False
+
+    if not overall_component_success:
+        final_error_message = "; ".join(component_errors)
+        return False, "component_build_failure", final_error_message
 
     return True, None, None
 
