@@ -1128,7 +1128,7 @@ def execute_scheduled_builds():
             # This logic now correctly handles 'run now' because its start time is 'now' and its
             # stagger_minutes is small, while 'specific_time_all' has stagger_minutes=0.
             
-            is_student_build = item_to_build.get('type') == 'student' # Corrected comparison
+            is_student_build = item_to_build.get('type') == 'Student Build'
             tag = f"{item_sf_code.replace('/', '_').replace(' ', '_')}"
             if not is_student_build:
                 tag += "-TP"
