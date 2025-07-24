@@ -10,6 +10,7 @@ from db_utils import get_vcenter_by_host
 context = ssl._create_unverified_context()
 
 RED = '\033[91m'
+ORANGE = '\033[93m'
 END = '\033[0m'
 
 def threaded_fn_test_cp(pod, vcenter_host, group, verbose, print_lock):
@@ -149,11 +150,22 @@ def fetch_course_config(pod, group, verbose, print_lock):
             print(f"❌ MongoDB query failed: {e}")
         return [], []
 
-def resolve_pod_ip(ip_raw, pod):
+def resolve_pod_ip(ip_raw, pod, host_key):
+    # First, handle the pod number offset logic
     if "+X" in ip_raw:
-        base, _, offset = ip_raw.partition("+X"); octets = base.split(".")
-        octets[-1] = str(int(octets[-1]) + pod); return ".".join(octets)
-    return ip_raw
+        base, _, offset = ip_raw.partition("+X")
+        octets = base.split(".")
+        octets[-1] = str(int(octets[-1]) + pod)
+        ip_template = ".".join(octets)
+    else:
+        ip_template = ip_raw
+
+    # Second, handle the host-specific remapping for hotshot/trypticon
+    if host_key.lower() in ["hotshot", "trypticon"] and ip_template.startswith("172.30."):
+        # Replace only the first occurrence to be safe
+        return ip_template.replace("172.30.", "172.26.", 1)
+
+    return ip_template
 
 def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
     host = f"cpvr{pod}.us" if host_key in ["hotshot", "trypticon"] else f"cpvr{pod}"
@@ -162,7 +174,7 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
 
     check_results = []
     for name, raw_ip, port in ignore_list:
-        ip = resolve_pod_ip(raw_ip, pod)
+        ip = resolve_pod_ip(raw_ip, pod, host_key)
         check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': 'SKIPPED (Powered Off)', 'host': host})
 
     if components:
@@ -195,7 +207,7 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                 return check_results
 
             for name, raw_ip, port in components:
-                ip = resolve_pod_ip(raw_ip, pod)
+                ip = resolve_pod_ip(raw_ip, pod, host_key)
                 status = "UNKNOWN"
                 if port.lower() == "arping":
                     subnet = ".".join(ip.split(".")[:3])
@@ -205,13 +217,21 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                     iface = output_lines[-1].strip() if output_lines and output_lines[-1].strip() else None
 
                     if iface:
-                        child.sendline(f"arping -c 3 -I {iface} {ip}")
+                        arping_cmd = f"arping -c 3 -I {iface} {ip}"
+                        if verbose:
+                            with print_lock:
+                                print(f"   -> Executing command for '{name}': {arping_cmd}")
+                        child.sendline(arping_cmd)
                         child.expect(ssh_prompt_pattern)
                         status = "UP" if "Unicast reply" in child.before else "DOWN"
                     else:
                         status = "DOWN (iface not found)"
                 elif port.lower() == "ping":
-                    child.sendline(f"ping -c 3 -W 2 {ip}")
+                    ping_cmd = f"ping -c 3 -W 2 {ip}"
+                    if verbose:
+                        with print_lock:
+                            print(f"   -> Executing command for '{name}': {ping_cmd}")
+                    child.sendline(ping_cmd)
                     child.expect(ssh_prompt_pattern, timeout=15)
                     output = child.before
                     match = re.search(r"(\d+)\s+packets\s+transmitted,\s+(\d+)\s+(received|packets\s+received)", output)
@@ -221,9 +241,19 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                     else:
                         status = "DOWN"
                 else:
-                    child.sendline(f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'")
+                    nmap_cmd = f"nmap -Pn -p {port} {ip} | grep '{port}/tcp'"
+                    if verbose:
+                        with print_lock:
+                            print(f"   -> Executing command for '{name}': {nmap_cmd}")
+                    child.sendline(nmap_cmd)
                     child.expect(ssh_prompt_pattern)
-                    status = "UP" if "open" in child.before else "DOWN"
+                    nmap_output = child.before
+                    if "open" in nmap_output:
+                        status = "UP"
+                    elif "filtered" in nmap_output:
+                        status = "FILTERED"
+                    else:
+                        status = "DOWN"
 
                 check_results.append({'pod': pod, 'component': name, 'ip': ip, 'port': port, 'status': status, 'host': host})
 
@@ -241,7 +271,16 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
             print(f"\n📊 Network Test Summary for Pod {pod}")
             headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
             table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
-            formatted_rows = [[f"{RED}{cell}{END}" if row[4] not in ["UP", "SKIPPED (Powered Off)"] else cell for cell in row] for row in table_data]
+            
+            formatted_rows = []
+            for row in table_data:
+                status_cell = row[4]
+                if status_cell == "FILTERED":
+                    row[4] = f"{ORANGE}{status_cell}{END}"
+                elif status_cell not in ["UP", "SKIPPED (Powered Off)"]:
+                    row[4] = f"{RED}{status_cell}{END}"
+                formatted_rows.append(row)
+
             print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
 
         powered_off_vms = [[name, str(state)] for name, state in vm_power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
