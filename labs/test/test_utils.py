@@ -175,7 +175,7 @@ def group_non_f5_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     
     return final_jobs
 
-def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filter: Optional[str] = None, group_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, class_filter: Optional[int] = None, host_filter: Optional[str] = None, group_filter: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Queries allocations for a specific vendor and number range (pods or classes).
     Generates a list of test jobs, automatically determining course and host.
@@ -184,7 +184,7 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
     raw_jobs = []
     f5_job_collector = {} # Key: (vendor, course, host, class_num), Value: {base_info, set_of_pods}
 
-    logger.info(f"Searching for jobs for {vendor} in range {start_num}-{end_num} (Host: {host_filter or 'any'}, Group: {group_filter or 'any'})")
+    logger.info(f"Searching for jobs for {vendor} in range {start_num}-{end_num} (Class: {class_filter or 'any'}, Host: {host_filter or 'any'}, Group: {group_filter or 'any'})")
     with mongo_client() as client:
         if not client:
             logger.error("Cannot get test jobs: DB connection failed.")
@@ -211,6 +211,7 @@ def get_test_jobs_for_range(vendor: str, start_num: int, end_num: int, host_filt
                         host = pod_detail.get("host")
                         if class_num is None or host is None: continue
                         if host_filter and host.lower() != host_filter.lower(): continue
+                        if class_filter is not None and class_num != class_filter: continue
 
                         matching_pods = []
                         for p in pod_detail.get('pods', []):
