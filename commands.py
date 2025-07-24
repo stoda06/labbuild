@@ -161,7 +161,8 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
 
     # --- Mode 1: Vendor-wide test mode ---
     is_vendor_mode = (args_dict.get('vendor') and not args_dict.get('tag') and
-                      args_dict.get('start_pod') is None and args_dict.get('end_pod') is None)
+                      args_dict.get('start_pod') is None and args_dict.get('end_pod') is None and
+                      args_dict.get('class_number') is None) # <-- Added class_number check
     if is_vendor_mode:
         vendor = args_dict['vendor']
         logger.info(f"Vendor-wide test mode for '{vendor}' with {thread_count} threads.")
@@ -193,9 +194,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     results = future.result()
                     all_results.extend(results)
                     for res in results:
-                        # --- MODIFIED: Handle case-insensitive keys for status ---
-                        status_val = res.get('status') or res.get('Status', '')
-                        status_upper = status_val.upper()
+                        status_upper = res.get('status', '').upper()
                         if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
@@ -214,16 +213,10 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             error_table_data = []
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                # --- MODIFIED: Handle case-insensitive/alternative keys for report generation ---
-                status_val = fail.get('status') or fail.get('Status') or fail.get('error', 'Unknown')
-                status = f"{RED}{status_val}{ENDC}"
-                component_name = fail.get('component') or fail.get('vm_name') or fail.get('VM Name', 'N/A')
+                status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
                 error_table_data.append([
-                    pod_id,
-                    component_name,
-                    fail.get('ip', 'N/A'),
-                    fail.get('port', 'N/A'),
-                    status
+                    pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'),
+                    fail.get('port', 'N/A'), status
                 ])
             print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
             print("="*80)
@@ -286,21 +279,37 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
 
     # --- Mode 4: Manual test mode with range ---
     is_manual_range_mode = args_dict.get('start_pod') is not None and args_dict.get('end_pod') is not None
-    if is_manual_range_mode:
-        logger.info("Manual test mode invoked with pod/class range.")
-        if not args_dict.get('vendor'):
+    is_manual_class_mode = args_dict.get('vendor', '').lower() == 'f5' and args_dict.get('class_number') is not None
+
+    if is_manual_range_mode or is_manual_class_mode:
+        logger.info("Manual test mode invoked with pod/class parameters.")
+        vendor = args_dict.get('vendor')
+        if not vendor:
             err_msg = "Missing required argument for manual test: --vendor"
             logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
+        start_num = args_dict.get('start_pod')
+        end_num = args_dict.get('end_pod')
+
+        # If class mode is active but no pod range is given, imply "all pods in class".
+        if is_manual_class_mode and start_num is None:
+            start_num = 0
+            end_num = 9999 # A sufficiently large range to include all possible pod numbers.
+        elif start_num is None or end_num is None:
+            # This path is now only for non-F5 without a range, which is an error.
+            err_msg = "Manual test requires --start-pod and --end-pod for non-F5 vendors."
+            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
+            return [{"status": "failed", "error": err_msg}]
+
         jobs = get_test_jobs_for_range(
-            vendor=args_dict['vendor'],
-            start_num=args_dict['start_pod'],
-            end_num=args_dict['end_pod'],
+            vendor=vendor,
+            start_num=start_num,
+            end_num=end_num,
+            class_filter=args_dict.get('class_number'),
             host_filter=args_dict.get('host'),
             group_filter=args_dict.get('group')
         )
-
         if not jobs:
             err_msg = "No matching allocations found in the database for the specified criteria."
             logger.warning(err_msg)
@@ -326,9 +335,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                     results = future.result()
                     all_results.extend(results)
                     for res in results:
-                        # --- MODIFIED: Handle case-insensitive keys for status ---
-                        status_val = res.get('status') or res.get('Status', '')
-                        status_upper = status_val.upper()
+                        status_upper = res.get('status', '').upper()
                         if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
@@ -347,17 +354,8 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             error_table_data = []
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                # --- MODIFIED: Handle case-insensitive/alternative keys for report generation ---
-                status_val = fail.get('status') or fail.get('Status') or fail.get('error', 'Unknown')
-                status = f"{RED}{status_val}{ENDC}"
-                component_name = fail.get('component') or fail.get('vm_name') or fail.get('VM Name', 'N/A')
-                error_table_data.append([
-                    pod_id,
-                    component_name,
-                    fail.get('ip', 'N/A'),
-                    fail.get('port', 'N/A'),
-                    status
-                ])
+                status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
+                error_table_data.append([pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'), fail.get('port', 'N/A'), status])
             print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
             print("="*80)
         else:

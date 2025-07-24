@@ -480,7 +480,7 @@ def main():
         # --- Process results (checking for component list status) ---
         component_list_result = next((r for r in all_results if isinstance(r,dict) and r.get("status") == COMPONENT_LIST_STATUS), None)
         
-        # --- THIS IS THE CORRECTED LOGIC FOR CALCULATING SUMMARY ---
+        # --- THIS IS THE CORRECTED LOGIC FOR CALCULATING TEST SUMMARY ---
         if args.command == 'test':
             if isinstance(all_results, list):
                 # Group results by the job identifier (pod or class)
@@ -489,20 +489,21 @@ def main():
                 for r in all_results:
                     if isinstance(r, dict):
                         # For F5, the job is the class. For others, it's the pod.
-                        job_id = r.get('class_number') or r.get('pod')
-                        if job_id is not None:
+                        # The `host` key helps differentiate jobs on different hosts (e.g., prod vs. tp)
+                        job_id = (r.get('class', r.get('pod')), r.get('host'))
+                        if job_id[0] is not None:
                             results_by_job[job_id].append(r)
                 
                 # Determine final status for each job
                 for job_id, results in results_by_job.items():
                     # A job fails if ANY of its component checks fail (are not UP/SUCCESS/OPEN/SKIPPED)
+                    # Note: The status 'FAILED' is also a failure condition.
                     if any(res.get('status', '').upper() not in ['UP', 'SUCCESS', 'OPEN'] and not res.get('status', '').upper().startswith('SKIPPED') for res in results):
                         total_failure += 1
                     else:
                         total_success += 1
             else: # Fallback if test function returns unexpected data type
                 total_failure = 1
-        # --- END OF CORRECTED LOGIC ---
         
         elif component_list_result:
             logger.info(f"Command returned component list for course '{args_dict.get('course')}'.")
