@@ -17,6 +17,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
+
 # Note: We now import all relevant collection constants
 from constants import (
     INTERIM_ALLOCATION_COLLECTION,
@@ -400,8 +401,8 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
     processed_trainer_pods = []
     for doc in trainer_docs_raw:
         ram = doc.get('memory_gb_one_pod')
+        course_version = doc.get('final_labbuild_course')
         if not ram:
-            course_version = doc.get('final_labbuild_course')
             if course_version in ram_lookup_map:
                 ram = ram_lookup_map.get(course_version)
 
@@ -435,9 +436,10 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
             'virtual_hosts': host_str,
             'vcenter': vcenter_str,
             'pod_type': 'trainer',
-            'version': doc.get('final_labbuild_course'),
-            'course_version': doc.get('final_labbuild_course'),
-            'apm_command_value': extract_apm_command(doc.get('apm_commands', [])),
+            'version': course_version,
+            'course_version': course_version,
+            # ✅ MODIFIED: Fallback to course version if APM command is not found
+            'apm_command_value': extract_apm_command(doc.get('apm_commands', [])) or course_version,
         }
         processed_trainer_pods.append(trainer_pod_entry)
 
@@ -460,9 +462,9 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
         final_username = _find_value_across_docs(data['docs'], ['student_apm_username', 'apm_username'])
         final_password = _find_value_across_docs(data['docs'], ['student_apm_password', 'apm_password'])
         final_ram = _find_value_across_docs(data['docs'], ['memory_gb_one_pod', 'ram'])
-
+        
+        course_version = base_doc.get('final_labbuild_course')
         if not final_ram:
-            course_version = base_doc.get('final_labbuild_course')
             if course_version in ram_lookup_map:
                 final_ram = ram_lookup_map.get(course_version)
 
@@ -494,9 +496,10 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
             'virtual_hosts': final_host_str,
             'vcenter': final_vcenter_str,
             'pod_type': 'default',
-            'version': base_doc.get('final_labbuild_course'),
-            'course_version': base_doc.get('final_labbuild_course'),
-            'apm_command_value': extract_apm_command(base_doc.get('apm_commands', [])),
+            'version': course_version,
+            'course_version': course_version,
+            # ✅ MODIFIED: Fallback to course version if APM command is not found
+            'apm_command_value': extract_apm_command(base_doc.get('apm_commands', [])) or course_version,
         }
         processed_standard_courses.append(course)
 
@@ -521,9 +524,10 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
         start_end_pod = ""
         if pod_numbers:
             start_end_pod = f"{pod_numbers[0]}-{pod_numbers[-1]}" if len(pod_numbers) > 1 else str(pod_numbers[0])
+            
+        course_version = course_details.get('course_name')
         ram_value = course_details.get('memory_gb_one_pod') or course_details.get('ram')
         if not ram_value:
-            course_version = course_details.get('course_name')
             if course_version in ram_lookup_map:
                 ram_value = ram_lookup_map.get(course_version)
         course_code = doc.get('tag', '')
@@ -534,7 +538,7 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
             'course_start_date': format_date(course_details.get('start_date')),
             'last_day': format_date(course_details.get('end_date')),
             'trainer_name': course_details.get('trainer_name'),
-            'course_name': course_details.get('course_name'),
+            'course_name': course_version,
             'start_end_pod': start_end_pod,
             'username': course_details.get('apm_username'),
             'password': course_details.get('apm_password'),
@@ -545,9 +549,10 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
             'virtual_hosts': ", ".join(hosts),
             'vcenter': final_vcenter_str,
             'pod_type': 'extended',
-            'version': course_details.get('course_name'),
-            'course_version': course_details.get('course_name'),
-            'apm_command_value': extract_apm_command(doc.get('apm_commands', [])),
+            'version': course_version,
+            'course_version': course_version,
+            # ✅ MODIFIED: Fallback to course version if APM command is not found
+            'apm_command_value': extract_apm_command(doc.get('apm_commands', [])) or course_version,
         }
         extended_courses.append(course)
     return extended_courses
@@ -762,4 +767,3 @@ def get_upcoming_report_data(db):
     except Exception as e:
         logger.error(f"FATAL: An error occurred during upcoming report data fetching: {e}", exc_info=True)
         raise e
-
