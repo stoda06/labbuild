@@ -616,6 +616,40 @@ class VmManager(VCenter):
 
         return _search_snapshot_tree(vm.snapshot.rootSnapshotList)
     
+    def delete_snapshot(self, vm_name, snapshot_name, remove_children=True):
+        """
+        Deletes a snapshot by name from the specified VM.
+        :param vm_name: The name of the virtual machine.
+        :param snapshot_name: The name of the snapshot to delete.
+        :param remove_children: If True, removes the entire snapshot subtree.
+        :return: True if deletion was successful or snapshot did not exist, False otherwise.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"VM '{vm_name}' not found for snapshot deletion.")
+            return False
+        
+        if not vm.snapshot:
+            self.logger.warning(f"VM '{vm_name}' has no snapshots to delete.")
+            return True # Considered success as the state is "snapshot doesn't exist"
+
+        snapshot_to_delete = self.find_snapshot_in_tree(vm.snapshot.rootSnapshotList, snapshot_name)
+        if not snapshot_to_delete:
+            self.logger.warning(f"Snapshot '{snapshot_name}' not found on VM '{vm_name}'.")
+            return True # Considered success as the state is "snapshot doesn't exist"
+
+        try:
+            task = snapshot_to_delete.snapshot.RemoveSnapshot_Task(removeChildren=remove_children)
+            if self.wait_for_task(task):
+                self.logger.info(f"Snapshot '{snapshot_name}' deleted successfully from VM '{vm_name}'.")
+                return True
+            else:
+                self.logger.error(f"Task failed to delete snapshot '{snapshot_name}' for VM '{vm_name}'.")
+                return False
+        except Exception as e:
+            self.logger.error(f"Failed to delete snapshot '{snapshot_name}' for VM '{vm_name}': {self.extract_error_message(e)}")
+            return False
+    
     def revert_to_snapshot(self, vm_name, snapshot_name):
         """
         Reverts the specified VM to a snapshot by its name.
@@ -831,49 +865,30 @@ class VmManager(VCenter):
     def create_linked_clone(self, base_vm_name, clone_name, snapshot_name, resource_pool_name, directory_name=None, datastore_name=None):
         """
         Creates a linked clone from an existing snapshot.
+        If it fails, it will attempt to delete and recreate the 'base' snapshot and retry.
+        If that fails, it will fall back to creating a full clone.
 
         :param base_vm_name: The name of the source VM.
         :param clone_name: The name of the new cloned VM.
-        :param snapshot_name: The name of the snapshot to clone from.
+        :param snapshot_name: The name of the snapshot to clone from (typically "base").
         :param resource_pool_name: The name of the resource pool to place the cloned VM.
         :param datastore_name: The name of the datastore where the cloned VM will be placed. If None, uses the same datastore as the source VM.
         :return: True if the clone was created successfully, False otherwise.
         """
         try:
-            # Retrieve the resource pool
+            # --- Initial Setup ---
             resource_pool = self.get_obj([vim.ResourcePool], resource_pool_name)
             if not resource_pool:
                 self.logger.error(f"Resource pool '{resource_pool_name}' not found.")
                 return False
 
-            # Check if the VM already exists in the specified resource pool
-            for vm in resource_pool.vm:
-                if vm.name == clone_name:
-                    self.logger.warning(f"VM '{clone_name}' already exists in the resource pool '{resource_pool_name}'.")
-                    return True
+            if any(vm.name == clone_name for vm in resource_pool.vm):
+                self.logger.warning(f"VM '{clone_name}' already exists in resource pool '{resource_pool_name}'.")
+                return True
 
             base_vm = self.get_obj([vim.VirtualMachine], base_vm_name)
             if not base_vm:
                 self.logger.error(f"VM '{base_vm_name}' not found.")
-                return False
-
-            if not base_vm.snapshot:
-                try:
-                    task = base_vm.CreateSnapshot_Task(name=snapshot_name, description="",
-                                                memory=False, quiesce=False)
-                    if self.wait_for_task(task):
-                        self.logger.debug(f"Snapshot '{snapshot_name}' created successfully for VM '{base_vm_name}'.")
-                        return True
-                    else:
-                        self.logger.error(f"Task failed to create snapshot '{snapshot_name}' for VM '{base_vm_name}'.")
-                        return False
-                except Exception as e:
-                    self.logger.error(f"Failed to create snapshot for VM '{base_vm_name}': {e}")
-                    return False
-
-            snapshot = self.find_snapshot_in_tree(base_vm.snapshot.rootSnapshotList, snapshot_name)
-            if not snapshot:
-                self.logger.error(f"Snapshot '{snapshot_name}' not found in VM '{base_vm_name}'.")
                 return False
 
             vm_folder = None
@@ -888,25 +903,65 @@ class VmManager(VCenter):
 
             datastore = self.get_obj([vim.Datastore], datastore_name) if datastore_name else base_vm.datastore[0]
 
-            # Set up the clone specification to use the provided resource pool and datastore
-            clone_spec = vim.vm.CloneSpec()
-            relocate_spec = vim.vm.RelocateSpec()
-            relocate_spec.pool = resource_pool
-            relocate_spec.datastore = datastore
-            relocate_spec.diskMoveType = 'createNewChildDiskBacking'
+            # --- Internal helper for linked clone attempt ---
+            def attempt_linked_clone():
+                snapshot = self.find_snapshot_in_tree(base_vm.snapshot.rootSnapshotList, snapshot_name) if base_vm.snapshot else None
+                if not snapshot:
+                    self.logger.error(f"Snapshot '{snapshot_name}' not found on VM '{base_vm_name}'.")
+                    return False
 
-            clone_spec.location = relocate_spec
-            clone_spec.snapshot = snapshot.snapshot
+                relocate_spec = vim.vm.RelocateSpec(
+                    pool=resource_pool,
+                    datastore=datastore,
+                    diskMoveType='createNewChildDiskBacking'
+                )
+                clone_spec = vim.vm.CloneSpec(
+                    location=relocate_spec,
+                    snapshot=snapshot.snapshot
+                )
 
-            task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
-            if self.wait_for_task(task):
-                self.logger.debug(f"Linked clone '{clone_name}' created successfully on datastore '{datastore.name}'.")
+                try:
+                    task = base_vm.CloneVM_Task(folder=vm_folder, name=clone_name, spec=clone_spec)
+                    if self.wait_for_task(task):
+                        self.logger.info(f"Linked clone '{clone_name}' created successfully on datastore '{datastore.name}'.")
+                        return True
+                    else:
+                        self.logger.error(f"Task to create linked clone '{clone_name}' failed.")
+                        return False
+                except Exception as e:
+                    self.logger.error(f"Exception during linked clone attempt for '{clone_name}': {self.extract_error_message(e)}")
+                    return False
+
+            # --- First Attempt ---
+            if attempt_linked_clone():
                 return True
+
+            # --- MODIFICATION: Recovery and Fallback Logic ---
+            self.logger.warning(f"Initial linked clone failed for '{clone_name}'. Attempting recovery: recreating snapshot '{snapshot_name}'.")
+            
+            # 1. Attempt to delete the existing snapshot for cleanup.
+            self.logger.info(f"Attempting to delete existing snapshot '{snapshot_name}' on '{base_vm_name}'...")
+            if not self.delete_snapshot(base_vm_name, snapshot_name):
+                self.logger.warning(f"Could not delete existing snapshot '{snapshot_name}'. Proceeding to create new one.")
+
+            # 2. Attempt to create a new snapshot.
+            self.logger.info(f"Attempting to create a new snapshot '{snapshot_name}' on '{base_vm_name}'...")
+            if self.create_snapshot(base_vm_name, snapshot_name, description="Base snapshot for linked clones"):
+                self.logger.info(f"New snapshot '{snapshot_name}' created. Retrying linked clone...")
+                # 3. Retry linked clone after successful snapshot creation.
+                if attempt_linked_clone():
+                    return True
+                else:
+                    self.logger.error(f"Second linked clone attempt failed for '{clone_name}' after recreating snapshot.")
             else:
-                self.logger.error(f"Failed to create linked clone '{clone_name}'.")
-                return False
+                self.logger.error(f"Failed to create new snapshot '{snapshot_name}' on '{base_vm_name}'.")
+
+            # 4. Fallback to Full Clone if all else fails.
+            self.logger.error(f"All linked clone attempts failed for '{clone_name}'. Falling back to FULL CLONE.")
+            return self.clone_vm(base_vm_name, clone_name, resource_pool_name, directory_name, datastore_name, power_on=False)
+
         except Exception as e:
-            self.logger.error(f"Failed to create linked clone: {e}")
+            self.logger.error(f"A critical error occurred in create_linked_clone for '{clone_name}': {self.extract_error_message(e)}")
             return False
         
     def verify_uuid(self, vm_name, expected_uuid):
