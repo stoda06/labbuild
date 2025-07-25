@@ -165,93 +165,88 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
     if selected_components:
         components_to_process = [c for c in components_to_process if c.get("component_name") in selected_components]
 
+    overall_component_success = True
+    component_errors = []
+
     for component in tqdm(components_to_process, desc=f"Pod {target_pod_number} → cloning/configuring", unit="vm"):
-        target_vm_name = component["clone_name"].replace("{X}", str(target_pod_number))
+        try:
+            target_vm_name = component["clone_name"].replace("{X}", str(target_pod_number))
 
-        if rebuild: # Use the rebuild flag passed into the function
-            logger.info(f"Rebuild: Deleting existing VM '{target_vm_name}' for pod {target_pod_number}.")
-            if not vm_mgr.delete_vm(target_vm_name):
-                return False, "delete_vm_rebuild_cp", f"Failed deleting existing VM '{target_vm_name}'"
+            if rebuild:
+                logger.info(f"Rebuild: Deleting existing VM '{target_vm_name}' for pod {target_pod_number}.")
+                if not vm_mgr.delete_vm(target_vm_name):
+                    raise Exception(f"Failed deleting existing VM '{target_vm_name}'")
 
-        base_vm_for_clone = component["base_vm"]  # Default: clone from template
-        snapshot_for_clone = "base"              # Default: use "base" snapshot of template
+            base_vm_for_clone = component["base_vm"]
+            snapshot_for_clone = "base"
 
-        if clonefrom is not None and source_pod_vms:
-            component_original_name = component.get("component_name")
-            if component_original_name in source_pod_vms:
-                source_vm_name_actual = source_pod_vms[component_original_name]
-                base_vm_for_clone = source_vm_name_actual # Switch base to the source pod's VM
-                logger.info(f"CloneFrom: Target '{target_vm_name}' will be cloned from source VM '{base_vm_for_clone}' (Pod {clonefrom}).")
+            if clonefrom is None and not vm_mgr.get_obj([vim.VirtualMachine], base_vm_for_clone):
+                raise Exception(f"Base VM '{base_vm_for_clone}' not found.")
 
-                source_vm_obj = vm_mgr.get_obj([vim.VirtualMachine], base_vm_for_clone) # type: ignore
-                if not source_vm_obj:
-                    return False, "source_vm_not_found_cf", f"CloneFrom: Source VM '{base_vm_for_clone}' not found."
-
-                latest_snap_on_source = vm_mgr.get_latest_snapshot_name(source_vm_obj) # Use your new method
-                snapshot_for_clone = increment_string(latest_snap_on_source) # New snapshot name
-
-                logger.info(f"CloneFrom: Creating new snapshot '{snapshot_for_clone}' on source VM '{base_vm_for_clone}'.")
-                if not vm_mgr.create_snapshot(base_vm_for_clone, snapshot_for_clone,
-                                              description=f"For cloning to Pod {target_pod_number} from Pod {clonefrom}"):
-                    return False, "create_source_snap_cf", f"Failed creating snapshot '{snapshot_for_clone}' on source '{base_vm_for_clone}'"
+            if clonefrom is not None and source_pod_vms:
+                component_original_name = component.get("component_name")
+                if component_original_name in source_pod_vms:
+                    source_vm_name_actual = source_pod_vms[component_original_name]
+                    base_vm_for_clone = source_vm_name_actual
+                    logger.info(f"CloneFrom: Target '{target_vm_name}' will be cloned from source VM '{base_vm_for_clone}' (Pod {clonefrom}).")
+                    source_vm_obj = vm_mgr.get_obj([vim.VirtualMachine], base_vm_for_clone)
+                    if not source_vm_obj:
+                        raise Exception(f"CloneFrom: Source VM '{base_vm_for_clone}' not found.")
+                    latest_snap_on_source = vm_mgr.get_latest_snapshot_name(source_vm_obj)
+                    snapshot_for_clone = increment_string(latest_snap_on_source)
+                    logger.info(f"CloneFrom: Creating new snapshot '{snapshot_for_clone}' on source VM '{base_vm_for_clone}'.")
+                    if not vm_mgr.create_snapshot(base_vm_for_clone, snapshot_for_clone, description=f"For cloning to Pod {target_pod_number} from Pod {clonefrom}"):
+                        raise Exception(f"Failed creating snapshot '{snapshot_for_clone}' on source '{base_vm_for_clone}'")
+                else:
+                    logger.warning(f"CloneFrom: Component '{component_original_name}' not in source VM map. Defaulting to template '{base_vm_for_clone}'.")
+            
+            # Perform Cloning
+            clone_successful = False
+            if not full:
+                logger.info(f"Creating linked clone '{target_vm_name}' from '{base_vm_for_clone}' (Snapshot: '{snapshot_for_clone}').")
+                clone_successful = vm_mgr.create_linked_clone(base_vm_for_clone, target_vm_name, snapshot_for_clone, target_resource_pool_name, directory_name=target_folder_name)
             else:
-                logger.warning(f"CloneFrom: Component '{component_original_name}' not in source VM map. Defaulting to template '{base_vm_for_clone}'.")
-        
-        # Perform Cloning
-        if not full:
-            logger.info(f"Creating linked clone '{target_vm_name}' from '{base_vm_for_clone}' (Snapshot: '{snapshot_for_clone}').")
-            if not vm_mgr.create_linked_clone(base_vm_for_clone, target_vm_name, snapshot_for_clone,
-                                              target_resource_pool_name, directory_name=target_folder_name):
-                return False, "create_linked_clone_cp", f"Failed linked clone for '{target_vm_name}'"
-        else:
-            logger.info(f"Creating full clone '{target_vm_name}' from '{base_vm_for_clone}'.")
-            if not vm_mgr.clone_vm(base_vm_for_clone, target_vm_name,
-                                   target_resource_pool_name, directory_name=target_folder_name):
-                return False, "clone_vm_cp", f"Failed full clone for '{target_vm_name}'"
+                logger.info(f"Creating full clone '{target_vm_name}' from '{base_vm_for_clone}'.")
+                clone_successful = vm_mgr.clone_vm(base_vm_for_clone, target_vm_name, target_resource_pool_name, directory_name=target_folder_name)
 
-        # Network Configuration for the NEWLY CLONED VM (target_vm_name)
-        # Always get network layout from the original base template specified in config
-        original_template_for_net = component["base_vm"]
-        base_vm_network_layout = vm_mgr.get_vm_network(original_template_for_net)
-        if base_vm_network_layout is None:
-            return False, "get_base_net_layout_cp", f"Could not get network layout from template '{original_template_for_net}'"
-        
-        # Update network dict using the target pod number
-        target_pod_network_config = update_network_dict(base_vm_network_layout, target_pod_number)
-        logger.info(f"Updating network for '{target_vm_name}' for pod {target_pod_number}.")
-        if not vm_mgr.update_vm_network(target_vm_name, target_pod_network_config):
-            return False, "update_vm_network_cp", f"Failed updating network for '{target_vm_name}'"
-        # (Optional) connect_networks_to_vm if your update_vm_network doesn't handle connect state.
-        if not vm_mgr.connect_networks_to_vm(target_vm_name, target_pod_network_config):
-            return False, "connect_networks_to_vm_cp", f"Failed connecting networks for '{target_vm_name}'"
+            if not clone_successful:
+                raise Exception(f"Clone operation failed for '{target_vm_name}'")
 
+            # Network Configuration
+            original_template_for_net = component["base_vm"]
+            base_vm_network_layout = vm_mgr.get_vm_network(original_template_for_net)
+            if base_vm_network_layout is None:
+                raise Exception(f"Could not get network layout from template '{original_template_for_net}'")
+            
+            target_pod_network_config = update_network_dict(base_vm_network_layout, target_pod_number)
+            if not vm_mgr.update_vm_network(target_vm_name, target_pod_network_config) or not vm_mgr.connect_networks_to_vm(target_vm_name, target_pod_network_config):
+                raise Exception(f"Failed to configure network for '{target_vm_name}'")
 
-        # Create "base" snapshot on the newly cloned and configured VM
-        target_vm_base_snapshot_name = "base"
-        if not vm_mgr.snapshot_exists(target_vm_name, target_vm_base_snapshot_name):
-            logger.info(f"Creating '{target_vm_base_snapshot_name}' snapshot on target VM '{target_vm_name}'.")
-            if not vm_mgr.create_snapshot(target_vm_name, target_vm_base_snapshot_name,
-                                          description=f"Base snapshot of '{target_vm_name}' for Pod {target_pod_number}"):
-                return False, "create_target_vm_snapshot_cp", f"Failed creating snapshot on '{target_vm_name}'"
+            # Create "base" snapshot on the new VM
+            if not vm_mgr.create_snapshot(target_vm_name, "base", description=f"Base snapshot of '{target_vm_name}'"):
+                raise Exception(f"Failed creating 'base' snapshot on '{target_vm_name}'")
 
-        # Maestro CD drive logic for the TARGET VM
-        if "maestro" in component["component_name"].lower() and "maestro" in pod_config["course_name"].lower():
-            logger.info(f"Configuring CD drive for Maestro component '{target_vm_name}'.")
-            cd_drive_info = vm_mgr.get_cd_drive(target_vm_name)
-            drive_name = "CD/DVD drive 1"
-            iso_type = "Datastore ISO file"
-            # Determine datastore based on target host_fqdn
-            datastore_name = "datastore2-ho" if "hotshot" in host_fqdn_target.lower() else "keg2"
-            iso_path = f"podiso/pod-{target_pod_number}-a.iso" # ISO specific to target pod
-            if not vm_mgr.modify_cd_drive(target_vm_name, drive_name, iso_type, datastore_name, iso_path, connected=True):
-                return False, "modify_cd_drive_maestro_cp", f"Failed modifying CD drive for Maestro VM '{target_vm_name}'"
+            # Maestro CD drive logic
+            if "maestro" in component["component_name"].lower() and "maestro" in pod_config["course_name"].lower():
+                if not vm_mgr.modify_cd_drive(target_vm_name, "CD/DVD drive 1", "Datastore ISO file", "datastore2-ho" if "hotshot" in host_fqdn_target.lower() else "keg2", f"podiso/pod-{target_pod_number}-a.iso", connected=True):
+                    raise Exception(f"Failed modifying CD drive for Maestro VM '{target_vm_name}'")
+        except Exception as e:
+            error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
+            logger.error(error_msg)
+            component_errors.append(error_msg)
+            overall_component_success = False
+            continue # Continue to the next component
 
-    # STEP 5: Power on components for the TARGET pod
-    # Ensure names used for power-on are the final target VM names
+    successful_components = [
+        c for c in components_to_process 
+        if f"Component '{c.get('component_name', 'Unknown')}' failed" not in "".join(component_errors)
+    ]
     vm_names_to_power_on = [
         component["clone_name"].replace("{X}", str(target_pod_number))
-        for component in components_to_process if component.get("state") != "poweroff"
+        for component in successful_components if component.get("state") != "poweroff"
     ]
+    
+    power_on_failures = []
     if vm_names_to_power_on:
         with ThreadPoolExecutor(max_workers=thread) as executor:
             futures = {executor.submit(vm_mgr.poweron_vm, vm_name): vm_name for vm_name in vm_names_to_power_on}
@@ -259,9 +254,20 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
                 vm_name_powered = futures[future]
                 try:
                     if not future.result():
-                        return False, "poweron_vm_cp", f"Failed powering on VM '{vm_name_powered}'"
+                        # Don't return, just log and track failure
+                        power_on_failures.append(vm_name_powered)
                 except Exception as e:
-                    return False, "poweron_vm_exception_cp", f"Exception powering on VM '{vm_name_powered}': {e}"
+                    power_on_failures.append(f"{vm_name_powered} (Exception: {e})")
+
+    if power_on_failures:
+        error_msg = f"Failed to power on VMs: {', '.join(power_on_failures)}"
+        logger.error(error_msg)
+        component_errors.append(error_msg)
+        overall_component_success = False
+    
+    if not overall_component_success:
+        final_error_message = "; ".join(component_errors)
+        return False, "component_build_failure", final_error_message
     
     logger.info(f"Successfully built Checkpoint pod {target_pod_number}.")
     return True, None, None

@@ -4,6 +4,7 @@ from managers.network_manager import NetworkManager
 from managers.folder_manager import FolderManager
 from monitor.prtg import PRTGManager
 from concurrent.futures import ThreadPoolExecutor
+from pyVmomi import vim
 from tqdm import tqdm
 
 import logging
@@ -231,82 +232,92 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     snapshot_name = "base"
     target_folder_name = f'pa-pod{pod}-folder'
     
-    
-    # Optionally filter components.
-    components_to_build = pod_config["components"]
-    if selected_components:
-        components_to_build = [
-            component for component in components_to_build
-            if component["component_name"] in selected_components
-        ]
-    
-    # STEP 1: Create networks.
+    # ... (Network, RP, Folder setup remains as fail-fast) ...
     for network in tqdm(pod_config['networks'], desc=f"Pod {pod} → Setting up networks", unit="net"):
         solved_port_groups = solve_vlan_id(network["port_groups"])
-        # If network creation fails, return immediately.
         if not nm.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
     
-    # STEP 2: Create resource pool.
     parent_resource_pool = f"pa-{pod_config['host_fqdn'][0:2]}"
-        
     group_name = f'pa-pod{pod_config["pod_number"]}'
     if not ResourcePoolManager(service_instance).create_resource_pool(parent_resource_pool, group_name, host_fqdn=pod_config["host_fqdn"]):
         return False, "create_resource_pool", f"Failed creating resource pool {group_name}"
-    vmm.logger.info(f'Created resource pool {group_name}')
-
-    logger.info(f"Ensuring folder '{target_folder_name}' for pod {pod}.")
-    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name): # Parent folder is vendor code
+    
+    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name):
         return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
-    # if not folder_mgr.assign_user_to_folder(target_folder_name, domain_user, role_name):
-    #     return False, "assign_role_to_folder", f"Failed assigning role to '{target_folder_name}'"
-    
-    # STEP 3: Clone/configure each component.
+
+    components_to_build = pod_config["components"]
+    if selected_components:
+        components_to_build = [c for c in components_to_build if c["component_name"] in selected_components]
+
+    overall_component_success = True
+    component_errors = []
+    successful_clones = []
+
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm"):
-        if rebuild:
-            vmm.logger.info(f'Deleting VM {component["clone_name"]}')
-            if not vmm.delete_vm(component["clone_name"]):
-                return False, "delete_vm", f"Failed deleting VM {component['clone_name']}"
-        if not full:
-            if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", "Base snapshot"):
-                return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
-            vmm.logger.info(f'Creating linked clone for {component["clone_name"]}.')
-            if not vmm.create_linked_clone(component["base_vm"], component["clone_name"], "base", 
-                                           group_name, directory_name=target_folder_name):
-                return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
-        else:
-            if not vmm.clone_vm(component["base_vm"], component["clone_name"], 
-                                group_name, directory_name=target_folder_name):
-                return False, "clone_vm", f"Failed cloning VM for {component['clone_name']}"
-        
-        # Update VM network settings.
-        vm_network = vmm.get_vm_network(component["base_vm"])
-        updated_vm_network = update_network_dict_1110(vm_network, pod)
-        if not vmm.update_vm_network(component["clone_name"], updated_vm_network):
-            return False, "update_vm_network", f"Failed updating network for {component['clone_name']}"
-        
-        if "firewall" in component["component_name"]:
-            if not vmm.download_vmx_file(component["clone_name"], f"/tmp/{component['clone_name']}.vmx"):
-                return False, "download_vmx_file", f"Failed downloading vmx file for {component['clone_name']}"
-            if not vmm.update_vm_uuid(f"/tmp/{component['clone_name']}.vmx", component["uuid"]):
-                return False, "update_vm_uuid", f"Failed updating uuid for {component['clone_name']}"
-            if not vmm.upload_vmx_file(component["clone_name"], f"/tmp/{component['clone_name']}.vmx"):
-                return False, "upload_vmx_file", f"Failed uploading vmx file for {component['clone_name']}"
-            if not vmm.verify_uuid(component["clone_name"], component["uuid"]):
-                return False, "verify_uuid", f"UUID verification failed for {component['clone_name']}"
-        
-        if not vmm.snapshot_exists(component["clone_name"], snapshot_name):
+        try:
+            if rebuild:
+                if not vmm.delete_vm(component["clone_name"]):
+                    raise Exception(f"Rebuild failed: Could not delete VM {component['clone_name']}")
+
+            if not vmm.get_obj([vim.VirtualMachine], component["base_vm"]):
+                raise Exception(f"Base VM '{component['base_vm']}' not found.")
+
+            clone_successful = False
+            if not full:
+                if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", "Base snapshot"):
+                    raise Exception(f"Failed to create base snapshot on {component['base_vm']}")
+                clone_successful = vmm.create_linked_clone(component["base_vm"], component["clone_name"], "base", group_name, directory_name=target_folder_name)
+            else:
+                clone_successful = vmm.clone_vm(component["base_vm"], component["clone_name"], group_name, directory_name=target_folder_name)
+            
+            if not clone_successful:
+                raise Exception("Clone operation failed")
+
+            vm_network = vmm.get_vm_network(component["base_vm"])
+            updated_vm_network = update_network_dict_1110(vm_network, pod)
+            if not vmm.update_vm_network(component["clone_name"], updated_vm_network):
+                raise Exception("Failed to update VM network")
+            
+            if "firewall" in component["component_name"]:
+                vmx_path = f"/tmp/{component['clone_name']}.vmx"
+                if not vmm.download_vmx_file(component["clone_name"], vmx_path) or \
+                   not vmm.update_vm_uuid(vmx_path, component["uuid"]) or \
+                   not vmm.upload_vmx_file(component["clone_name"], vmx_path) or \
+                   not vmm.verify_uuid(component["clone_name"], component["uuid"]):
+                   raise Exception("Failed UUID update process")
+
             if not vmm.create_snapshot(component["clone_name"], snapshot_name, description=f"Snapshot of {component['clone_name']}"):
-                return False, "create_snapshot", f"Failed creating snapshot for {component['clone_name']}"
-    
-    # STEP 4: Power on VMs in parallel.
+                raise Exception("Failed to create snapshot on clone")
+            
+            successful_clones.append(component)
+
+        except Exception as e:
+            error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
+            logger.error(error_msg)
+            component_errors.append(error_msg)
+            overall_component_success = False
+            continue
+
+    power_on_failures = []
     with ThreadPoolExecutor() as executor:
-        futures = {executor.submit(vmm.poweron_vm, comp["clone_name"]): comp["clone_name"] for comp in components_to_build}
+        futures = {executor.submit(vmm.poweron_vm, comp["clone_name"]): comp["clone_name"] for comp in successful_clones}
         for future in tqdm(futures, desc=f"Pod {pod} → Powering on", unit="vm"):
-            if not future.result():
-                failed_vm = futures[future]
-                vmm.logger.error(f"Failed powering on {failed_vm}")
-                return False, "poweron_vm", f"Failed powering on {failed_vm}"
+            try:
+                if not future.result():
+                    power_on_failures.append(futures[future])
+            except Exception as e:
+                power_on_failures.append(f"{futures[future]} (Exception: {e})")
+
+    if power_on_failures:
+        error_msg = f"Failed to power on VMs: {', '.join(power_on_failures)}"
+        component_errors.append(error_msg)
+        overall_component_success = False
+
+    if not overall_component_success:
+        final_error_message = "; ".join(component_errors)
+        return False, "component_build_failure", final_error_message
+        
     vmm.logger.info('Power-on all VMs.')
     return True, None, None
 
@@ -319,81 +330,86 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
     snapshot_name = "base"
     target_folder_name = f'pa-cortex-folder'
     
-    # Optionally filter components.
-    components_to_build = pod_config["components"]
-    if selected_components:
-        components_to_build = [
-            component for component in components_to_build
-            if component["component_name"] in selected_components
-        ]
-    
-    # STEP 1: Network setup.
+    # ... (Network and Folder setup remains fail-fast) ...
     for network in tqdm(pod_config["networks"], desc=f"Pod {pod} → Network setup", unit="net"):
         solved_port_groups = solve_vlan_id(network["port_groups"])
         if not network_manager.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
     
-    logger.info(f"Ensuring folder '{target_folder_name}' for pod {pod}.")
-    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name): # Parent folder is vendor code
+    if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name):
         return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
-    
-    # STEP 2: Clone/configure each component.
+
+    components_to_build = pod_config["components"]
+    if selected_components:
+        components_to_build = [c for c in components_to_build if c["component_name"] in selected_components]
+
+    overall_component_success = True
+    component_errors = []
+    successful_clones = []
+
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm"):
-        host_prefix = pod_config["host_fqdn"].split(".")[0]
-        if host_prefix == "cliffjumper":
-            resource_pool = component["component_name"] + "-cl"
-        elif host_prefix == "apollo":
-            resource_pool = component["component_name"] + "-ap"
-        elif host_prefix == "nightbird":
-            resource_pool = component["component_name"] + "-ni"
-        elif host_prefix == "ultramagnus":
-            resource_pool = component["component_name"] + "-ul"
-        elif host_prefix == "unicron":
-            resource_pool = component["component_name"] + "-un"
-        elif host_prefix == "hotshot":
-            resource_pool = component["component_name"] + "-ho"
-        else:
-            resource_pool = component["component_name"]
+        try:
+            host_prefix = pod_config["host_fqdn"].split(".")[0]
+            host_suffix_map = {"cliffjumper": "-cl", "apollo": "-ap", "nightbird": "-ni", "ultramagnus": "-ul", "unicron": "-un", "hotshot": "-ho"}
+            resource_pool = component["component_name"] + host_suffix_map.get(host_prefix, "")
 
-        if rebuild:
-            if not vm_manager.delete_vm(component["clone_name"]):
-                return False, "delete_vm", f"Failed deleting VM {component['clone_name']}"
-        
-        if not full:
-            if not vm_manager.snapshot_exists(component["base_vm"], "base") and not vm_manager.create_snapshot(component["base_vm"], "base", "Base snapshot"):
-                return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
-            if not vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool, directory_name=target_folder_name):
-                return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
-        else:
-            if not vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool, directory_name=target_folder_name):
-                return False, "clone_vm", f"Failed cloning VM for {component['clone_name']}"
-        
-        # STEP 3: Update VM network, connect networks and create snapshot.
-        vm_network = vm_manager.get_vm_network(component["base_vm"])
-        updated_vm_network = update_network_dict_cortex(vm_network, pod)
-        if not vm_manager.update_vm_network(component["clone_name"], updated_vm_network):
-            return False, "update_vm_network", f"Failed updating network for {component['clone_name']}"
-        if not vm_manager.connect_networks_to_vm(component["clone_name"], updated_vm_network):
-            return False, "connect_networks", f"Failed connecting networks for {component['clone_name']}"
-        if not vm_manager.snapshot_exists(component["clone_name"], snapshot_name):
+            if rebuild:
+                if not vm_manager.delete_vm(component["clone_name"]):
+                    raise Exception(f"Rebuild failed: Could not delete VM {component['clone_name']}")
+
+            if not vm_manager.get_obj([vim.VirtualMachine], component["base_vm"]):
+                raise Exception(f"Base VM '{component['base_vm']}' not found.")
+
+            clone_successful = False
+            if not full:
+                if not vm_manager.snapshot_exists(component["base_vm"], "base") and not vm_manager.create_snapshot(component["base_vm"], "base", "Base snapshot"):
+                    raise Exception(f"Failed to create base snapshot on {component['base_vm']}")
+                clone_successful = vm_manager.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool, directory_name=target_folder_name)
+            else:
+                clone_successful = vm_manager.clone_vm(component["base_vm"], component["clone_name"], resource_pool, directory_name=target_folder_name)
+
+            if not clone_successful:
+                raise Exception("Clone operation failed")
+
+            vm_network = vm_manager.get_vm_network(component["base_vm"])
+            updated_vm_network = update_network_dict_cortex(vm_network, pod)
+            if not vm_manager.update_vm_network(component["clone_name"], updated_vm_network) or \
+               not vm_manager.connect_networks_to_vm(component["clone_name"], updated_vm_network):
+                raise Exception("Failed network configuration")
+            
             if not vm_manager.create_snapshot(component["clone_name"], snapshot_name, description=f"Snapshot of {component['clone_name']}"):
-                return False, "create_snapshot", f"Failed creating snapshot for {component['clone_name']}"
-    
-    # STEP 4: Power on VMs in parallel (if not marked as "poweroff").
-    to_power = []
-    for component in components_to_build:
-        if component.get("state") != "poweroff":
-            to_power.append(component["clone_name"])
-    
-    with ThreadPoolExecutor() as executor:
-        futures = {executor.submit(vm_manager.poweron_vm, name): name for name in to_power}
-        for future in tqdm(futures, desc=f"Pod {pod} → Powering on", unit="vm"):
-            if not future.result():
-                failed_vm = futures[future]
-                vm_manager.logger.error(f"Failed powering on {failed_vm}")
-                return False, "poweron_vm", f"Failed powering on {failed_vm}"
-    return True, None, None
+                raise Exception("Failed to create snapshot on clone")
 
+            successful_clones.append(component)
+
+        except Exception as e:
+            error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
+            logger.error(error_msg)
+            component_errors.append(error_msg)
+            overall_component_success = False
+            continue
+
+    to_power = [comp for comp in successful_clones if comp.get("state") != "poweroff"]
+    power_on_failures = []
+    with ThreadPoolExecutor() as executor:
+        futures = {executor.submit(vm_manager.poweron_vm, comp["clone_name"]): comp["clone_name"] for comp in to_power}
+        for future in tqdm(futures, desc=f"Pod {pod} → Powering on", unit="vm"):
+            try:
+                if not future.result():
+                    power_on_failures.append(futures[future])
+            except Exception as e:
+                power_on_failures.append(f"{futures[future]} (Exception: {e})")
+
+    if power_on_failures:
+        error_msg = f"Failed to power on VMs: {', '.join(power_on_failures)}"
+        component_errors.append(error_msg)
+        overall_component_success = False
+
+    if not overall_component_success:
+        final_error_message = "; ".join(component_errors)
+        return False, "component_build_failure", final_error_message
+        
+    return True, None, None
 
 
 def teardown_cortex(service_instance, pod_config):
