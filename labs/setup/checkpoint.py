@@ -227,7 +227,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
                 raise Exception(f"Failed creating 'base' snapshot on '{target_vm_name}'")
 
             # Maestro CD drive logic
-            if "maestro" in component["component_name"].lower() and "maestro" in pod_config["course_name"].lower():
+            if "maestro" in component["component_name"].lower() and "maestro-r81" in pod_config["course_name"].lower():
                 if not vm_mgr.modify_cd_drive(target_vm_name, "CD/DVD drive 1", "Datastore ISO file", "datastore2-ho" if "hotshot" in host_fqdn_target.lower() else "keg2", f"podiso/pod-{target_pod_number}-a.iso", connected=True):
                     raise Exception(f"Failed modifying CD drive for Maestro VM '{target_vm_name}'")
         except Exception as e:
