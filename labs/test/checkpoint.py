@@ -126,12 +126,7 @@ def fetch_course_config(pod, group, verbose, print_lock):
             print(f"❌ MongoDB query failed: {e}")
         return [], []
 
-# --- FIX: Re-implemented the US host IP translation logic ---
 def resolve_pod_ip(ip_raw, pod, host_key):
-    """
-    Resolves the pod IP, including the special NAT rule for US hosts.
-    """
-    # First, handle the pod number substitution (+X)
     if "+X" in ip_raw:
         base, _, offset = ip_raw.partition("+X")
         octets = base.split(".")
@@ -140,11 +135,9 @@ def resolve_pod_ip(ip_raw, pod, host_key):
     else:
         resolved_ip = ip_raw
 
-    # Next, apply the US host octet-swapping logic if applicable
     is_us_host = host_key.lower() in ["hotshot", "trypticon"]
     octets = resolved_ip.split('.')
     
-    # Check if it's a US host and the second octet is '30'
     if is_us_host and len(octets) == 4 and octets[1] == '30':
         octets[1] = '26'
         return ".".join(octets)
@@ -152,7 +145,8 @@ def resolve_pod_ip(ip_raw, pod, host_key):
     return resolved_ip
 
 def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
-    host = f"cpvr{pod}.us" if host_key in ["hotshot", "trypticon"] else f"cpvr{pod}"
+    # --- FIX: Construct the correct hostname at the beginning ---
+    host = f"cpvr{pod}.us" if host_key.lower() in ["hotshot", "trypticon"] else f"cpvr{pod}"
     check_results = []
     
     client = paramiko.SSHClient()
@@ -174,7 +168,6 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                 print(f"✅ SSH to {host} successful")
 
         for _, clone_name_template, raw_ip, port in components:
-            # --- FIX: Pass the host_key to the resolver function ---
             ip = resolve_pod_ip(raw_ip, pod, host_key)
             display_name = clone_name_template.replace('{X}', str(pod)) if clone_name_template else "Unknown Component"
             status = "UNKNOWN"
@@ -212,7 +205,13 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                     with print_lock: print(f"   -> Running: {command}")
                 _, stdout, _ = client.exec_command(command)
                 output = stdout.read().decode()
-                status = "UP" if f"{port}/tcp open" in output else "DOWN"
+                # --- FIX: Handle 'open' and 'filtered' states from nmap ---
+                if f"{port}/tcp open" in output:
+                    status = "UP"
+                elif f"{port}/tcp filtered" in output:
+                    status = "FILTERED"
+                else:
+                    status = "DOWN"
             
             check_results.append({'pod': pod, 'component': display_name, 'ip': ip, 'port': port, 'status': status, 'host': host})
 
@@ -231,7 +230,8 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
             table_data = []
             for r in check_results:
                 row = [r['component'], r['ip'], r['host'], r['port'], r['status']]
-                if 'DOWN' in r['status'] or 'FAILED' in r['status']:
+                # --- FIX: Color 'FILTERED' status red as well ---
+                if r['status'] in ['DOWN', 'FAILED', 'FILTERED']:
                     row[4] = f"{RED}{r['status']}{END}"
                 table_data.append(row)
             print(tabulate(table_data, headers=headers, tablefmt="fancy_grid"))
