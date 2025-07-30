@@ -252,33 +252,81 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             return [{"status": "failed", "error": err_msg}]
 
     # --- Mode 3: Tag-based test mode (No changes here) ---
+    # FILE: commands.py
+
+    # --- Mode 3: Tag-based test mode ---
     if args_dict.get('tag'):
         tag = args_dict.get('tag')
         logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
+        
+        if any(k in args_dict for k in ['vendor', 'start_pod', 'host', 'group'] if k != 'tag'):
+            logger.warning(f"Conflicting arguments provided with --tag. Using parameters from tag '{tag}'.")
+        
         try:
-            if any(k in args_dict for k in ['vendor', 'start_pod', 'host', 'group'] if k != 'tag'):
-                logger.warning(f"Conflicting arguments provided with --tag. Using parameters from tag '{tag}'.")
-            
-            test_params = get_test_params_by_tag(tag)
-            if not test_params:
-                err_msg = f"Could not retrieve valid test parameters for tag '{tag}'. The tag might not exist or the allocation may be invalid."
+            jobs = get_test_params_by_tag(tag)
+            if not jobs:
+                err_msg = f"Could not retrieve any valid test jobs for tag '{tag}'. The tag might not exist or its courses may be invalid."
                 logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
                 return [{"status": "failed", "error": err_msg}]
 
-            args_dict.update(test_params)
-            logger.info(f"Successfully fetched parameters for tag '{tag}': {test_params}")
+            logger.info(f"Successfully fetched {len(jobs)} test job(s) for tag '{tag}'.")
+            
+            # Since a tag can have multiple vendors, we can't assume one.
+            # We'll use the vendor from the first job for display purposes, or a generic one.
+            display_vendor = jobs[0].get('vendor', 'multi-vendor').upper()
+            display_test_jobs(jobs, display_vendor)
+
+            all_results = []
+            all_failures = []
             print_lock = threading.Lock()
-            results = execute_single_test_worker(args_dict, print_lock)
-            for r in results:
-                if isinstance(r, dict):
-                    r['tag'] = tag
-            return results
+            with ThreadPoolExecutor(max_workers=thread_count) as executor:
+                future_to_job = {}
+                for job in jobs:
+                    # The job dictionary from get_test_params_by_tag already has everything needed
+                    job_args_dict = job.copy()
+                    job_args_dict["component"] = args_dict.get("component")
+                    future = executor.submit(execute_single_test_worker, job_args_dict, print_lock)
+                    future_to_job[future] = job
+                
+                for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
+                    try:
+                        results = future.result()
+                        # Tag is already in the job, so it will be in the results
+                        all_results.extend(results)
+                        for res in results:
+                            status_upper = res.get('status', '').upper()
+                            if status_upper not in ['UP', 'SUCCESS', 'OPEN', 'FILTERED'] and not status_upper.startswith('SKIPPED'):
+                                all_failures.append(res)
+                    except Exception as e:
+                        job_info = future_to_job[future]
+                        logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
+                        failure_report = {'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
+                                          'status': 'EXCEPTION', 'error': str(e)}
+                        all_failures.append(failure_report)
+                        all_results.append(failure_report)
+
+            if all_failures:
+                print("\n" + "="*80)
+                print("                       CONSOLIDATED ERROR REPORT")
+                print("="*80)
+                headers = ["Pod/Class", "Component", "IP Address", "Port", "Status/Error"]
+                error_table_data = []
+                for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
+                    pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
+                    status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
+                    error_table_data.append([pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'), fail.get('port', 'N/A'), status])
+                print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
+                print("="*80)
+            else:
+                print("\n✅ All tests completed successfully with no reported failures.")
+
+            return all_results
 
         except Exception as e:
-            err_msg = f"An unexpected error occurred while fetching parameters for tag '{tag}': {e}"
+            err_msg = f"An unexpected error occurred while processing tag '{tag}': {e}"
             logger.error(err_msg, exc_info=True); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
-
+        
     # --- Mode 4: Manual test mode with range ---
     # --- THIS ENTIRE SECTION IS REPLACED WITH THE NEW LOGIC ---
     is_manual_range_mode = args_dict.get('start_pod') is not None and args_dict.get('end_pod') is not None

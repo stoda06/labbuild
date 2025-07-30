@@ -256,15 +256,15 @@ def delete_from_database(tag: str, course_name: Optional[str] = None, pod_number
     except PyMongoError as e: logger.error(f"DB delete error (PyMongoError): {e}", exc_info=True); return False
     except Exception as e: logger.error(f"DB delete error: {e}", exc_info=True); return False
 
-def get_test_params_by_tag(tag: str) -> Optional[Dict[str, Any]]:
+def get_test_params_by_tag(tag: str) -> Optional[List[Dict[str, Any]]]:
     """
-    Queries the current allocations collection by tag to retrieve parameters for the test suite.
+    Queries the allocations by tag to retrieve parameters for all testable courses.
 
     Args:
         tag: The allocation tag string.
 
     Returns:
-        A dictionary containing test parameters, or None on failure.
+        A list of dictionaries, each containing test parameters for a course, or None.
     """
     try:
         with mongo_client() as client:
@@ -282,56 +282,51 @@ def get_test_params_by_tag(tag: str) -> Optional[Dict[str, Any]]:
                 logger.warning(f"Tag '{tag}' not found in current allocations.")
                 return None
 
-            if not doc.get('courses'):
+            courses = doc.get('courses')
+            if not courses:
                 logger.warning(f"Document for tag '{tag}' has no 'courses' array.")
                 return None
             
-            # Assume we always work with the first course in the list
-            course_info = doc['courses'][0]
-            vendor = course_info.get('vendor')
-            course_name = course_info.get('course_name') # <-- Get the course name
-            
-            if not vendor or not course_name:
-                logger.warning(f"Course in tag '{tag}' is missing a 'vendor' or 'course_name' field.")
-                return None
-            
-            # --- THIS IS THE CORRECTED LINE ---
-            params = {'vendor': vendor.lower(), 'group': course_name}
-            # --- END OF CORRECTION ---
-            
-            pod_details = course_info.get('pod_details', [])
-            if not pod_details:
-                logger.warning(f"No pod details found for course in tag '{tag}'.")
-                return None
+            all_jobs = []
+            for course_info in courses:
+                vendor = course_info.get('vendor')
+                course_name = course_info.get('course_name')
+                
+                if not vendor or not course_name:
+                    logger.warning(f"A course in tag '{tag}' is missing a 'vendor' or 'course_name'. Skipping.")
+                    continue
+                
+                params = {'vendor': vendor.lower(), 'group': course_name, 'course_name': course_name, 'tag': tag}
+                
+                pod_details = course_info.get('pod_details', [])
+                if not pod_details:
+                    logger.warning(f"No pod details found for course '{course_name}' in tag '{tag}'. Skipping.")
+                    continue
 
-            if vendor.lower() == 'f5':
-                # F5 structure parsing
-                class_details = pod_details[0]
-                params['host'] = class_details.get('host')
-                params['class_number'] = class_details.get('class_number')
-                pod_numbers = [p.get('pod_number') for p in class_details.get('pods', []) if p.get('pod_number') is not None]
-                if not pod_numbers:
-                    logger.warning(f"No pods found for F5 class in tag '{tag}'.")
-                    return None
-                params['start_pod'] = min(pod_numbers)
-                params['end_pod'] = max(pod_numbers)
-            else:
-                # Non-F5 structure parsing
+                # Use the host from the first pod_detail as representative for the job
                 params['host'] = pod_details[0].get('host')
-                pod_numbers = [p.get('pod_number') for p in pod_details if p.get('pod_number') is not None]
-                if not pod_numbers:
-                    logger.warning(f"No pods found for tag '{tag}'.")
-                    return None
-                params['start_pod'] = min(pod_numbers)
-                params['end_pod'] = max(pod_numbers)
-                params['class_number'] = None
-            
-            # Final validation of extracted parameters
-            if not params.get('host') or params.get('start_pod') is None or params.get('end_pod') is None:
-                logger.error(f"Could not extract all required test parameters (host, pods) for tag '{tag}'.")
-                return None
+                if not params['host']:
+                    logger.warning(f"Host missing in pod_details for course '{course_name}' in tag '{tag}'. Skipping.")
+                    continue
 
-            return params
+                if vendor.lower() == 'f5':
+                    class_details = pod_details[0]
+                    params['class_number'] = class_details.get('class_number')
+                    pod_numbers = [p.get('pod_number') for p in class_details.get('pods', []) if p.get('pod_number') is not None]
+                    if pod_numbers:
+                        params['start_pod'] = min(pod_numbers)
+                        params['end_pod'] = max(pod_numbers)
+                else: # Non-F5
+                    pod_numbers = [p.get('pod_number') for p in pod_details if p.get('pod_number') is not None]
+                    if pod_numbers:
+                        params['start_pod'] = min(pod_numbers)
+                        params['end_pod'] = max(pod_numbers)
+
+                # Only add the job if it has a range to test
+                if params.get('start_pod') is not None or params.get('class_number') is not None:
+                    all_jobs.append(params)
+
+            return all_jobs if all_jobs else None
 
     except PyMongoError as e:
         logger.error(f"Get Test Params error (PyMongoError): {e}", exc_info=True)
