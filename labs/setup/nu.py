@@ -17,8 +17,12 @@ def update_network_dict(network_dict, pod_number):
             mac_parts = mac_address_preset.split(':')
             mac_parts[-1] = pod_hex
             details['mac_address'] = ':'.join(mac_parts)
-        else:
-            details['network_name'] = network_name
+        elif 'nuvr-1' or 'nuvr-0' in details['network_name']:
+            details['network_name'] = f"nuvr-{pod_number}"
+        elif 'nu-vr-1' in details['network_name']:
+            details['network_name'] = f"nu-vr-{pod_number}"
+        elif 'vgt-1' or 'vgt-0' in details['network_name']:
+            details['network_name'] = f"vgt-{pod_number}"
 
     return network_dict
 
