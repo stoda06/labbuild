@@ -63,11 +63,10 @@ def _format_pod_ranges(numbers: List[int]) -> str:
         
     return ", ".join(ranges)
 
-
 def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[OperationLogger] = None) -> List[Dict[str, Any]]:
     """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
     
-    # --- Mode 0: Database listing mode ---
+    # --- Mode 0: Database listing mode (No changes here) ---
     if args_dict.get('db'):
         logger.info("Database listing mode invoked for 'test' command.")
         
@@ -90,7 +89,6 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                 
                 query = {}
                 if vendor_filter:
-                    # Case-insensitive match for vendor
                     query["courses.vendor"] = {"$regex": f"^{vendor_filter}$", "$options": "i"}
                 
                 logger.debug(f"Querying allocations with: {query}")
@@ -103,11 +101,9 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                         course_name = course.get("course_name", "N/A")
                         
                         all_hosts = set()
-                        all_item_numbers = [] # Holds pod numbers or class numbers based on vendor
+                        all_item_numbers = [] 
 
                         is_f5 = vendor.lower() == 'f5'
-
-                        # In F5, we filter by class number. In others, by pod number.
                         item_key = "class_number" if is_f5 else "pod_number"
                         
                         for detail in course.get("pod_details", []):
@@ -123,7 +119,6 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                                 logger.warning(f"Skipping non-integer {item_key} '{item_num_raw}' in course '{course_name}'.")
                                 continue
 
-                            # Apply range filter if provided
                             if start_filter is not None and end_filter is not None:
                                 if not (start_filter <= item_num <= end_filter):
                                     continue
@@ -131,7 +126,6 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                             all_hosts.add(host)
                             all_item_numbers.append(item_num)
                         
-                        # Only add a row if there are items left after filtering
                         if all_item_numbers:
                             range_str = _format_pod_ranges(all_item_numbers)
                             hosts_str = ", ".join(sorted(list(all_hosts)))
@@ -146,7 +140,6 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
         if not processed_data:
             print("\nNo allocations found matching the specified criteria.")
         else:
-            # Sort data by tag, then course name for consistent output
             processed_data.sort(key=lambda x: (x[0], x[2]))
             headers = ["Tag", "Vendor", "Course Name", "Host(s)", "Pod/Class Range"]
             print("\n" + "="*80)
@@ -159,10 +152,10 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
 
     thread_count = args_dict.get('thread', 10)
 
-    # --- Mode 1: Vendor-wide test mode ---
+    # --- Mode 1: Vendor-wide test mode (No changes here) ---
     is_vendor_mode = (args_dict.get('vendor') and not args_dict.get('tag') and
                       args_dict.get('start_pod') is None and args_dict.get('end_pod') is None and
-                      args_dict.get('class_number') is None) # <-- Added class_number check
+                      args_dict.get('class_number') is None)
     if is_vendor_mode:
         vendor = args_dict['vendor']
         logger.info(f"Vendor-wide test mode for '{vendor}' with {thread_count} threads.")
@@ -192,10 +185,15 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
                 try:
                     results = future.result()
+                    job_info = future_to_job[future]
+                    tag = job_info.get('tag')
+                    if tag:
+                        for res in results:
+                            if isinstance(res, dict): res['tag'] = tag
                     all_results.extend(results)
                     for res in results:
                         status_upper = res.get('status', '').upper()
-                        if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
+                        if status_upper not in ['UP', 'SUCCESS', 'OPEN', 'FILTERED'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
@@ -225,7 +223,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
 
         return all_results
 
-    # --- Mode 2: Component listing request ---
+    # --- Mode 2: Component listing request (No changes here) ---
     if args_dict.get('component') == '?':
         course_name = args_dict.get('group')
         if not course_name:
@@ -253,7 +251,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-    # --- Mode 3: Tag-based test mode ---
+    # --- Mode 3: Tag-based test mode (No changes here) ---
     if args_dict.get('tag'):
         tag = args_dict.get('tag')
         logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
@@ -263,14 +261,18 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             
             test_params = get_test_params_by_tag(tag)
             if not test_params:
-                err_msg = f"Could not retrieve valid test parameters for tag '{tag}'."
+                err_msg = f"Could not retrieve valid test parameters for tag '{tag}'. The tag might not exist or the allocation may be invalid."
                 logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
                 return [{"status": "failed", "error": err_msg}]
 
             args_dict.update(test_params)
             logger.info(f"Successfully fetched parameters for tag '{tag}': {test_params}")
             print_lock = threading.Lock()
-            return execute_single_test_worker(args_dict, print_lock)
+            results = execute_single_test_worker(args_dict, print_lock)
+            for r in results:
+                if isinstance(r, dict):
+                    r['tag'] = tag
+            return results
 
         except Exception as e:
             err_msg = f"An unexpected error occurred while fetching parameters for tag '{tag}': {e}"
@@ -278,6 +280,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             return [{"status": "failed", "error": err_msg}]
 
     # --- Mode 4: Manual test mode with range ---
+    # --- THIS ENTIRE SECTION IS REPLACED WITH THE NEW LOGIC ---
     is_manual_range_mode = args_dict.get('start_pod') is not None and args_dict.get('end_pod') is not None
     is_manual_class_mode = args_dict.get('vendor', '').lower() == 'f5' and args_dict.get('class_number') is not None
 
@@ -292,16 +295,16 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
         start_num = args_dict.get('start_pod')
         end_num = args_dict.get('end_pod')
 
-        # If class mode is active but no pod range is given, imply "all pods in class".
         if is_manual_class_mode and start_num is None:
             start_num = 0
-            end_num = 9999 # A sufficiently large range to include all possible pod numbers.
+            end_num = 9999
         elif start_num is None or end_num is None:
-            # This path is now only for non-F5 without a range, which is an error.
             err_msg = "Manual test requires --start-pod and --end-pod for non-F5 vendors."
             logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
+        # --- STAGE 1: SEARCH AND ENRICH ---
+        logger.info("Stage 1: Searching for matching allocations in the database...")
         jobs = get_test_jobs_for_range(
             vendor=vendor,
             start_num=start_num,
@@ -310,12 +313,38 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             host_filter=args_dict.get('host'),
             group_filter=args_dict.get('group')
         )
+        
+        # --- STAGE 2: MANUAL OVERRIDE FALLBACK ---
         if not jobs:
-            err_msg = "No matching allocations found in the database for the specified criteria."
-            logger.warning(err_msg)
-            print(f"\nInfo: {err_msg}")
-            return [{"status": "completed_no_tasks"}]
+            logger.warning("No matching allocations found in the database. Attempting manual override.")
+            
+            # Check for mandatory arguments for a manual run
+            required_args = ['vendor', 'group', 'host', 'start_pod', 'end_pod']
+            if is_manual_class_mode:
+                required_args = ['vendor', 'group', 'host', 'class_number'] # F5 test needs class_number primarily
 
+            missing_args = [f"--{arg.replace('_', '-')}" for arg in required_args if args_dict.get(arg) is None]
+
+            if missing_args:
+                err_msg = f"Manual test requires the following arguments: {', '.join(missing_args)}"
+                logger.error(err_msg)
+                print(f"\nError: {err_msg}", file=sys.stderr)
+                return [{"status": "failed", "error": err_msg}]
+
+            logger.info("All required manual arguments provided. Creating a synthetic test job.")
+            # Create a single "job" from the provided arguments
+            manual_job = {
+                "vendor": args_dict['vendor'],
+                "course_name": args_dict['group'],
+                "host": args_dict['host'],
+                "tag": "MANUAL-TEST", # Use a placeholder tag
+                "start_pod": args_dict.get('start_pod'),
+                "end_pod": args_dict.get('end_pod'),
+                "class_number": args_dict.get('class_number')
+            }
+            jobs = [manual_job]
+
+        # From here, the execution is the same whether jobs came from DB or manual override
         display_test_jobs(jobs, args_dict['vendor'])
 
         all_results = []
@@ -333,10 +362,15 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
                 try:
                     results = future.result()
+                    job_info = future_to_job[future]
+                    tag = job_info.get('tag')
+                    if tag:
+                        for res in results:
+                            if isinstance(res, dict): res['tag'] = tag
                     all_results.extend(results)
                     for res in results:
                         status_upper = res.get('status', '').upper()
-                        if status_upper not in ['UP', 'SUCCESS', 'OPEN'] and not status_upper.startswith('SKIPPED'):
+                        if status_upper not in ['UP', 'SUCCESS', 'OPEN', 'FILTERED'] and not status_upper.startswith('SKIPPED'):
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
@@ -366,8 +400,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
     # --- Fallback Error ---
     err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod, or use --db to list allocations."
     logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-    return [{"status": "failed", "error": err_msg}]
-
+    return [{"status": "failed", "error": err_msg}] 
 # --- Modified setup_environment ---
 # Accepts args_dict instead of argparse.Namespace
 def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
