@@ -1558,3 +1558,64 @@ class VmManager(VCenter):
         latest_name, _ = find_highest_numbered_snap(vm.snapshot.rootSnapshotList, latest_name, highest_num)
         self.logger.debug(f"Determined latest snapshot name for {vm.name} as '{latest_name}'.")
         return latest_name
+    
+    def add_network_adapter(self, vm_name: str, network_name: str) -> bool:
+        """
+        Adds a new virtual network adapter (NIC) to a specified VM and connects it to a network.
+
+        This function will add the next available NIC (e.g., "Network adapter 2" if adapter 1 exists).
+        It uses the VirtualE1000 adapter type by default for broad compatibility and ensures the device
+        is configured to connect at power on. The VM should ideally be powered off for this operation.
+
+        :param vm_name: The name of the virtual machine to modify.
+        :param network_name: The name of the port group to connect the new NIC to.
+        :return: True if the network adapter was added successfully, False otherwise.
+        """
+        try:
+            # Step 1: Get the VM and Network objects
+            vm = self.get_obj([vim.VirtualMachine], vm_name)
+            if not vm:
+                self.logger.error(f"VM '{vm_name}' not found.")
+                return False
+
+            network = self.get_obj([vim.Network], network_name)
+            if not network:
+                self.logger.error(f"Network '{network_name}' not found.")
+                return False
+
+            # Step 2: Create the specification for the new network adapter
+            nic_spec = vim.vm.device.VirtualDeviceSpec()
+            nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+            
+            # Use VirtualE1000 as the default adapter type ---
+            nic = vim.vm.device.VirtualE1000e()
+            
+            # Define the network backing information (which network to connect to)
+            nic.backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo()
+            nic.backing.deviceName = network_name
+            nic.backing.network = network
+            
+            # Set connectable info
+            nic.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+            nic.connectable.startConnected = True
+            nic.connectable.allowGuestControl = True
+            
+            # Assign the NIC device to the device spec
+            nic_spec.device = nic
+
+            # Step 3: Create the main VM configuration spec
+            config_spec = vim.vm.ConfigSpec()
+            config_spec.deviceChange = [nic_spec]
+
+            # Step 4: Apply the change by reconfiguring the VM
+            task = vm.ReconfigVM_Task(spec=config_spec)
+            if self.wait_for_task(task):
+                self.logger.info(f"Successfully added new network adapter to VM '{vm_name}' on network '{network_name}'.")
+                return True
+            else:
+                self.logger.error(f"Task failed to add network adapter to VM '{vm_name}'.")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred while adding network adapter to '{vm_name}': {self.extract_error_message(e)}")
+            return False
