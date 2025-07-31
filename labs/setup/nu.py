@@ -1,106 +1,150 @@
 from managers.vm_manager import VmManager
 from managers.resource_pool_manager import ResourcePoolManager
 from monitor.prtg import PRTGManager
+from managers.network_manager import NetworkManager
 from tqdm import tqdm
 from pyVmomi import vim
 import logging
 
 logger = logging.getLogger(__name__)
 
-def update_network_dict(network_dict, pod_number):
-    pod_hex = format(pod_number, '02x')  # Convert pod number to a two-digit hexadecimal string
-    network_name = f'nuvr-{pod_number}'
+def update_network_dict(network_dict, pod_number, course_name="", component_name=""):
+    """
+    Conditionally updates network configurations based on the course and component.
+    - For 'nu-aapm-610', applies special rules for 'aapm', 'vr', and 'w10' components.
+    - For all other courses, applies the original default logic.
+    """
+    pod_hex = format(pod_number, '02x')
 
+    # --- MODIFICATION: Course-specific logic for nu-aapm-610 ---
+    if "aapm-610" in course_name:
+        logger.debug(f"Applying 'aapm-610' network rules for component '{component_name}' pod {pod_number}.")
+        updated_network_dict = {}
+        
+        # Sort adapters by label (e.g., "Network adapter 1", "Network adapter 2") to reliably find the "second" one
+        sorted_adapters = sorted(network_dict.keys())
+
+        for i, adapter_label in enumerate(sorted_adapters):
+            details = network_dict[adapter_label]
+            new_details = details.copy() # Start with a copy of original details
+
+            if "aapm" in component_name.lower():
+                # Requirement: All networks on 'aapm' VMs connect to 'vgt-X'
+                new_details['network_name'] = f"vgt-{pod_number}"
+
+            elif "vr" in component_name.lower():
+                # Requirement: The second network adapter connects to 'vgt-X'
+                if i == 1: # i is a zero-based index, so 1 is the second adapter
+                    new_details['network_name'] = f"vgt-{pod_number}"
+                else: # For other adapters (e.g., the first one, third, etc.)
+                    new_details['network_name'] = f"nuvr-{pod_number}"
+
+            elif "w10" in component_name.lower():
+                # Requirement: All networks on 'w10' connect to 'nu-vr-X' (except RDP)
+                # We preserve the RDP network to avoid breaking access.
+                if 'rdp' not in details['network_name']:
+                    new_details['network_name'] = f"nuvr-{pod_number}"
+
+            # Always apply the RDP MAC address logic for any component's RDP NIC
+            if 'rdp' in new_details['network_name']:
+                mac_parts = '00:50:56:05:00:00'.split(':')
+                mac_parts[-1] = pod_hex
+                new_details['mac_address'] = ':'.join(mac_parts)
+
+            updated_network_dict[adapter_label] = new_details
+        
+        return updated_network_dict
+    
+    # --- Fallback to original logic for all other 'nu' courses ---
+    logger.debug(f"Applying default 'nu' network rules for pod {pod_number}.")
     for adapter, details in network_dict.items():
         if 'nu-rdp' in details['network_name']:
             mac_address_preset = '00:50:56:05:00:00'
             mac_parts = mac_address_preset.split(':')
             mac_parts[-1] = pod_hex
             details['mac_address'] = ':'.join(mac_parts)
-        elif 'nuvr-1' or 'nuvr-0' in details['network_name']:
-            details['network_name'] = f"nuvr-{pod_number}"
-        elif 'nu-vr-1' in details['network_name']:
-            details['network_name'] = f"nu-vr-{pod_number}"
-        elif 'vgt-1' or 'vgt-0' in details['network_name']:
-            details['network_name'] = f"vgt-{pod_number}"
-
+        else:
+            details['network_name'] = f'nuvr-{pod_number}'
+            
     return network_dict
 
 
 def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, selected_components=None):
     rpm = ResourcePoolManager(service_instance)
     vmm = VmManager(service_instance)
+    nm = NetworkManager(service_instance)
     pod = pod_config["pod_number"]
     snapshot_name = 'base'
+    course_name = pod_config.get("course_name", "").lower()
+
     parent_resource_pool = f'{pod_config["vendor_shortcode"]}-{pod_config["host_fqdn"][0:2]}'
     resource_pool = f'nu-pod{pod}-{pod_config["host_fqdn"][0:2]}'
 
     if not rpm.create_resource_pool(parent_resource_pool, resource_pool):
         return False, "create_resource_pool", f"Failed creating resource pool {resource_pool}"
 
+    # Pre-build network creation for aapm-610 course
+    if "aapm-610" in course_name:
+        logger.info(f"Course 'aapm-610' detected. Ensuring required networks exist for pod {pod}.")
+        
+        # Find a suitable vSwitch with '-nt' in its name
+        target_vswitch = nm.find_vswitch_by_name_substring(pod_config["host_fqdn"], "-nt")
+        if not target_vswitch:
+            return False, "find_vswitch", "Could not find a vSwitch with '-nt' in its name for network creation."
+
+        # Define the port groups that need to exist
+        required_port_groups = [
+            {"port_group_name": f"nu-vr-{pod}", "vlan_id": 0},
+            {"port_group_name": f"vgt-{pod}", "vlan_id": 4095}
+        ]
+        
+        logger.info(f"Attempting to create port groups on vSwitch '{target_vswitch}'.")
+        if not nm.create_vm_port_groups(pod_config["host_fqdn"], target_vswitch, required_port_groups):
+            return False, "create_vm_port_groups", f"Failed to create required port groups for aapm-610 on {target_vswitch}."
+
     components_to_build = pod_config["components"]
     if selected_components:
-        components_to_build = [c for c in components_to_build if c["component_name"] in selected_components]
-
-    overall_component_success = True
-    component_errors = []
-    successful_clones = []
+        components_to_build = [
+            component for component in components_to_build
+            if component["component_name"] in selected_components
+        ]
 
     for component in tqdm(components_to_build, desc=f"nu-pod{pod} → Building components", unit="comp"):
-        try:
-            if rebuild:
-                if not vmm.delete_vm(component["clone_name"]):
-                    raise Exception(f"Rebuild failed: Could not delete VM {component['clone_name']}")
-            
-            if not vmm.get_obj([vim.VirtualMachine], component["base_vm"]):
-                raise Exception(f"Base VM '{component['base_vm']}' not found.")
+        if rebuild:
+            if not vmm.delete_vm(component["clone_name"]):
+                return False, "delete_vm", f"Failed deleting VM {component['clone_name']}"
 
-            clone_successful = False
-            if not full:
-                if not vmm.snapshot_exists(component["base_vm"], "base"):
-                    if not vmm.create_snapshot(component["base_vm"], "base", description="Base for linked clones"):
-                        raise Exception(f"Failed to create base snapshot on {component['base_vm']}")
-                clone_successful = vmm.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool)
-            else:
-                clone_successful = vmm.clone_vm(component["base_vm"], component["clone_name"], resource_pool)
-            
-            if not clone_successful:
-                raise Exception("Clone operation failed")
+        if not full:
+            if not vmm.snapshot_exists(component["base_vm"], "base"):
+                if not vmm.create_snapshot(component["base_vm"], "base", description="Snapshot for clones"):
+                    return False, "create_snapshot", f"Failed creating snapshot on {component['base_vm']}"
+            if not vmm.create_linked_clone(component["base_vm"], component["clone_name"], "base", resource_pool):
+                return False, "create_linked_clone", f"Failed creating linked clone for {component['clone_name']}"
+        else:
+            if not vmm.clone_vm(component["base_vm"], component["clone_name"], resource_pool):
+                return False, "clone_vm", f"Failed cloning VM for {component['clone_name']}"
 
-            vm_network = vmm.get_vm_network(component["base_vm"])
-            updated_vm_network = update_network_dict(vm_network, int(pod))
-            if not vmm.update_vm_network(component["clone_name"], updated_vm_network) or \
-               not vmm.connect_networks_to_vm(component["clone_name"], updated_vm_network):
-                raise Exception("Failed to update or connect VM network")
+        # Pass course and component names to network update function
+        vm_network = vmm.get_vm_network(component["base_vm"])
+        updated_vm_network = update_network_dict(
+            network_dict=vm_network,
+            pod_number=int(pod),
+            course_name=course_name,
+            component_name=component["component_name"]
+        )
 
+        if not vmm.update_vm_network(component["clone_name"], updated_vm_network):
+            return False, "update_vm_network", f"Failed updating network for {component['clone_name']}"
+        if not vmm.connect_networks_to_vm(component["clone_name"], updated_vm_network):
+            return False, "connect_networks_to_vm", f"Failed connecting networks for {component['clone_name']}"
+
+        if not vmm.snapshot_exists(component["clone_name"], snapshot_name):
             if not vmm.create_snapshot(component["clone_name"], snapshot_name, description=f"Snapshot of {component['clone_name']}"):
-                raise Exception("Failed to create snapshot on clone")
-            
-            # If successful up to this point, add to list for power-on
-            successful_clones.append(component)
+                return False, "create_snapshot", f"Failed creating snapshot on {component['clone_name']}"
 
-        except Exception as e:
-            error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
-            logger.error(error_msg)
-            component_errors.append(error_msg)
-            overall_component_success = False
-            continue # Continue to next component
-
-    power_on_failures = []
-    for component in successful_clones:
         if component.get("state") != "poweroff":
             if not vmm.poweron_vm(component["clone_name"]):
-                power_on_failures.append(component["clone_name"])
-    
-    if power_on_failures:
-        error_msg = f"Failed to power on VMs: {', '.join(power_on_failures)}"
-        logger.error(error_msg)
-        component_errors.append(error_msg)
-        overall_component_success = False
-
-    if not overall_component_success:
-        final_error_message = "; ".join(component_errors)
-        return False, "component_build_failure", final_error_message
+                return False, "poweron_vm", f"Failed powering on {component['clone_name']}"
 
     return True, None, None
 
