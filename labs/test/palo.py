@@ -9,6 +9,8 @@ import socket
 import ssl
 import sys
 import threading
+import sys
+sys.path.append("/home/rajat.kumar/labbuild")
 
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
@@ -76,61 +78,94 @@ def get_vm_power_map(si, pod):
         print(f"⚠️ Could not fetch VMs for pod {pod}: {e}"); return {}
 
 def run_ssh_checks(pod, components, host, power_map, print_lock):
+    import subprocess
+
     host_fqdn = f"pavr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"pavr{pod}"
-    
     check_results = []
-    
+
     with print_lock:
         print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) via SSH...")
 
     try:
+        print(f"[DEBUG] Pod {pod}: Components to scan = {components}")
         child = pexpect.spawn(f"ssh {host_fqdn}", timeout=30)
         child.expect(["[>#\$]"], timeout=10)
-        child.sendline("export PS1='PROMPT> '"); child.expect_exact("PROMPT> ", timeout=10)
-        child.sendline("echo READY"); child.expect_exact("READY", timeout=10); child.expect_exact("PROMPT> ", timeout=10)
+        child.sendline("export PS1='PROMPT> '")
+        child.expect_exact("PROMPT> ", timeout=10)
+        child.sendline("echo READY")
+        child.expect_exact("READY", timeout=10)
+        child.expect_exact("PROMPT> ", timeout=10)
 
         with print_lock:
             print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
-
         for raw_clone_name, raw_ip, port in components:
             clone_name = raw_clone_name.replace('{X}', str(pod))
             ip = resolve_ip(raw_ip, pod, host)
             status = "UNKNOWN"
-            if port.lower() == "arping":
-                subnet = ".".join(ip.split(".")[:3])
-                child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
-                child.expect_exact("PROMPT>", timeout=10)
-                iface = child.before.decode(errors="ignore").strip().splitlines()[-1] if child.before.decode(errors="ignore").strip().splitlines() else ""
-                if iface:
-                    child.sendline(f"arping -c 3 -I {iface} {ip}")
-                    child.expect_exact("PROMPT>", timeout=15)
-                    status = "UP" if "Unicast reply" in child.before.decode(errors="ignore") else "DOWN"
-            else:
-                child.sendline(f"nmap -Pn -p {port} {ip}")
-                child.expect_exact("PROMPT>", timeout=20)
-                match = re.search(rf"{port}/tcp\s+(\w+)", child.before.decode(errors="ignore").lower())
-                status = match.group(1).upper() if match else "DOWN"
-            
-            check_results.append({'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
-
-        child.sendline("exit"); child.expect(pexpect.EOF, timeout=10); child.close()
+        
+            log(f"[SCAN] {clone_name} → {ip}:{port}")
+        
+            try:
+                if "endpoint" in clone_name.lower():
+                    try:
+                        ssh_cmd = [
+                            "ssh", host_fqdn,
+                            f"nmap -Pn -p {port} {ip} --host-timeout 10s --max-retries 1"
+                        ]
+                        output = subprocess.check_output(ssh_cmd, stderr=subprocess.STDOUT, timeout=20).decode().lower()
+                        log(f"[NMAP-REMOTE] {clone_name} on {ip}:{port} →\n{output}")
+                        # Updated regex to support "open|filtered" and whitespace variations
+                        match = re.search(rf"{port}/tcp\s+(open|open\|filtered|closed|filtered|unfiltered)", output)
+                        status = match.group(1).upper() if match else "UNKNOWN"
+                    except subprocess.CalledProcessError as e:
+                        status = "ERROR"
+                        log(f"[ERROR] {clone_name} nmap via SSH failed:\n{e.output.decode(errors='ignore')}")
+                    except subprocess.TimeoutExpired:
+                        status = "TIMEOUT"
+                
+                    except subprocess.TimeoutExpired:
+                        status = "TIMEOUT"
+                    except subprocess.CalledProcessError as e:
+                        status = "ERROR"
+                        log(f"[ERROR] {clone_name}: {e.output.decode(errors='ignore')}")
+                    except Exception as e:
+                        status = f"ERROR: {str(e)}"
+                    
+                    check_results.append({
+                        'pod': pod,
+                        'component': clone_name,
+                        'ip': ip,
+                        'port': port,
+                        'status': status,
+                        'host': host_fqdn
+                    })
+                        
+                
 
     except Exception as e:
         with print_lock:
             print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
-        check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'port': 22, 'status': 'FAILED', 'host': host_fqdn})
-    
+        check_results.append({
+            'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn,
+            'port': 22, 'status': 'FAILED', 'host': host_fqdn
+        })
+
     with print_lock:
         if check_results:
             print(f"\n📊 Network Test Summary for Pod {pod}")
             headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
             table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
-            formatted_rows = [[f"{RED}{cell}{ENDC}" if row[4] in ["DOWN", "FILTERED", "FAILED"] else cell for cell in row] for row in table_data]
+            formatted_rows = [
+                [f"{RED}{cell}{ENDC}" if row[4] in ["DOWN", "FILTERED", "FAILED"] else cell for cell in row]
+                for row in table_data
+            ]
             print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
 
         any_failures = any(r['status'] in ["DOWN", "FILTERED", "FAILED"] for r in check_results)
         if any_failures:
-            powered_off_vms = [[vm, "POWERED OFF"] for vm, state in power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
+            powered_off_vms = [[vm, "POWERED OFF"]
+                               for vm, state in power_map.items()
+                               if state == vim.VirtualMachinePowerState.poweredOff]
             if powered_off_vms:
                 print(f"\n🔌 VM Power State Summary for Pod {pod} (Resource Pool: pa-pod{pod})")
                 print(tabulate(powered_off_vms, headers=["VM Name", "Power State"], tablefmt="fancy_grid"))
