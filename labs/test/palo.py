@@ -41,12 +41,13 @@ def get_course_components(course_name):
         components = []
         skipped = []
         for c in doc["components"]:
+            component_name = c.get("component_name")
             name = c.get("clone_name")
             ip = c.get("podip")
             port = c.get("podport")
-            if name and ip and port:
-                components.append((name, ip, port))
-                log(f"Component template parsed: {name}, IP: {ip}, Port: {port}")
+            if component_name and name and ip and port:
+                components.append((component_name, name, ip, port))
+                log(f"Component template parsed: {component_name}, Name: {name}, IP: {ip}, Port: {port}")
             else:
                 skipped.append(c)
         return components, skipped
@@ -92,7 +93,7 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
         with print_lock:
             print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
 
-        for raw_clone_name, raw_ip, port in components:
+        for component_name, raw_clone_name, raw_ip, port in components:
             clone_name = raw_clone_name.replace('{X}', str(pod))
             ip = resolve_ip(raw_ip, pod, host)
             status = "UNKNOWN"
@@ -210,7 +211,7 @@ def main(argv=None, print_lock=None):
     if not components:
         with print_lock:
             print(f"❌ No usable components found (or matched filter). Skipping tests.")
-        Disconnect(si)
+        if si: Disconnect(si)
         return []
 
     all_pod_results = []
