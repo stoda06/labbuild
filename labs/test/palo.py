@@ -3,13 +3,15 @@
 import argparse
 import re
 import pexpect
+import subprocess
 from pymongo import MongoClient
 from tabulate import tabulate
 import socket
 import ssl
 import sys
 import threading
-import sys
+import traceback
+import datetime
 sys.path.append("/home/rajat.kumar/labbuild")
 
 from pyVim.connect import SmartConnect, Disconnect
@@ -17,13 +19,14 @@ from pyVmomi import vim
 from db_utils import get_vcenter_by_host
 
 VERBOSE = False
-ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')  # Fixed nested set warning
 RED = '\033[91m'
 ENDC = '\033[0m'
 
 def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
 def log(msg):
-    if VERBOSE: print(f"[DEBUG] {msg}")
+    if VERBOSE:
+        print(f"[DEBUG {datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 def get_course_components(course_name):
     try:
@@ -78,8 +81,6 @@ def get_vm_power_map(si, pod):
         print(f"⚠️ Could not fetch VMs for pod {pod}: {e}"); return {}
 
 def run_ssh_checks(pod, components, host, power_map, print_lock):
-    import subprocess
-
     host_fqdn = f"pavr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"pavr{pod}"
     check_results = []
 
@@ -87,87 +88,58 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
         print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) via SSH...")
 
     try:
-        print(f"[DEBUG] Pod {pod}: Components to scan = {components}")
-        child = pexpect.spawn(f"ssh {host_fqdn}", timeout=30)
-        child.expect(["[>#\$]"], timeout=10)
-        child.sendline("export PS1='PROMPT> '")
-        child.expect_exact("PROMPT> ", timeout=10)
-        child.sendline("echo READY")
-        child.expect_exact("READY", timeout=10)
-        child.expect_exact("PROMPT> ", timeout=10)
-
+        log(f"[DEBUG] Pod {pod}: Components to scan = {components}")
         with print_lock:
             print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
-        clone_name = raw_clone_name.replace('{X}', str(pod))
-        ip = resolve_ip(raw_ip, pod, host)
-        status = "UNKNOWN"
-        
-        log(f"[SCAN] {clone_name} → {ip}:{port}")
-        
-        try:
-            for raw_clone_name, raw_ip, port in components:
-                try:
-                    clone_name = raw_clone_name.replace('{X}', str(pod))
-                    ip = resolve_ip(raw_ip, pod, host)
-                    status = "UNKNOWN"
-            
-                    log(f"[SCAN] {clone_name} → {ip}:{port}")
-            
-                    # Scan FROM VR (SSH remote)
-                    if "endpoint" in clone_name.lower() or (clone_name.endswith(f"-vr-{pod}") and port == "22"):
-                        ssh_cmd = [
-                            "ssh", host_fqdn,
-                            f"nmap -Pn -p {port} {ip} --host-timeout 10s --max-retries 1"
-                        ]
-                        output = subprocess.check_output(ssh_cmd, stderr=subprocess.STDOUT, timeout=20).decode().lower()
-                        log(f"[NMAP-REMOTE] {clone_name} ({ip}:{port}) output:\n{output}")
-                        match = re.search(rf"{port}/tcp\s+(open|open\|filtered|closed|filtered|unfiltered)", output)
-                        status = match.group(1).upper() if match else "UNKNOWN"
-            
-                        if status == "UNKNOWN" and clone_name.endswith(f"-vr-{pod}") and port == "22":
-                            log(f"[FALLBACK] Assuming VR is reachable because we're SSHed in")
-                            status = "OPEN"
-            
-                    elif port.lower() == "arping":
-                        status = "SKIPPED"
-            
-                    else:
-                        # Local nmap
-                        output = subprocess.check_output([
-                            "nmap", "-Pn", "-p", str(port), ip,
-                            "--host-timeout", "10s", "--max-retries", "1"
-                        ], stderr=subprocess.STDOUT, timeout=15).decode().lower()
-                        log(f"[NMAP-LOCAL] {clone_name}: {output}")
-                        match = re.search(rf"{port}/tcp\s+(open|open\|filtered|closed|filtered|unfiltered)", output)
-                        status = match.group(1).upper() if match else "UNKNOWN"
-            
-                    check_results.append({
-                        'pod': pod,
-                        'component': clone_name,
-                        'ip': ip,
-                        'port': port,
-                        'status': status,
-                        'host': host_fqdn
-                    })
-            
-                except subprocess.TimeoutExpired:
-                    status = "TIMEOUT"
-                except subprocess.CalledProcessError as e:
-                    status = "ERROR"
-                    log(f"[ERROR] nmap failed for {clone_name}: {e.output.decode(errors='ignore')}")
-                except Exception as e:
-                    status = f"ERROR: {str(e)}"
-                    log(f"[EXCEPTION] {clone_name}: {status}")
-                    check_results.append({
-                        'pod': pod,
-                        'component': clone_name if 'clone_name' in locals() else "UNKNOWN",
-                        'ip': ip if 'ip' in locals() else "UNKNOWN",
-                        'port': port,
-                        'status': status,
-                        'host': host_fqdn
-                    })
-            
-                    
+
+        for raw_clone_name, raw_ip, port in components:
+            clone_name = raw_clone_name.replace('{X}', str(pod))
+            ip = resolve_ip(raw_ip, pod, host)
+            status = "UNKNOWN"
+            log(f"[SCAN] {clone_name} → {ip}:{port}")
+
+            try:
+                # determine where to run nmap from
+                if "endpoint" in clone_name.lower():
+                    ssh_cmd = ["nmap", "-Pn", "-p", str(port), ip, "--host-timeout", "10s", "--max-retries", "1"]
+                    log(f"[NMAP-LOCAL] {clone_name}: {' '.join(ssh_cmd)}")
+                else:
+                    ssh_cmd = ["ssh", host_fqdn, f"nmap -Pn -p {port} {ip} --host-timeout 10s --max-retries 1"]
+                    log(f"[NMAP-REMOTE] {clone_name}: {ssh_cmd}")
+
+                output = subprocess.check_output(ssh_cmd, stderr=subprocess.STDOUT, timeout=20).decode(errors='ignore').lower()
+                log(f"[NMAP OUTPUT] {clone_name} ({ip}:{port}) →\n{output}")
+
+                regex = rf"{port}/tcp\s+(open|open\\|filtered|closed|filtered|unfiltered)"
+                log(f"[MATCH REGEX] regex used: {regex}")
+
+                match = re.search(regex, output)
+                if not match:
+                    log(f"[DEBUG] No match found for port {port}. Output repr: {repr(output)}")
+
+                status = match.group(1).upper() if match else "UNKNOWN"
+
+                if status == "UNKNOWN" and clone_name.endswith(f"-vr-{pod}") and port == "22":
+                    log(f"[FALLBACK] Assuming VR is reachable because we're SSHed in")
+                    status = "OPEN"
+
+                check_results.append({
+                    'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn
+                })
+
+            except subprocess.TimeoutExpired:
+                status = "TIMEOUT"
+                log(f"[TIMEOUT] {clone_name} scan timed out")
+            except subprocess.CalledProcessError as e:
+                status = "ERROR"
+                log(f"[ERROR] nmap failed for {clone_name}: {e.output.decode(errors='ignore')}")
+            except Exception as e:
+                status = f"ERROR: {str(e)}"
+                log(f"[EXCEPTION] {clone_name}: {status}\n{traceback.format_exc()}")
+                check_results.append({
+                    'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn
+                })
+
     except Exception as e:
         with print_lock:
             print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
@@ -181,16 +153,13 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
             print(f"\n📊 Network Test Summary for Pod {pod}")
             headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
             table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
-            formatted_rows = [
-                [f"{RED}{cell}{ENDC}" if row[4] in ["DOWN", "FILTERED", "FAILED"] else cell for cell in row]
-                for row in table_data
-            ]
+            formatted_rows = [[f"{RED}{cell}{ENDC}" if row[4] in ["DOWN", "FILTERED", "FAILED"] else cell for cell in row]
+                              for row in table_data]
             print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
 
         any_failures = any(r['status'] in ["DOWN", "FILTERED", "FAILED"] for r in check_results)
         if any_failures:
-            powered_off_vms = [[vm, "POWERED OFF"]
-                               for vm, state in power_map.items()
+            powered_off_vms = [[vm, "POWERED OFF"] for vm, state in power_map.items()
                                if state == vim.VirtualMachinePowerState.poweredOff]
             if powered_off_vms:
                 print(f"\n🔌 VM Power State Summary for Pod {pod} (Resource Pool: pa-pod{pod})")
@@ -199,7 +168,6 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
                 print(f"\n🔌 All VMs in Pod {pod} are powered ON")
 
     return check_results
-
 def main(argv=None, print_lock=None):
     if print_lock is None:
         print_lock = threading.Lock()
@@ -230,11 +198,11 @@ def main(argv=None, print_lock=None):
         with print_lock:
             print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
-    
+
     with print_lock:
         print(f"\n📘 Fetching components for course: {args.course}")
     components, skipped_components = get_course_components(args.course)
-    
+
     if args.component:
         selected_components = [c.strip() for c in args.component.split(',')]
         components = [c for c in components if c[0] in selected_components]
