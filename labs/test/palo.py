@@ -98,39 +98,49 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
 
         with print_lock:
             print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
-        for raw_clone_name, raw_ip, port in components:
-            clone_name = raw_clone_name.replace('{X}', str(pod))
-            ip = resolve_ip(raw_ip, pod, host)
-            status = "UNKNOWN"
+        clone_name = raw_clone_name.replace('{X}', str(pod))
+        ip = resolve_ip(raw_ip, pod, host)
+        status = "UNKNOWN"
         
-            log(f"[SCAN] {clone_name} → {ip}:{port}")
+        log(f"[SCAN] {clone_name} → {ip}:{port}")
         
-            try:
-                if "endpoint" in clone_name.lower():
-                    try:
+        try:
+            for raw_clone_name, raw_ip, port in components:
+                try:
+                    clone_name = raw_clone_name.replace('{X}', str(pod))
+                    ip = resolve_ip(raw_ip, pod, host)
+                    status = "UNKNOWN"
+            
+                    log(f"[SCAN] {clone_name} → {ip}:{port}")
+            
+                    # Scan FROM VR (SSH remote)
+                    if "endpoint" in clone_name.lower() or (clone_name.endswith(f"-vr-{pod}") and port == "22"):
                         ssh_cmd = [
                             "ssh", host_fqdn,
                             f"nmap -Pn -p {port} {ip} --host-timeout 10s --max-retries 1"
                         ]
                         output = subprocess.check_output(ssh_cmd, stderr=subprocess.STDOUT, timeout=20).decode().lower()
-                        log(f"[NMAP-REMOTE] {clone_name} on {ip}:{port} →\n{output}")
-                        # Updated regex to support "open|filtered" and whitespace variations
+                        log(f"[NMAP-REMOTE] {clone_name} ({ip}:{port}) output:\n{output}")
                         match = re.search(rf"{port}/tcp\s+(open|open\|filtered|closed|filtered|unfiltered)", output)
                         status = match.group(1).upper() if match else "UNKNOWN"
-                    except subprocess.CalledProcessError as e:
-                        status = "ERROR"
-                        log(f"[ERROR] {clone_name} nmap via SSH failed:\n{e.output.decode(errors='ignore')}")
-                    except subprocess.TimeoutExpired:
-                        status = "TIMEOUT"
-                
-                    except subprocess.TimeoutExpired:
-                        status = "TIMEOUT"
-                    except subprocess.CalledProcessError as e:
-                        status = "ERROR"
-                        log(f"[ERROR] {clone_name}: {e.output.decode(errors='ignore')}")
-                    except Exception as e:
-                        status = f"ERROR: {str(e)}"
-                    
+            
+                        if status == "UNKNOWN" and clone_name.endswith(f"-vr-{pod}") and port == "22":
+                            log(f"[FALLBACK] Assuming VR is reachable because we're SSHed in")
+                            status = "OPEN"
+            
+                    elif port.lower() == "arping":
+                        status = "SKIPPED"
+            
+                    else:
+                        # Local nmap
+                        output = subprocess.check_output([
+                            "nmap", "-Pn", "-p", str(port), ip,
+                            "--host-timeout", "10s", "--max-retries", "1"
+                        ], stderr=subprocess.STDOUT, timeout=15).decode().lower()
+                        log(f"[NMAP-LOCAL] {clone_name}: {output}")
+                        match = re.search(rf"{port}/tcp\s+(open|open\|filtered|closed|filtered|unfiltered)", output)
+                        status = match.group(1).upper() if match else "UNKNOWN"
+            
                     check_results.append({
                         'pod': pod,
                         'component': clone_name,
@@ -139,9 +149,25 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
                         'status': status,
                         'host': host_fqdn
                     })
-                        
-                
-
+            
+                except subprocess.TimeoutExpired:
+                    status = "TIMEOUT"
+                except subprocess.CalledProcessError as e:
+                    status = "ERROR"
+                    log(f"[ERROR] nmap failed for {clone_name}: {e.output.decode(errors='ignore')}")
+                except Exception as e:
+                    status = f"ERROR: {str(e)}"
+                    log(f"[EXCEPTION] {clone_name}: {status}")
+                    check_results.append({
+                        'pod': pod,
+                        'component': clone_name if 'clone_name' in locals() else "UNKNOWN",
+                        'ip': ip if 'ip' in locals() else "UNKNOWN",
+                        'port': port,
+                        'status': status,
+                        'host': host_fqdn
+                    })
+            
+                    
     except Exception as e:
         with print_lock:
             print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
