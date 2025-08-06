@@ -10,23 +10,19 @@ import socket
 import ssl
 import sys
 import threading
-import traceback
-import datetime
-sys.path.append("/home/rajat.kumar/labbuild")
-
+print("testing from the latest pano.py")
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 from db_utils import get_vcenter_by_host
 
 VERBOSE = False
-ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')  # Fixed nested set warning
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 RED = '\033[91m'
 ENDC = '\033[0m'
 
 def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
 def log(msg):
-    if VERBOSE:
-        print(f"[DEBUG {datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
+    if VERBOSE: print(f"[DEBUG] {msg}")
 
 def get_course_components(course_name):
     try:
@@ -41,13 +37,12 @@ def get_course_components(course_name):
         components = []
         skipped = []
         for c in doc["components"]:
-            component_name = c.get("component_name")
             name = c.get("clone_name")
             ip = c.get("podip")
             port = c.get("podport")
-            if component_name and name and ip and port:
-                components.append((component_name, name, ip, port))
-                log(f"Component template parsed: {component_name}, Name: {name}, IP: {ip}, Port: {port}")
+            if name and ip and port:
+                components.append((name, ip, port))
+                log(f"Component template parsed: {name}, IP: {ip}, Port: {port}")
             else:
                 skipped.append(c)
         return components, skipped
@@ -81,94 +76,126 @@ def get_vm_power_map(si, pod):
     except Exception as e:
         print(f"⚠️ Could not fetch VMs for pod {pod}: {e}"); return {}
 
+# Renaming this function to what the test runner expects
 def run_ssh_checks(pod, components, host, power_map, print_lock):
     host_fqdn = f"pavr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"pavr{pod}"
     check_results = []
-
-    with print_lock:
-        print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) via SSH...")
+    child = None
 
     try:
-        log(f"[DEBUG] Pod {pod}: Components to scan = {components}")
         with print_lock:
-            print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
-
-        for component_name, raw_clone_name, raw_ip, port in components:
-            clone_name = raw_clone_name.replace('{X}', str(pod))
-            ip = resolve_ip(raw_ip, pod, host)
-            status = "UNKNOWN"
-            log(f"[SCAN] {clone_name} → {ip}:{port}")
-
-            try:
-                # determine where to run nmap from
-                if "endpoint" in clone_name.lower():
-                    ssh_cmd = ["nmap", "-Pn", "-p", str(port), ip, "--host-timeout", "10s", "--max-retries", "1"]
-                    log(f"[NMAP-LOCAL] {clone_name}: {' '.join(ssh_cmd)}")
-                else:
-                    ssh_cmd = ["ssh", host_fqdn, f"nmap -Pn -p {port} {ip} --host-timeout 10s --max-retries 1"]
-                    log(f"[NMAP-REMOTE] {clone_name}: {ssh_cmd}")
-
-                output = subprocess.check_output(ssh_cmd, stderr=subprocess.STDOUT, timeout=20).decode(errors='ignore').lower()
-                log(f"[NMAP OUTPUT] {clone_name} ({ip}:{port}) →\n{output}")
-
-                regex = rf"{port}/tcp\s+(open|open\\|filtered|closed|filtered|unfiltered)"
-                log(f"[MATCH REGEX] regex used: {regex}")
-
-                match = re.search(regex, output)
-                if not match:
-                    log(f"[DEBUG] No match found for port {port}. Output repr: {repr(output)}")
-
-                status = match.group(1).upper() if match else "UNKNOWN"
-
-                if status == "UNKNOWN" and clone_name.endswith(f"-vr-{pod}") and port == "22":
-                    log(f"[FALLBACK] Assuming VR is reachable because we're SSHed in")
-                    status = "OPEN"
-
-                check_results.append({
-                    'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn
-                })
-
-            except subprocess.TimeoutExpired:
-                status = "TIMEOUT"
-                log(f"[TIMEOUT] {clone_name} scan timed out")
-            except subprocess.CalledProcessError as e:
-                status = "ERROR"
-                log(f"[ERROR] nmap failed for {clone_name}: {e.output.decode(errors='ignore')}")
-            except Exception as e:
-                status = f"ERROR: {str(e)}"
-                log(f"[EXCEPTION] {clone_name}: {status}\n{traceback.format_exc()}")
-                check_results.append({
-                    'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn
-                })
+            print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) for internal tests...")
+        child = pexpect.spawn(f"ssh {host_fqdn}", timeout=30, echo=False)
+        child.expect(["[>#\$]"], timeout=10)
+        child.sendline("export PS1='PROMPT> '"); child.expect_exact("PROMPT> ", timeout=10)
+        with print_lock:
+            print(f"✅ SSH to {host_fqdn} successful. Starting tests...")
 
     except Exception as e:
         with print_lock:
-            print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
+            print(f"❌ Pod {pod}: SSH connection failed on {host_fqdn}: {e}")
+        check_results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'port': 22, 'status': 'FAILED', 'host': host_fqdn})
+        with print_lock:
+            print_results_table(pod, check_results, power_map)
+        return check_results
+
+    for raw_clone_name, raw_ip, port in components:
+        clone_name = raw_clone_name.replace('{X}', str(pod))
+        ip = resolve_ip(raw_ip, pod, host)
+        status = "UNKNOWN"
+        nmap_output = ""
+        # Replace {X} in names
+        clone_name = raw_clone_name.replace('{X}', str(pod))
+        ip = resolve_ip(raw_ip, pod, host)
+
+        # TEMP DEBUG
+
+        try:
+            print(f"1Testing {component.name} ({component.ip}:{component.port}) from {'host' if is_endpoint else 'vr'}")
+            # 🛑 Skip VRs
+            if 'pavr' in clone_name.lower() or 'vr' in clone_name.lower():
+                log(f"Skipping VR: {clone_name}")
+                continue
+
+            # 🌐 Run external check for endpoints
+            print(f"2Testing {component.name} ({component.ip}:{component.port}) from {'host' if is_endpoint else 'vr'}")
+            if "endpoint" in component.name:
+                log(f"🌐 External test for endpoint: {clone_name} @ {ip}:{port}")
+                command = ["nmap", "-Pn", "-p", str(port), ip]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+                nmap_output = result.stdout.lower()
+                # Parse and store result
+                match = re.search(rf"{port}/tcp\s+(\w+)", nmap_output)
+                if match:
+                    status = match.group(1).upper()
+                elif "host is up" in nmap_output:
+                    status = "FILTERED"
+                else:
+                    status = "DOWN"
+
+                # Record result
+                check_results.append({
+                    'pod': pod, 'component': clone_name, 'ip': ip, 'port': port,
+                    'status': status, 'host': f"pavr{pod}"
+                })
+                continue  # ✅ Prevent SSH check below
+            print(f"3Testing {component.name} ({component.ip}:{component.port}) from {'host' if is_endpoint else 'vr'}")
+
+            # 🔐 Otherwise, test from inside pod via SSH
+            log(f"🔐 Internal test via SSH: {clone_name} @ {ip}:{port}")
+            child.sendline(f"nmap -Pn -p {port} {ip}")
+            child.expect_exact("PROMPT>", timeout=20)
+            nmap_output = child.before.decode(errors="ignore").lower()
+
+            match = re.search(rf"{port}/tcp\s+(\w+)", nmap_output)
+            if match:
+                status = match.group(1).upper()
+            elif "host is up" in nmap_output:
+                status = "FILTERED"
+            else:
+                status = "DOWN"
+
+        except Exception as e:
+            status = "ERROR"
+            log(f"Test error for {ip}:{port} - {e}")
+
         check_results.append({
-            'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn,
-            'port': 22, 'status': 'FAILED', 'host': host_fqdn
+            'pod': pod, 'component': clone_name, 'ip': ip, 'port': port,
+            'status': status, 'host': f"pavr{pod}"
         })
 
-    with print_lock:
-        if check_results:
-            print(f"\n📊 Network Test Summary for Pod {pod}")
-            headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
-            table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
-            formatted_rows = [[f"{RED}{cell}{ENDC}" if row[4] in ["DOWN", "FILTERED", "FAILED"] else cell for cell in row]
-                              for row in table_data]
-            print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
+        check_results.append({
+        'pod': pod, 'component': clone_name, 'ip': ip, 'port': port,
+        'status': status, 'host': f"pavr{pod}"
+    })
 
-        any_failures = any(r['status'] in ["DOWN", "FILTERED", "FAILED"] for r in check_results)
-        if any_failures:
-            powered_off_vms = [[vm, "POWERED OFF"] for vm, state in power_map.items()
-                               if state == vim.VirtualMachinePowerState.poweredOff]
-            if powered_off_vms:
-                print(f"\n🔌 VM Power State Summary for Pod {pod} (Resource Pool: pa-pod{pod})")
-                print(tabulate(powered_off_vms, headers=["VM Name", "Power State"], tablefmt="fancy_grid"))
-            else:
-                print(f"\n🔌 All VMs in Pod {pod} are powered ON")
+def print_results_table(pod, check_results, power_map):
+    if not check_results:
+        return
 
-    return check_results
+    print(f"\n📊 Network Test Summary for Pod {pod}")
+    headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
+    table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
+
+    formatted_rows = []
+    for row in table_data:
+        if row[4] not in ["OPEN", "UNKNOWN"]:
+             formatted_rows.append([f"{RED}{cell}{ENDC}" for cell in row])
+        else:
+            formatted_rows.append(row)
+
+    print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
+
+    any_failures = any(r['status'] not in ["OPEN", "UNKNOWN"] for r in check_results)
+    if any_failures:
+        powered_off_vms = [[vm, "POWERED OFF"] for vm, state in power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
+        if powered_off_vms:
+            print(f"\n🔌 VM Power State Summary for Pod {pod} (Resource Pool: pa-pod{pod})")
+            print(tabulate(powered_off_vms, headers=["VM Name", "Power State"], tablefmt="fancy_grid"))
+        else:
+            print(f"\n🔌 All VMs in Pod {pod} are powered ON")
+
+
 def main(argv=None, print_lock=None):
     if print_lock is None:
         print_lock = threading.Lock()
@@ -202,6 +229,7 @@ def main(argv=None, print_lock=None):
 
     with print_lock:
         print(f"\n📘 Fetching components for course: {args.course}")
+    # The list of components now includes the IP address again
     components, skipped_components = get_course_components(args.course)
 
     if args.component:
@@ -211,17 +239,17 @@ def main(argv=None, print_lock=None):
     if not components:
         with print_lock:
             print(f"❌ No usable components found (or matched filter). Skipping tests.")
-        if si: Disconnect(si)
+        Disconnect(si)
         return []
 
     all_pod_results = []
     for pod in range(args.start, args.end + 1):
         power_map = get_vm_power_map(si, pod)
+        # We must call the function that the test runner expects
         pod_results = run_ssh_checks(pod, components, args.host, power_map, print_lock)
         all_pod_results.extend(pod_results)
 
     Disconnect(si)
     return all_pod_results
 
-if __name__ == "__main__":
-    main()
+# No 'if __name__ == "__main__"' block to prevent conflicts with the test runner
