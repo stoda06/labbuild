@@ -1,9 +1,8 @@
-{# dashboard/templates/upcoming_courses.html #}
+{# In dashboard/templates/upcoming_courses.html #}
 {% extends 'base.html' %}
 
 {% block title %}Upcoming Courses (Next Week){% endblock %}
 
-{# Link to the CSS file #}
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/upcoming_courses.css') }}">
@@ -18,70 +17,53 @@
 
 <div class="card">
   <div class="card-header">Courses Scheduled for Next Week</div>
-  <div class="card-body p-0"> {# Keep no padding #}
-    {% if courses is not none %}
+  <div class="card-body p-0">
+    {% if courses is not none and courses %}
+    <form id="courseSelectionForm" action="{{ url_for('build_planner_actions.plan_selected_courses') }}" method="POST">
       <div class="table-responsive">
         <table class="table table-sm table-striped table-hover mb-0 upcoming-table" id="upcoming-courses-table">
           <thead class="table-light">
-            {# Ensure classes match CSS #}
             <tr>
               <th scope="col" class="col-checkbox"><input type="checkbox" id="selectAllCourses" title="Select/Deselect All"></th>
               <th scope="col" class="col-dates sortable-header" data-column="Start Date" data-type="date">Start Date<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-dates sortable-header" data-column="End Date" data-type="date">End Date<span class="sort-icon ms-1"></span></th>
               <th scope="col" class="col-code sortable-header" data-column="Course Code" data-type="string">Course Code<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-type sortable-header" data-column="Course Type" data-type="string">Course Type<span class="sort-icon ms-1"></span></th> {# Flexible #}
-              <th scope="col" class="col-trainer sortable-header" data-column="Trainer" data-type="string">Trainer<span class="sort-icon ms-1"></span></th> {# Flexible #}
-              <th scope="col" class="col-numbers sortable-header" data-column="Pax" data-type="number">Pax<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-type sortable-header" data-column="Course Type" data-type="string">Course Type<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-trainer sortable-header" data-column="Trainer" data-type="string">Trainer<span class="sort-icon ms-1"></span></th>
               <th scope="col" class="col-numbers sortable-header" data-column="Pods Req." data-type="number">Pods Req.<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-trainer-toggle">Add Trainer Pod?</th>
               <th scope="col" class="col-labbuild-course">LabBuild Course</th>
             </tr>
           </thead>
           <tbody id="upcoming-courses-tbody">
-             <tr><td colspan="9">Loading courses...</td></tr>
+             {# JavaScript will render the table rows here #}
+             <tr><td colspan="8" class="text-center p-3">Loading courses...</td></tr>
           </tbody>
         </table>
       </div>
 
-      {# --- Submit Button Area --- #}
-      <div class="card-footer d-flex align-items-center justify-content-between bg-light-subtle">
-        <div>
-          {# --- HIGHLIGHTED FIX: Add data-build-review-url attribute --- #}
-          <button type="button" class="btn btn-success" id="bulkBuildBtn"
-                  data-build-review-url="{{ url_for('build_planner_actions.intermediate_build_review') }}">
-            <i class="fas fa-cogs"></i> Review Selected Courses
+      <div class="card-footer bg-light-subtle">
+          <button type="submit" class="btn btn-success" id="reviewSelectedBtn">
+              <i class="fas fa-cogs"></i> Review Selected Courses
           </button>
-          <a href="{{ url_for('build_planner_actions.view_upcoming_allocation') }}" class="btn btn-info ms-2" title="View the last prepared build plan that has not been scheduled yet.">
-            <i class="fas fa-eye"></i> View Pending Allocation
-          </a>
-        </div>
-        <div>
-          <div id="buildLoadingIndicator" class="spinner-border spinner-border-sm text-primary" role="status" style="display: none;">
-              <span class="visually-hidden">Loading...</span>
-          </div>
-          <small id="buildLoadingText" class="text-muted ms-2" style="display: none;">Processing host availability...</small>
-        </div>
       </div>
-
-
+    </form>
     {% elif error_message %}
         <div class="alert alert-warning m-3">{{ error_message }}</div>
     {% else %}
-        <p class="p-3">No data available or failed to load.</p>
+        <p class="p-3">No upcoming courses found.</p>
     {% endif %}
-  </div> {# End card-body #}
-</div> {# End card #}
+  </div>
+</div>
 
-{# --- Embed necessary data as JSON --- #}
-<script id="courses-data" type="application/json">
-  {{ courses | tojson | safe }}
+{# --- Embed necessary data as JSON for JavaScript to use --- #}
+<script id="courses-data-json" type="application/json">
+    {{ courses | tojson | safe }}
 </script>
-<script id="course-configs-data" type="application/json">
+<script id="course-configs-data-json" type="application/json">
   {{ course_configs_list | tojson | safe }}
 </script>
-
 {% endblock %}
 
-{# Link to the JS file #}
 {% block scripts %}
   {{ super() }}
   <script src="{{ url_for('static', filename='js/upcoming_courses.js') }}" defer></script>

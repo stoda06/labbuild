@@ -1,102 +1,90 @@
-/* dashboard/static/css/upcoming_courses.css */
+/* In dashboard/static/css/upcoming_courses.css */
 
-/* Base styling */
+/* Base styling for a clean, readable table */
 .upcoming-table {
-    table-layout: fixed; /* CRITICAL: Use fixed layout for predictable widths */
-    width: 100%;         /* Ensure table tries to use full container width */
-    border-collapse: collapse; /* Optional: Looks better with fixed layout */
+    table-layout: fixed; /* Use fixed layout for predictable column widths */
+    width: 100%;
+    border-collapse: collapse;
 }
 
 .upcoming-table th, .upcoming-table td {
     font-size: 0.85rem;
     vertical-align: middle;
-    /* Add text overflow handling for fixed width columns */
     overflow: hidden;
     text-overflow: ellipsis;
-    /* white-space: nowrap; /* Generally keep nowrap for headers, allow wrap for data */
 }
 
-/* Let specific data cells wrap if needed */
 .upcoming-table td {
     white-space: normal;
-    word-break: break-word; /* Allow breaking long words in data cells */
+    word-break: break-word;
 }
-/* Keep headers from wrapping */
+
 .upcoming-table th {
      white-space: nowrap;
 }
 
-
-/* Header specific styling */
-.upcoming-table th {
+/* Header-specific styling for sortable columns */
+.upcoming-table th.sortable-header {
     cursor: pointer;
     position: relative;
-    padding-right: 20px; /* Space for sort icon */
-    overflow: visible;    /* Remove hidden overflow */
-    text-overflow: ellipsis;  /* Remove ellipsis */
-    word-break: break-all; 
+    padding-right: 20px; /* Space for the sort icon */
 }
-.upcoming-table th .sort-icon {
-    position: absolute; right: 5px; top: 50%;
-    transform: translateY(-50%); font-size: 0.8em;
-    color: #aaa; transition: color 0.2s ease;
-}
-.upcoming-table th.sort-asc .sort-icon,
-.upcoming-table th.sort-desc .sort-icon { color: #333; }
-body.dark-mode .upcoming-table th.sort-asc .sort-icon,
-body.dark-mode .upcoming-table th.sort-desc .sort-icon { color: #ddd; }
 
+.upcoming-table th .sort-icon {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.8em;
+    color: #aaa;
+    transition: color 0.2s ease;
+}
+
+.upcoming-table th.sort-asc .sort-icon,
+.upcoming-table th.sort-desc .sort-icon {
+    color: var(--bs-body-color);
+}
 
 /* --- Column Width Definitions --- */
 
-/* Checkbox: Fixed minimal width */
 .col-checkbox {
-    width: 45px; /* Explicit small width */
+    width: 45px;
     text-align: center;
-    padding-left: 0.5rem !important; /* Adjust padding */
-    padding-right: 0.5rem !important;
 }
 
-/* Dates: Fixed width */
 .col-dates {
-    width: 110px; /* Explicit width */
+    width: 110px;
 }
 
-/* Course Code: Fixed width */
 .col-code {
-    width: 160px; /* Explicit width */
+    width: 160px;
 }
 
-/* Pax & Pods Req: Fixed width */
+.col-type {
+    min-width: 120px; /* Flexible width */
+}
+
+.col-trainer {
+    min-width: 120px; /* Flexible width */
+}
+
 .col-numbers {
-    width: 60px; /* Explicit width */
+    width: 70px;
     text-align: center;
 }
 
-/* LabBuild Course Dropdown: Fixed width */
+.col-trainer-toggle {
+    width: 95px;
+    text-align: center;
+}
+
 .col-labbuild-course {
-     width: 230px; /* Explicit width */
+     width: 230px;
 }
 
-/* --- Flexible Columns (Course Type, Trainer) --- */
-/* NO width definition for .col-type and .col-trainer */
-/* They will share the remaining space */
-.col-type {
-    /* Example: Add a min-width if you want to prevent them becoming TOO small */
-     min-width: 120px;
-}
-.col-trainer {
-    /* Example: Add a min-width */
-     min-width: 120px;
-}
-
-
-/* Style for the dropdown within the table cell */
+/* Style for the dropdowns within table cells */
 .upcoming-table td .form-select {
     font-size: 0.8rem;
     padding: 0.25rem 0.5rem;
-    height: auto;
-    width: 100%; /* Make dropdown fill its cell */
-    display: block; /* Ensure it behaves like a block */
-    box-sizing: border-box; /* Include padding/border in width */
+    width: 100%;
 }

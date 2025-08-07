@@ -30,6 +30,7 @@ from .apm_actions import _generate_apm_data_for_plan as generate_apm_helper
 from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 from bson import ObjectId
 from bson.errors import InvalidId
+from ..build_planner import BuildPlanner
 
 bp = Blueprint('build_planner_actions', __name__, url_prefix='/build-planner')
 logger = logging.getLogger('dashboard.routes.build_planner')
@@ -1497,3 +1498,74 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
         batch_review_id=batch_review_id,
         current_theme=current_theme,
     )
+
+@bp.route('/generate-new-plan', methods=['GET'])
+def generate_new_build_plan():
+    """
+    Runs the new object-oriented build planner and displays the
+    final, consolidated review page with build, APM, and email plans.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+    
+    try:
+        # 1. Instantiate the master planner
+        planner = BuildPlanner()
+        
+        # 2. Generate the full plan. The context object will hold all results.
+        build_context = planner.generate_plan()
+
+        # 3. Render the new review template with the results
+        # The template will receive the entire context object and can display
+        # the build commands, APM commands, emails, and any errors.
+        return render_template(
+            'build_plan_review.html',
+            build_context=build_context,
+            current_theme=current_theme
+        )
+
+    except Exception as e:
+        logger.error(f"Fatal error during new build plan generation: {e}", exc_info=True)
+        flash("A critical error occurred while generating the build plan. Check the server logs.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+@bp.route('/plan-selected-courses', methods=['POST'])
+def plan_selected_courses():
+    """
+    Receives user-selected courses, runs the new BuildPlanner, and displays
+    the final, consolidated review page. This is the main entry point for the new workflow.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+    selected_courses_json = request.form.get('selected_courses')
+
+    if not selected_courses_json:
+        flash("No courses were selected to plan. Please check at least one course.", "warning")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    try:
+        selected_courses = json.loads(selected_courses_json)
+        if not isinstance(selected_courses, list):
+            raise ValueError("Data is not in the expected list format.")
+    except (json.JSONDecodeError, ValueError):
+        flash("Invalid data format received from the course selection page.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+    
+    try:
+        # --- MODIFICATION: Use the new BuildPlanner class ---
+        # 1. Instantiate the master planner.
+        planner = BuildPlanner()
+        
+        # 2. Generate the full plan using the user's selections.
+        build_context = planner.plan_selected_courses(selected_courses)
+
+        # 3. Render the new review template with the complete context.
+        return render_template(
+            'build_plan_review.html',
+            build_context=build_context,
+            current_theme=current_theme
+        )
+        # --- END MODIFICATION ---
+
+    except Exception as e:
+        logger.error(f"Fatal error during build plan generation: {e}", exc_info=True)
+        flash("A critical error occurred while generating the build plan. Please check the server logs.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
