@@ -30,7 +30,7 @@ def resolve_ip(ip_template, pod, print_lock):
         log(f"IP after +X resolution: {ip_template}", print_lock)
     return ip_template
 
-def get_course_components(course_name, pod, print_lock):
+def get_course_components(course_name, print_lock):
     try:
         client = MongoClient("mongodb://labbuild_user:%24%24u1QBd6%26372%23%24rF@builder:27017/?authSource=labbuild_db")
         db = client["labbuild_db"]
@@ -43,12 +43,10 @@ def get_course_components(course_name, pod, print_lock):
             return [], []
         components, skipped = [], []
         for c in doc["components"]:
-            raw_name, ip, port = c.get("clone_name"), c.get("podip"), c.get("podport")
-            if raw_name and ip and port:
-                resolved_name = raw_name.replace("{X}", str(pod))
-                resolved_ip = resolve_ip(ip, pod, print_lock) if pod is not None else ip
-                components.append((resolved_name, resolved_ip, port))
-                log(f"Component parsed for pod {pod}: {resolved_name}, IP: {resolved_ip}, Port: {port}", print_lock)
+            component_name, raw_name, ip, port = c.get("component_name"), c.get("clone_name"), c.get("podip"), c.get("podport")
+            if component_name and raw_name and ip and port:
+                components.append((component_name, raw_name, ip, port))
+                log(f"Component template parsed: {component_name}, Name: {raw_name}, IP: {ip}, Port: {port}", print_lock)
             else:
                 skipped.append(c)
         return components, skipped
@@ -86,7 +84,9 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
         with print_lock:
             print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
 
-        for clone_name, ip, port in components:
+        for component_name, raw_clone_name, raw_ip, port in components:
+            clone_name = raw_clone_name.replace('{X}', str(pod))
+            ip = resolve_ip(raw_ip, pod, print_lock)
             status = "UNKNOWN"
             if port.lower() == "arping":
                 subnet = ".".join(ip.split(".")[:3])
@@ -156,19 +156,22 @@ def main(argv=None, print_lock=None):
             print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
     
+    with print_lock:
+        print(f"\n📘 Fetching component templates for course: {args.course}")
+    components, _ = get_course_components(args.course, print_lock)
+    
+    if args.component:
+        selected = [c.strip() for c in args.component.split(',')]
+        components = [c for c in components if c[0] in selected]
+    
+    if not components:
+        with print_lock:
+            print(f"❌ No usable components found (or matched filter). Skipping tests.")
+        if si: Disconnect(si)
+        return []
+        
     all_results = []
     for pod in range(args.start, args.end + 1):
-        with print_lock:
-            print(f"\n📘 Fetching components for course: {args.course} (Pod {pod})")
-        components, _ = get_course_components(args.course, pod, print_lock)
-        if args.component:
-            selected = [c.strip() for c in args.component.split(',')]
-            components = [c for c in components if c[0] in selected]
-        if not components:
-            with print_lock:
-                print(f"❌ Pod {pod}: No usable components found. Skipping pod.")
-            continue
-        
         power_map = get_vm_power_map(si, pod, print_lock)
         log(f"Pod {pod} Power Map: {power_map}", print_lock)
         pod_results = run_ssh_checks(pod, components, args.host, power_map, print_lock)

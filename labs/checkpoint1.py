@@ -1,7 +1,6 @@
 #!/usr/bin/env python3.10
 
 from pyVim.connect import SmartConnect, Disconnect
-import subprocess
 from pyVmomi import vim
 from tabulate import tabulate
 import ssl, argparse, sys, concurrent.futures, threading
@@ -95,26 +94,15 @@ def check_entity_permissions_and_vms(pod, content, entity_name, entity_type, use
     else: result_rows.append([entity_type[0].__name__, entity_name, username, "-", "-", 0, "Entity not found"])
     return result_rows, vm_names, vm_power_map
 
-def fn_test_cp(pod, si, group, verbose, lock):
+def fn_test_cp(pod, si, group, verbose, print_lock):
     content = si.RetrieveContent()
-    username = f"labcp-{pod}"
-    maestro_group = group.lower().startswith("maestro-")
-
-    if maestro_group:
-        rp_candidates = f"cp-maestro-pod{pod}"
-        folder_candidates = f"cp-maestro-{pod}-folder"
-    else:
-        folder_candidates = f"cp-pod{pod}-folder"
-        rp_candidates = f"cp-pod{pod}"
-
-    rp_rows, vms, power_map = check_entity_permissions_and_vms(
-        pod, content, rp_candidates, [vim.ResourcePool], username, verbose, lock)
-    folder_rows, _, _ = check_entity_permissions_and_vms(
-        pod, content, folder_candidates, [vim.Folder], username, verbose, lock)
-
-    compare_vms_with_components(pod, vms, group, lock)
-    return rp_rows + folder_rows, power_map
-
+    username, rp_name, folder_name = f"labcp-{pod}", f"cp-pod{pod}", f"cp-pod{pod}-folder"
+    table_data = []
+    rows_rp, vms, power_map = check_entity_permissions_and_vms(pod, content, rp_name, [vim.ResourcePool], username, verbose, print_lock)
+    rows_folder, _, _ = check_entity_permissions_and_vms(pod, content, folder_name, [vim.Folder], username, verbose, print_lock)
+    table_data.extend(rows_rp + rows_folder)
+    compare_vms_with_components(pod, vms, group, print_lock)
+    return table_data, power_map
 
 def fetch_course_config(pod, group, verbose, print_lock):
     try:
@@ -149,26 +137,26 @@ def resolve_pod_ip(ip_raw, pod, host_key):
 
     is_us_host = host_key.lower() in ["hotshot", "trypticon"]
     octets = resolved_ip.split('.')
-
+    
     if is_us_host and len(octets) == 4 and octets[1] == '30':
         octets[1] = '26'
         return ".".join(octets)
-
+    
     return resolved_ip
 
 def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_power_map, verbose, print_lock):
     # --- FIX: Construct the correct hostname at the beginning ---
     host = f"cpvr{pod}.us" if host_key.lower() in ["hotshot", "trypticon"] else f"cpvr{pod}"
     check_results = []
-
+    
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
+    
     try:
         if verbose:
             with print_lock:
                 print(f"\n🔐 Connecting to {host} via SSH...")
-
+        
         client.connect(
             hostname=host,
             username='root',
@@ -188,14 +176,14 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                 status = "SKIPPED (Powered Off)"
                 check_results.append({'pod': pod, 'component': display_name, 'ip': ip, 'port': port, 'status': status, 'host': host})
                 continue
-
+            
             command = ""
             if port.lower() == "arping":
                 subnet = ".".join(ip.split(".")[:3])
                 iface_cmd = f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1"
                 if verbose:
                     with print_lock: print(f"   -> Running (get iface): {iface_cmd}")
-
+                
                 _, stdout, stderr = client.exec_command(iface_cmd)
                 iface = stdout.read().decode().strip().rstrip(':')
                 err = stderr.read().decode().strip()
@@ -224,7 +212,13 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                     status = "FILTERED"
                 else:
                     status = "DOWN"
-
+#                if f"{port}/tcp open" in output:
+#                    status = "UP"
+#                elif f"{port}/tcp filtered" in output:
+#                    status = "FILTERED"
+#                else:
+#                    status = "DOWN"
+            
             check_results.append({'pod': pod, 'component': display_name, 'ip': ip, 'port': port, 'status': status, 'host': host})
 
     except Exception as e:
@@ -247,7 +241,7 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
                     row[4] = f"{RED}{r['status']}{END}"
                 table_data.append(row)
             print(tabulate(table_data, headers=headers, tablefmt="fancy_grid"))
-
+        
         powered_off_vms = [[name, str(state)] for name, state in vm_power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
         if powered_off_vms:
             print(f"\n🔌 VM Power State Summary for Pod {pod}")
@@ -255,89 +249,61 @@ def perform_network_checks_over_ssh(pod, components, ignore_list, host_key, vm_p
 
     return check_results
 
-def perform_network_checks_local_nmap(pod, components, _ignore, host_key, power_map, verbose, lock):
-    results = []
-    for _name, clone, ip_raw, port in components:
-        name = (clone or "UNKNOWN").replace("{X}", str(pod))
-        ip = resolve_pod_ip(ip_raw, pod, host_key)
-        status = "UNKNOWN"
-        if power_map.get(name) == vim.VirtualMachinePowerState.poweredOff:
-            status = "SKIPPED (powered off)"
-            results.append({"pod": pod, "component": name, "ip": ip, "port": port, "status": status, "host": "localhost"})
-            continue
-        cmd = ["nmap", "-Pn", "-p", str(port), ip] if str(port).isdigit() else ["nmap", "-Pn", ip]
-        if verbose:
-            with lock:
-                print(f"LOCAL‑nmap: {' '.join(cmd)}")
-        try:
-            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode(errors="ignore")
-            if str(port).isdigit() and f"{port}/tcp open" in out:
-                status = "UP"
-            elif str(port).isdigit() and f"{port}/tcp filtered" in out:
-                status = "FILTERED"
-            else:
-                status = "DOWN"
-        except subprocess.CalledProcessError as e:
-            status = f"ERROR ({e.returncode})"
-        except FileNotFoundError:
-            status = "ERROR (nmap missing)"
-        results.append({"pod": pod, "component": name, "ip": ip, "port": port, "status": status, "host": "localhost"})
-    return results
-
 def main(argv=None, print_lock=None):
-    parser = argparse.ArgumentParser(description="CP Maestro-aware pod checks with local nmap")
-    parser.add_argument("-s","--start", type=int, required=True)
-    parser.add_argument("-e","--end", type=int, required=True)
-    parser.add_argument("-H","--host", required=True)
-    parser.add_argument("-g","--group", required=True)
-    parser.add_argument("-v","--verbose", action="store_true")
-    parser.add_argument("-c","--component", help="comma-separated filter list")
+    if print_lock is None:
+        print_lock = threading.Lock()
+
+    parser = argparse.ArgumentParser(description="Check CP pod permissions, fetch configs, and run network tests.", prog='checkpoint.py')
+    parser.add_argument("-s", "--start", type=int, required=True)
+    parser.add_argument("-e", "--end", type=int, required=True)
+    parser.add_argument("-H", "--host", required=True)
+    parser.add_argument("-g", "--group", required=True)
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-c", "--component", help="Test specific components.")
     args = parser.parse_args(argv)
 
-    lock = print_lock or threading.Lock()
-    vcn = get_vcenter_by_host(args.host)
-    if not vcn:
-        with lock:
-            print(f"❌ vCenter lookup failed for host key '{args.host}'")
+    vcenter_fqdn = get_vcenter_by_host(args.host)
+    if not vcenter_fqdn:
+        with print_lock:
+            print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
         sys.exit(1)
+    
+    pod_range, power_states = list(range(args.start, args.end + 1)), {}
+    all_check_results = []
+    
+    with print_lock:
+        print(f"\n🌐 Connecting to vCenter: {vcenter_fqdn}")
+    
+    full_table_data = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(threaded_fn_test_cp, pod, vcenter_fqdn, args.group, args.verbose, print_lock) for pod in pod_range]
+        for future in concurrent.futures.as_completed(futures):
+            pod, table_rows, power_map = future.result()
+            full_table_data.extend(table_rows)
+            power_states[pod] = power_map
 
-    pods = range(args.start, args.end+1)
-    full_rows, power_maps, net_results = [], {}, []
+    with print_lock:
+        print("\n📊 Permissions and VM Count Summary\n")
+        print(tabulate(full_table_data, headers=["Entity Type", "Entity Name", "Username", "Role", "Propagate", "VM Count", "Error"], tablefmt="fancy_grid"))
 
-    if args.verbose:
-        print(f"🌐 Connecting to vCenter: {vcn}", flush=True)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
-        for fut in [exe.submit(threaded_fn_test_cp, pod, vcn, args.group, args.verbose, lock) for pod in pods]:
-            pod_id, rows, pm = fut.result()
-            full_rows.extend(rows)
-            power_maps[pod_id] = pm
-
-    with lock:
-        print("\n📊 Permissions and VM Count Summary")
-        print(tabulate(full_rows,
-                       headers=["Entity Type","Entity Name","Username","Role","Propagate","VM Count","Error"],
-                       tablefmt="fancy_grid"))
-
-    is_maestro = args.group.lower().startswith("maestro-")
-    func = perform_network_checks_local_nmap if is_maestro else perform_network_checks_over_ssh
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe2:
-        for pod in pods:
-            comps, _ = fetch_course_config(pod, args.group, args.verbose, lock)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = []
+        for pod in pod_range:
+            components, ignore_list = fetch_course_config(pod, args.group, args.verbose, print_lock)
             if args.component:
-                want = set(c.strip() for c in args.component.split(","))
-                comps = [c for c in comps if c[0] in want]
-                if not comps:
-                    with lock:
-                        print(f"   - Pod {pod} filtered out; skipping net check")
+                selected_components = [c.strip() for c in args.component.split(',')]
+                components = [c for c in components if c[0] in selected_components]
+                if not components:
+                    with print_lock:
+                        print(f"   - No matching components found for pod {pod}. Skipping network checks for this pod.")
                     continue
-            fut = exe2.submit(func, pod, comps, None, args.host, power_maps.get(pod, {}), args.verbose, lock)
-            res = fut.result()
-            if res:
-                net_results.extend(res)
+            future = executor.submit(perform_network_checks_over_ssh, pod, components, ignore_list, args.host, power_states.get(pod, {}), args.verbose, print_lock)
+            futures.append(future)
+        
+        for future in concurrent.futures.as_completed(futures):
+            all_check_results.extend(future.result())
 
-    return net_results
+    return all_check_results
 
 if __name__ == "__main__":
     main()

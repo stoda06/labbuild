@@ -27,10 +27,10 @@ def get_course_components(course_name, print_lock):
             return []
         components = []
         for c in doc["components"]:
-            name, ip, port = c.get("clone_name"), c.get("podip"), c.get("podport")
-            if name and ip and port:
-                components.append((name, ip, port))
-                log(f"Component parsed: {name}, IP: {ip}, Port: {port}", print_lock)
+            component_name, name, ip, port = c.get("component_name"), c.get("clone_name"), c.get("podip"), c.get("podport")
+            if component_name and name and ip and port:
+                components.append((component_name, name, ip, port))
+                log(f"Component parsed: {component_name}, Name: {name}, IP: {ip}, Port: {port}", print_lock)
         return components
     except Exception as e:
         with print_lock:
@@ -104,7 +104,7 @@ def run_ssh_checks(pod, components, host, print_lock):
         with print_lock:
             print(f"✅ Connected to {host_fqdn}")
         
-        for raw_clone_name, raw_ip, port in components:
+        for component_name, raw_clone_name, raw_ip, port in components:
             ip = resolve_ip(raw_ip, pod, host, print_lock)
             clone_name = raw_clone_name.replace('{X}', str(pod))
             status = "UNKNOWN"
@@ -189,7 +189,7 @@ def main(argv=None, print_lock=None):
     
     if not components:
         with print_lock:
-            print(f"❌ No usable components found. Exiting.")
+            print(f"❌ No usable components found (or matched filter). Exiting.")
         return []
 
     all_results = []

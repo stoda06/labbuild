@@ -153,7 +153,7 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
             elif "host is up" in nmap_output:
                 status = "FILTERED"
             else:
-                status = "DOWN"
+            status = "DOWN"
 
         except Exception as e:
             status = "ERROR"
@@ -172,11 +172,11 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
 def print_results_table(pod, check_results, power_map):
     if not check_results:
         return
-
+        
     print(f"\n📊 Network Test Summary for Pod {pod}")
     headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
     table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in check_results]
-
+    
     formatted_rows = []
     for row in table_data:
         if row[4] not in ["OPEN", "UNKNOWN"]:
@@ -226,12 +226,12 @@ def main(argv=None, print_lock=None):
         with print_lock:
             print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
         return []
-
+    
     with print_lock:
         print(f"\n📘 Fetching components for course: {args.course}")
     # The list of components now includes the IP address again
     components, skipped_components = get_course_components(args.course)
-
+    
     if args.component:
         selected_components = [c.strip() for c in args.component.split(',')]
         components = [c for c in components if c[0] in selected_components]

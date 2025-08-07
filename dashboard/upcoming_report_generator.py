@@ -563,6 +563,8 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
 # ==============================================================================
 # labbuild/dashboard/upcoming_report_generator.py
 
+# labbuild/dashboard/upcoming_report_generator.py
+
 def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[Dict], extended_pods: List[Dict], host_map: Dict) -> io.BytesIO:
     wb = Workbook()
     sheet = wb.active
@@ -684,14 +686,17 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
     write_overview_summary(sheet, trainer_pods, course_allocations, extended_pods)
     write_summary_section(sheet, 2, total_ram_by_host)
 
-    # ✅ NEW: Patch "Allocated RAM (GB)" row in RAM Summary section with dynamic formulas
+    # ✅ MODIFIED: Patch "Allocated RAM (GB)" row in RAM Summary section with new universal formula
     allocated_ram_row = 4  # Adjust if your summary section starts elsewhere
     courses_data_start_row = 15  # Adjust if your first courses section starts at another row
 
     for i, env_key in enumerate(SUMMARY_ENV_ORDER):
         col_idx = RAM_SUMMARY_START_COL + 2 + i
         col_letter = get_column_letter(col_idx)
-        formula = f"=SUM({col_letter}{courses_data_start_row}:{col_letter}1000)"
+        
+        # Apply the new formula universally to all columns in the summary
+        formula = f"=SUM({col_letter}{courses_data_start_row}:{col_letter}1002)/2"
+        
         cell = sheet.cell(row=allocated_ram_row, column=col_idx)
         cell.value = formula
         cell.number_format = '0.0'
@@ -703,7 +708,6 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
     wb.save(in_memory_fp)
     in_memory_fp.seek(0)
     return in_memory_fp
-
 # labbuild/dashboard/upcoming_report_generator.py
 
 def get_upcoming_report_data(db):
