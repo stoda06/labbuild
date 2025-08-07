@@ -42,74 +42,120 @@ def _get_component_details(pod_config: Dict[str, Any]) -> List[Dict[str, str]]:
 
 # Updated signature to accept pod_config dictionary
 def perform_vm_operations(
-    service_instance: object, # Keep vague type hint or use VCenter if available
+    service_instance: object,
     pod_config: Dict[str, Any],
     operation: str,
     selected_components: Optional[List[str]] = None
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Performs power operations (start, stop, reboot) on VMs within a pod's resource pool.
-    Filters by selected_components if provided. Accepts pod_config as a dictionary.
+
+    This function is the core logic for the 'manage' command. It determines the target
+    VMs based on the pod configuration and optional user-selected components, then
+    executes the requested power operation on them.
+
+    Args:
+        service_instance: The active pyVmomi service instance connected to vCenter.
+        pod_config: A dictionary containing the fully resolved course configuration
+                    for a specific pod or class.
+        operation: The power operation to perform ('start', 'stop', 'reboot').
+        selected_components: An optional list of component names to filter the
+                             operation. If None, all components are targeted.
+
+    Returns:
+        A tuple containing:
+        - bool: True for success, False for failure.
+        - str or None: The name of the step where failure occurred.
+        - str or None: A detailed error message if failure occurred.
     """
-    pod_number = pod_config.get("pod_number") # May be None for F5 class-level context
-    class_number = pod_config.get("class_number") # Relevant for F5
+    # --- 1. Initial Setup: Extract key identifiers from the pod_config ---
+    pod_number = pod_config.get("pod_number")
+    class_number = pod_config.get("class_number")
+    vendor_code = pod_config.get("vendor_shortcode", "").lower()
+    host_fqdn = pod_config.get("host_fqdn", "")
+    host_short = host_fqdn.split('.')[0] if host_fqdn else ""
+    course_name_lower = pod_config.get("course_name", "").lower()
+
+    # Create a user-friendly identifier for logging.
     identifier = f"Pod {pod_number}" if pod_number is not None else f"Class {class_number}"
     if pod_number is not None and class_number is not None:
          identifier = f"Pod {pod_number} (Class {class_number})"
 
     resource_pool_name = None
 
-    # --- Determine Resource Pool Name based on vendor and context ---
-    vendor_code = pod_config.get("vendor_shortcode", "").lower()
-    host_fqdn = pod_config.get("host_fqdn", "") # Get host FQDN if available
-    host_short = host_fqdn.split('.')[0] if host_fqdn else "" # Get short host name (e.g., 'ho', 'k2')
-
-    # Use more specific RP naming based on vendor conventions seen in setup/teardown
+    # --- 2. Determine the Target Resource Pool Name ---
+    # This block contains vendor-specific logic to determine the name of the vCenter
+    # Resource Pool (RP) where the target VMs are expected to be.
     if vendor_code == "cp":
-        # Check for maestro course name pattern
-        if "maestro" in pod_config.get("course_name", "").lower():
+        if "maestro" in course_name_lower:
              resource_pool_name = f"cp-maestro-pod{pod_number}"
         else:
              resource_pool_name = f"cp-pod{pod_number}"
+             
     elif vendor_code == "pa":
-        # PA labs might use different RPs depending on course/host
-        if "1110" in pod_config.get("course_name", "").lower():
-            resource_pool_name = f"pa-pod{pod_number}" # Example for 1110
-        elif "cortex" in pod_config.get("course_name", "").lower():
-            # Cortex might use component names directly as RPs with host suffix
-             logger.warning(f"Manage operation for Cortex needs specific component target, resource pool determination might be complex.")
-             # Need to determine target RP based on selected_components if provided
-             # For now, assume a default or require component selection for Cortex manage?
-             # Setting to None, logic below will fail if component isn't selected.
-             resource_pool_name = None
-        elif "1100" in pod_config.get("course_name", "").lower() and host_short:
-             # 1100 courses seem to use group_name + host suffix
-             # This is complex for 'manage' as group_name isn't directly known here.
-             # We need selected_components to narrow down.
-             logger.warning(f"Manage operation for 1100 needs specific component target to determine RP.")
-             resource_pool_name = None
+        # --- CORRECTED LOGIC for Palo Alto courses ---
+        if "cortex" in course_name_lower:
+            # For Cortex, each component (VR, W10, etc.) is in its OWN resource pool.
+            # There is no single parent RP for the whole pod.
+            # We intentionally set resource_pool_name to None. This signals the logic
+            # later in the function to find all VMs for this pod by name globally,
+            # rather than looking inside a single RP.
+            logger.info("Cortex course detected. Manage operation will target all pod VMs unless a specific component is selected.")
+            resource_pool_name = None
+            
+        elif "1100" in course_name_lower:
+            # For 1100-series labs, the RP is named after the component's GROUP.
+            # Therefore, the user MUST specify exactly one component with the '-c' flag
+            # so the code can look up its group name in the config.
+            if not selected_components or len(selected_components) != 1:
+                err_msg = "For 1100-series courses, 'manage' requires exactly one component to be specified via the -c flag to identify the correct resource pool."
+                logger.error(err_msg)
+                return False, "missing_component_for_1100", err_msg
+
+            component_name_to_find = selected_components[0]
+            group_name_for_rp = None
+            
+            # Find the component in the config to get its group name.
+            for component_config in pod_config.get("components", []):
+                if isinstance(component_config, dict) and component_config.get("component_name") == component_name_to_find:
+                    group_name_for_rp = component_config.get("group_name")
+                    break
+            
+            if not group_name_for_rp:
+                err_msg = f"Could not find a 'group_name' in the course config for the selected component '{component_name_to_find}'."
+                logger.error(err_msg)
+                return False, "group_name_not_found", err_msg
+
+            host_suffix_map = {"cliffjumper": "-cl", "apollo": "-ap", "nightbird": "-ni", "ultramagnus": "-ul"}
+            host_suffix = host_suffix_map.get(host_short.lower(), "")
+            resource_pool_name = f"{group_name_for_rp}{host_suffix}"
+            
+        elif "1110" in course_name_lower:
+            resource_pool_name = f"pa-pod{pod_number}"
         else:
-             resource_pool_name = f"pa-pod{pod_number}" # Default guess
+             resource_pool_name = f"pa-pod{pod_number}" # Default for other PA courses
+
     elif vendor_code == "f5" and class_number is not None:
-        # F5 operations typically target VMs within the class RP or group RPs
-        # Need selected_components to target specific VMs or group RPs
-        # Defaulting to class RP, but filtering VMs below is key
         resource_pool_name = f"f5-class{class_number}"
     elif vendor_code == "av":
-        if "ipo" in pod_config.get("course_name", "").lower():
+        if "ipo" in course_name_lower:
              resource_pool_name = f"av-ipo-pod{pod_number}"
-        elif "aura" in pod_config.get("course_name", "").lower():
-            resource_pool_name = f"av-pod{pod_number}" # Example for Aura
-        # Add AEP logic if needed
+        elif "aura" in course_name_lower:
+            resource_pool_name = f"av-pod{pod_number}"
     elif vendor_code == "nu" and host_short:
          resource_pool_name = f"nu-pod{pod_number}-{host_short}"
     elif vendor_code == "pr":
-        parent_rp = pod_config.get("group", "pr") # Get group from config if available
+        parent_rp = pod_config.get("group", "pr")
         resource_pool_name = f"{parent_rp}-pod{pod_number}"
-    # Add other vendor logic if necessary
 
-    if not resource_pool_name and not selected_components: # Allow skipping RP find if specific components will be searched globally
-         err_msg = f"Could not determine resource pool name for {identifier} (vendor: {vendor_code}). Component selection might be required."
+    # --- 3. Validate Resource Pool or Component Selection ---
+    # This is a critical validation step. If we couldn't determine a resource pool name
+    # and the user didn't specify a component, we don't know what to target.
+    # We add an exception for Cortex courses, because their resource_pool_name is
+    # *intentionally* set to None to trigger the global VM search.
+    is_cortex_course = (vendor_code == "pa" and "cortex" in course_name_lower)
+    if not resource_pool_name and not selected_components and not is_cortex_course:
+         err_msg = f"Could not determine resource pool for {identifier} (vendor: {vendor_code}). A specific component may be required."
          logger.error(err_msg)
          return False, "determine_rp_name", err_msg
     elif resource_pool_name:
@@ -119,139 +165,94 @@ def perform_vm_operations(
     if selected_components:
         logger.info(f"Filtering for components: {', '.join(selected_components)}")
 
-
+    # --- 4. Initialize Managers and Determine Target VM Names ---
     vmm = VmManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
-    rp_obj = None
-    if resource_pool_name: # Try to find RP if name was determined
-        rp_obj = rpm.get_obj([vim.ResourcePool], resource_pool_name)
-        if not rp_obj:
-            # Don't fail immediately, maybe we are targeting specific VMs by name
-            logger.warning(f"Resource pool '{resource_pool_name}' not found for {identifier}. Will search for VMs globally.")
-            # return False, "find_resource_pool", err_msg
-
-    # --- Get Component Details from Config ---
+    
     all_component_details = _get_component_details(pod_config)
-    if not all_component_details:
-         # Don't fail here, maybe the VMs exist anyway? Log a warning.
-         logger.warning(f"Could not extract component details from config for {identifier}. Operation will target VMs by name directly.")
-         # If selected_components is provided, we assume those ARE the VM names
-         if selected_components:
-              target_vm_names = selected_components
-         else:
-              # This case is ambiguous - no components in config AND no filter = operate on what?
-              err_msg = f"Cannot determine target VMs: No components found in config and no specific components selected for {identifier}."
-              logger.error(err_msg)
-              return False, "get_target_vms", err_msg
+    target_vm_names = []
+    
+    # If the config was empty but the user specified components, assume component names are the VM names.
+    if not all_component_details and selected_components:
+        target_vm_names = selected_components
+        logger.warning(f"No component details in config; using selected components as direct VM names: {target_vm_names}")
     else:
-        # --- Determine Target VM Names based on Selection ---
-        target_vm_names = []
+        # Determine which VMs to operate on based on the component list from the config.
         for comp_detail in all_component_details:
             original_comp_name = comp_detail.get("name")
             pattern = comp_detail.get("pattern")
+            if not original_comp_name or not pattern: continue
 
-            if not original_comp_name or not pattern:
-                logger.warning(f"Skipping component detail due to missing name or pattern: {comp_detail}")
-                continue
-
-            # Check if this component should be operated on
-            operate_on_this = False
-            if selected_components is None:
-                operate_on_this = True # No filter, operate on all components from config
-            elif original_comp_name in selected_components:
-                operate_on_this = True # Filter provided, and this component name matches
-
-            if operate_on_this:
-                # Resolve the pattern to the final VM name
+            # If no components are selected by the user, target all. Otherwise, target only the selected ones.
+            if selected_components is None or original_comp_name in selected_components:
+                # Resolve the final VM name by replacing placeholders like {X} and {Y}.
                 vm_name = pattern
                 if "{X}" in vm_name and pod_number is not None:
                     vm_name = vm_name.replace("{X}", str(pod_number))
                 if "{Y}" in vm_name and class_number is not None:
                     vm_name = vm_name.replace("{Y}", str(class_number))
-                # Add potential UUID substitution if needed (unlikely for manage)
-
                 target_vm_names.append(vm_name)
-                logger.debug(f"Adding '{vm_name}' (from component '{original_comp_name}') to target list.")
-            # else: logger.debug(f"Skipping component '{original_comp_name}' based on filter.") # Less verbose
-
 
     if not target_vm_names:
         err_msg = f"No target VMs identified for operation '{operation}' on {identifier}."
-        if selected_components:
-             err_msg += f" Check if component name(s) '{', '.join(selected_components)}' exist in the config and resolve correctly for this pod/class."
         logger.warning(err_msg)
-        # No actual error, just nothing matched the filter or config was empty.
-        return True, "no_target_vms", err_msg # Return success, but indicate no VMs were targeted
+        return True, "no_target_vms", err_msg
 
-    logger.info(f"Attempting '{operation}' on target VMs for {identifier}: {', '.join(target_vm_names)}")
-
-    # --- Perform Operation ---
+    # --- 5. Find VM Objects and Perform the Operation ---
+    logger.info(f"Attempting '{operation}' on target VMs: {', '.join(target_vm_names)}")
     overall_success = True
     failed_step = None
     error_message = None
-    vms_found_rp = []
-    vms_found_global = [] # Store VMs found globally if RP search fails or wasn't possible
+    all_vms_to_operate = []
 
-    # Try to find VMs within the RP first if rp_obj exists
-    if rp_obj:
-        for vm_in_rp in rp_obj.vm:
-            if vm_in_rp.name in target_vm_names:
-                 vms_found_rp.append(vm_in_rp)
-                 logger.debug(f"Found target VM '{vm_in_rp.name}' in RP '{resource_pool_name}'.")
-
-    # Find any remaining target VMs globally if not found in RP or if RP didn't exist
-    remaining_target_names = set(target_vm_names) - {vm.name for vm in vms_found_rp}
+    # First, try to find VMs inside the identified resource pool (more efficient).
+    if resource_pool_name:
+        rp_obj = rpm.get_obj([vim.ResourcePool], resource_pool_name)
+        if rp_obj:
+            for vm_in_rp in rp_obj.vm:
+                if vm_in_rp.name in target_vm_names:
+                     all_vms_to_operate.append(vm_in_rp)
+        else:
+            logger.warning(f"Resource pool '{resource_pool_name}' not found. Will search for VMs globally.")
+    
+    # Find any remaining VMs globally. This is the primary method for Cortex.
+    found_vm_names = {vm.name for vm in all_vms_to_operate}
+    remaining_target_names = set(target_vm_names) - found_vm_names
+    
     if remaining_target_names:
-        logger.info(f"Searching globally for remaining target VMs: {', '.join(remaining_target_names)}")
+        logger.info(f"Searching globally for remaining VMs: {', '.join(remaining_target_names)}")
         for vm_name in remaining_target_names:
             vm_obj = vmm.get_obj([vim.VirtualMachine], vm_name)
             if vm_obj:
-                vms_found_global.append(vm_obj)
-                logger.debug(f"Found target VM '{vm_name}' globally.")
+                all_vms_to_operate.append(vm_obj)
             else:
-                 logger.warning(f"Target VM '{vm_name}' not found in RP '{resource_pool_name}' or globally. Skipping.")
-                 # Mark as failure? Or just skip? Let's skip for now.
-                 # overall_success = False; failed_step = "find_vm"; error_message = ...
+                 logger.warning(f"Target VM '{vm_name}' not found globally. Skipping.")
 
-    # Combine found VMs
-    all_vms_to_operate = vms_found_rp + vms_found_global
     if not all_vms_to_operate:
-        err_msg = f"None of the target VMs ({', '.join(target_vm_names)}) found in RP '{resource_pool_name}' or globally."
+        err_msg = f"None of the target VMs ({', '.join(target_vm_names)}) were found."
         logger.error(err_msg)
         return False, "find_vm", err_msg
 
-
-    # Perform the operation on the found VMs
-    logger.info(f"Performing '{operation}' on {len(all_vms_to_operate)} found VMs...")
+    # Execute the requested operation on each found VM.
     for vm in all_vms_to_operate:
-        vm_name = vm.name # Get name for logging
         try:
             if operation == 'start':
-                logger.debug(f"Starting VM '{vm_name}'...")
-                # vmm.poweron_vm uses name, so call by name
-                vmm.poweron_vm(vm_name)
-                logger.info(f"VM '{vm_name}' start initiated/completed.")
+                vmm.poweron_vm(vm.name)
             elif operation == 'stop':
-                logger.debug(f"Stopping VM '{vm_name}'...")
-                vmm.poweroff_vm(vm_name)
-                logger.info(f"VM '{vm_name}' stop initiated/completed.")
+                vmm.poweroff_vm(vm.name)
             elif operation == 'reboot':
-                logger.debug(f"Rebooting VM '{vm_name}'...")
-                # Perform reboot by power off then power on
-                vmm.poweroff_vm(vm_name) # Ensure it's off first
-                vmm.poweron_vm(vm_name)  # Then power on
-                logger.info(f"VM '{vm_name}' reboot initiated/completed.")
+                vmm.poweroff_vm(vm.name)
+                vmm.poweron_vm(vm.name)
         except Exception as e:
-            err_msg_vm = f"Operation '{operation}' failed for VM '{vm_name}': {vmm.extract_error_message(e)}"
-            logger.error(err_msg_vm, exc_info=False) # Log less traceback by default
+            # If one VM fails, log the error but continue with the others.
+            err_msg_vm = f"Operation '{operation}' failed for VM '{vm.name}': {vmm.extract_error_message(e)}"
+            logger.error(err_msg_vm)
             overall_success = False
             failed_step = f"{operation}_vm"
-            # Append specific VM error
-            error_message = error_message + f"; {vm_name}: {e}" if error_message else f"{vm_name}: {e}"
+            error_message = (error_message + "; " if error_message else "") + err_msg_vm
 
     if not overall_success:
-       final_err_msg = f"One or more VM operations failed for {identifier}. Errors: {error_message}"
-       return False, failed_step, final_err_msg
-    else:
-        logger.info(f"Operation '{operation}' completed for all targeted VMs in {identifier}.")
-        return True, None, None
+       return False, failed_step, f"One or more VM operations failed for {identifier}. Errors: {error_message}"
+    
+    logger.info(f"Operation '{operation}' completed for all targeted VMs in {identifier}.")
+    return True, None, None
