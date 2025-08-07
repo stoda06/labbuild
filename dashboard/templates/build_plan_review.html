@@ -191,20 +191,61 @@
         </div>
     </div>
     <div class="card-footer">
-        <div class="d-flex align-items-center">
-            {# This form's action will point to the route that schedules the builds #}
-            <form action="#" method="POST">
-                {# This hidden input contains the entire build plan as a JSON string, #}
-                {# which will be sent to the server for scheduling. #}
-                <input type="hidden" name="final_plan" value="{{ build_context.final_build_commands | tojson | e }}">
-                <button type="submit" class="btn btn-success btn-lg">
-                    <i class="fas fa-calendar-check"></i> Confirm & Schedule All Builds
+        {# --- MODIFICATION: This is now a full scheduling form --- #}
+        <form action="{{ url_for('build_planner_actions.execute_plan') }}" method="POST" id="executionForm">
+            
+            <input type="hidden" name="final_plan_data" value="{{ build_context.final_build_commands | tojson | e }}">
+            
+            <h5 class="mb-3">Execution & Scheduling</h5>
+            
+            <div class="mb-3 form-check bg-danger-subtle border border-danger-subtle rounded p-3">
+                <input type="checkbox" class="form-check-input" id="perform_global_teardown" name="perform_global_teardown" value="on">
+                <label class="form-check-label fw-bold" for="perform_global_teardown">
+                    Execute Global Cleanup First
+                </label>
+                <div class="form-text text-danger-emphasis">Warning: This will tear down ALL existing labs in vCenter that are NOT marked for extension.</div>
+            </div>
+
+            <div class="row align-items-end">
+                <div class="col-md-4">
+                    <label for="schedule_option" class="form-label">Scheduling Option</label>
+                    <select class="form-select" id="schedule_option" name="schedule_option">
+                        <option value="now" selected>Run Now</option>
+                        <option value="specific_time">Schedule for a Specific Time</option>
+                    </select>
+                </div>
+                <div class="col-md-4" id="start_time_wrapper" style="display: none;">
+                    <label for="schedule_start_time" class="form-label">Start Time (Local)</label>
+                    <input type="datetime-local" class="form-control" id="schedule_start_time" name="schedule_start_time">
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <button type="submit" class="btn btn-success btn-lg" onclick="return confirm('Are you sure you want to schedule and execute this entire build plan?');">
+                    <i class="fas fa-calendar-check"></i> Confirm & Schedule Plan
+                </button>
+                <button type="button" class="btn btn-outline-info ms-2" data-bs-toggle="modal" data-bs-target="#labbuildCommandsModal">
+                    <i class="fas fa-eye"></i> Preview LabBuild Commands
+                </button>
+                <!-- Form to Generate the Main Lab Report -->
+            <form action="{{ url_for('build_planner_actions.export_planned_lab_report') }}" method="POST" class="d-inline">
+                <!-- This input contains only the data needed for the lab report -->
+                <input type="hidden" name="planned_report_data" value="{{ build_context.lab_report_data | tojson | e }}">
+                <button type="submit" class="btn btn-outline-success">
+                    <i class="fas fa-file-excel"></i> Preview Lab Report
                 </button>
             </form>
-            <button type="button" class="btn btn-outline-info ms-2" data-bs-toggle="modal" data-bs-target="#labbuildCommandsModal">
-                <i class="fas fa-eye"></i> Preview LabBuild Commands
-            </button>
-        </div>
+
+            <!-- Form 3: Form to Generate the Trainer Pod Report -->
+            <form action="{{ url_for('build_planner_actions.export_planned_trainer_report') }}" method="POST" class="d-inline">
+                <!-- This input contains only the data needed for the trainer report -->
+                <input type="hidden" name="planned_trainer_data" value="{{ build_context.trainer_report_data | tojson | e }}">
+                <button type="submit" class="btn btn-outline-primary">
+                    <i class="fas fa-user-graduate"></i> Preview Trainer Allocations
+                </button>
+            </form>
+            </div>
+        </form>
     </div>
 </div>
 

@@ -148,4 +148,21 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     }
+    
+    const scheduleOptionSelect = document.getElementById('schedule_option');
+    const startTimeWrapper = document.getElementById('start_time_wrapper');
+    const startTimeInput = document.getElementById('schedule_start_time');
+
+    if (scheduleOptionSelect && startTimeWrapper && startTimeInput) {
+        scheduleOptionSelect.addEventListener('change', function() {
+            if (this.value === 'specific_time') {
+                startTimeWrapper.style.display = 'block';
+                startTimeInput.required = true;
+            } else {
+                startTimeWrapper.style.display = 'none';
+                startTimeInput.required = false;
+                startTimeInput.value = ''; // Clear the value if hidden
+            }
+        });
+    }
 });

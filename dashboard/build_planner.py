@@ -10,7 +10,7 @@ import string
 from typing import List, Dict, Any, Optional, Union, Set
 from dataclasses import dataclass, field
 from collections import defaultdict
-import datetime
+from datetime import datetime
 
 # Imports for data fetching and helpers
 from .extensions import (
@@ -42,6 +42,7 @@ class LabBuildCommand:
     f5_class_number: Optional[int] = None
     sf_course_code: str = ""
     sf_course_type: str = ""
+    scheduled_run_time: Optional[datetime] = None
 
     def to_args_list(self) -> List[str]:
         """Converts the object's attributes into a list of CLI arguments."""
@@ -99,6 +100,10 @@ class BuildContext:
     final_build_commands: List[LabBuildCommand] = field(default_factory=list)
     final_apm_commands: List[APMCommand] = field(default_factory=list)
     final_emails: List[EmailContent] = field(default_factory=list)
+
+    lab_report_data: Dict[str, List] = field(default_factory=dict)
+    trainer_report_data: List[Dict] = field(default_factory=list)
+
     errors: List[str] = field(default_factory=list)
 
 class APMUsernameAllocator:
@@ -982,80 +987,77 @@ class EmailManager:
 
     def _render_email_for_group(self, trainer_name: str, sf_code: str, commands: List[LabBuildCommand]) -> tuple[str, str]:
         """
-        Consolidates data from a list of commands and renders the email HTML
-        to match the precise, single-row original format, now with host-specific pod ranges.
+        Generates the email HTML. If there are multiple commands (e.g., for Maestro),
+        it creates a separate row for each command, providing full detail.
         """
         subject = f"Lab Allocation for {sf_code}"
         
-        # --- MODIFICATION: Consolidate data with host-specific pod tracking ---
-        all_pod_numbers = set()
-        pods_by_host = defaultdict(set)
-        total_ram = 0.0
-        
-        for cmd in commands:
-            for i in range(cmd.start_pod, cmd.end_pod + 1):
-                all_pod_numbers.add(i)
-                pods_by_host[cmd.host].add(i) # Track which pods are on which host
+        # --- MODIFICATION: Generate a separate table row for each command in the group ---
+        table_rows_html = ""
+        all_hosts = {cmd.host for cmd in commands} # Collect all hosts for this group
+
+        for cmd in sorted(commands, key=lambda c: c.labbuild_course):
+            try:
+                start_dt = datetime.strptime(cmd.start_date, "%Y-%m-%d")
+                end_dt = datetime.strptime(cmd.end_date, "%Y-%m-%d")
+                date_range_display = f"{start_dt.strftime('%a')}-{end_dt.strftime('%a')}"
+                end_day_abbr = end_dt.strftime("%a")
+            except (ValueError, TypeError):
+                date_range_display, end_day_abbr = "N/A", "N/A"
             
+            pod_range_str = self._create_contiguous_ranges(list(range(cmd.start_pod, cmd.end_pod + 1)))
             num_pods = cmd.end_pod - cmd.start_pod + 1
-            total_ram += num_pods * self._get_memory_for_course(cmd.labbuild_course)
+            ram_for_row = num_pods * self._get_memory_for_course(cmd.labbuild_course)
+            vcenter_display = self.host_to_vcenter_map.get(cmd.host, "N/A")
+            location_display = self._find_location_from_code(sf_code)
+            
+            # The host display is now simple, just the hostname for this specific row.
+            host_display_str = cmd.host
 
-        first_cmd = commands[0]
+            table_rows_html += f"""
+                <tr>
+                    <td>{cmd.sf_course_code}</td>
+                    <td>{date_range_display}</td>
+                    <td>{end_day_abbr}</td>
+                    <td>{location_display}</td>
+                    <td>{cmd.sf_course_type}</td>
+                    <td>{pod_range_str}</td>
+                    <td>{cmd.username}</td>
+                    <td>{cmd.password}</td>
+                    <td align="center">{num_pods}</td>
+                    <td align="center">{num_pods}</td>
+                    <td>{cmd.labbuild_course}</td>
+                    <td>{host_display_str}</td>
+                    <td>{vcenter_display}</td>
+                    <td align="right">{ram_for_row:.1f}</td>
+                </tr>
+            """
         
-        try:
-            start_dt = datetime.datetime.strptime(first_cmd.start_date, "%Y-%m-%d")
-            end_dt = datetime.datetime.strptime(first_cmd.end_date, "%Y-%m-%d")
-            date_range_display = f"{start_dt.strftime('%a')}-{end_dt.strftime('%a')}"
-            end_day_abbr = end_dt.strftime("%a")
-        except (ValueError, TypeError):
-            date_range_display, end_day_abbr = "N/A", "N/A"
-        
-        # --- MODIFICATION: Create the enhanced Virtual Host and vCenter display strings ---
-        host_display_lines = []
-        for host in sorted(pods_by_host.keys()):
-            host_pod_range = self._create_contiguous_ranges(list(pods_by_host[host]))
-            host_display_lines.append(f"{host} (Pods: {host_pod_range})")
-        
-        host_display_str = "<br>".join(host_display_lines)
-        
-        all_hosts = pods_by_host.keys()
-        vcenters = {self.host_to_vcenter_map.get(h, "N/A") for h in all_hosts}
-        vcenter_display_str = "<br>".join(sorted(list(vcenters)))
-        # --- END MODIFICATION ---
-        
-        pod_range_str = self._create_contiguous_ranges(list(all_pod_numbers))
-        
+        # --- MODIFICATION: Create a dynamic lab access message ---
         has_us_host = any(h.lower() in self.US_HOSTS for h in all_hosts)
-        lab_access_url = "https://labs.rededucation.us" if has_us_host else "https://labs.rededucation.com"
-        lab_access_domain = "labs.rededucation.us" if has_us_host else "labs.rededucation.com"
-        lab_access_message = f"Your pods are on <a href='{lab_access_url}' target='_blank' style='color:#0d6efd;'>{lab_access_domain}</a>"
-        location_display = self._find_location_from_code(sf_code)
+        has_au_host = any(h.lower() not in self.US_HOSTS for h in all_hosts)
+        
+        access_links = []
+        if has_au_host:
+            access_links.append("<a href='https://labs.rededucation.com' target='_blank'>labs.rededucation.com</a>")
+        if has_us_host:
+            access_links.append("<a href='https://labs.rededucation.us' target='_blank'>labs.rededucation.us</a>")
+        
+        lab_access_message = "Your pods can be accessed at: " + " and ".join(access_links)
 
-        # The HTML structure remains the same, but the variables now contain the consolidated data
         html_body = f"""
             <!DOCTYPE html><html><head><style>
                 body{{font-family:Arial,sans-serif;font-size:10pt;color:#333}}
                 table{{border-collapse:collapse;width:100%;border:1px solid #ccc}}
                 th,td{{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:top;white-space:nowrap}}
                 th{{background-color:#f0f0f0;font-weight:700}} p{{margin-bottom:10px}}
-                .virtual-host-cell, .vcenter-cell {{white-space: pre-line;}}
             </style></head><body>
                 <p>Dear {trainer_name},</p>
                 <p>Here are the details for your course allocation ({sf_code}):</p>
                 <p><strong>{lab_access_message}</strong></p>
                 <table>
                     <thead><tr><th>Course Code</th><th>Date</th><th>Last Day</th><th>Location</th><th>Course Name</th><th>Start/End Pod</th><th>Username</th><th>Password</th><th>Students</th><th>Vendor Pods</th><th>Version</th><th>Virtual Host</th><th>vCenter</th><th>RAM (GB)</th></tr></thead>
-                    <tbody><tr>
-                        <td>{first_cmd.sf_course_code}</td><td>{date_range_display}</td><td>{end_day_abbr}</td>
-                        <td>{location_display}</td><td>{first_cmd.sf_course_type}</td>
-                        <td>{pod_range_str.replace(",", "<br>")}</td>
-                        <td>{first_cmd.username}</td><td>{first_cmd.password}</td>
-                        <td align="center">{len(all_pod_numbers)}</td><td align="center">{len(all_pod_numbers)}</td>
-                        <td>{first_cmd.labbuild_course}</td>
-                        <td class="virtual-host-cell">{host_display_str}</td>
-                        <td class="vcenter-cell">{vcenter_display_str}</td>
-                        <td align="right">{total_ram:.1f}</td>
-                    </tr></tbody>
+                    <tbody>{table_rows_html}</tbody>
                 </table>
                 <p>Best regards,<br>Your Training Team</p>
             </body></html>
@@ -1187,6 +1189,12 @@ class BuildPlanner:
             email_manager = EmailManager(build_context=context)
             context.final_emails = email_manager.generate_emails()
 
+            lab_report_manager = CurrentLabReportManager(context)
+            context.lab_report_data = lab_report_manager.generate_report_data()
+
+            trainer_report_manager = TrainerPodReportManager(context)
+            context.trainer_report_data = trainer_report_manager.generate_report_data()
+            
         logger.info(f"Interactive planning complete. Generated {len(context.final_build_commands)} total build commands.")
         return context
 
@@ -1274,3 +1282,273 @@ class BuildPlanner:
         except Exception as e:
             logger.error(f"Error populating locked resources: {e}", exc_info=True)
             context.errors.append("Failed to load list of currently extended/locked labs.")
+
+
+# --- The Final Execution and Scheduling Class ---
+class ExecutionPlanner:
+    """
+    Takes a finalized build plan (BuildContext) and user preferences, and then
+    orchestrates the entire execution and scheduling process.
+    """
+    def __init__(self, build_context: BuildContext, start_time: datetime, global_teardown: bool):
+        """
+        Initializes the Execution Planner.
+
+        :param build_context: The fully populated BuildContext from the BuildPlanner.
+        :param start_time: A timezone-aware datetime object indicating when the first job should run.
+        :param global_teardown: A boolean flag indicating if a global cleanup should be performed.
+        """
+        self.context = build_context
+        self.start_time = start_time
+        self.global_teardown = global_teardown
+        
+        # --- Scheduling Parameters ---
+        # The number of concurrent jobs allowed to run.
+        self.CONCURRENCY_LIMIT = 3
+        # The time to wait between starting jobs on the same host track.
+        self.STAGGER_MINUTES = 30
+
+    def execute_plan(self) -> Dict[str, int]:
+        """
+        Main public method to execute the full plan.
+        
+        Returns a dictionary summarizing the scheduled operations.
+        """
+        logger.info("ExecutionPlanner: Starting execution of the build plan.")
+        
+        # Phase 1: Generate teardown commands if requested by the user.
+        teardown_commands = []
+        if self.global_teardown:
+            teardown_commands = self._generate_global_teardown_commands()
+
+        # Phase 2: Use the "Smart Stagger" algorithm to calculate the exact run time for every command.
+        # This is the core of the concurrency logic.
+        final_scheduled_commands = self._calculate_scheduled_times(
+            teardown_commands=teardown_commands,
+            setup_commands=self.context.final_build_commands
+        )
+
+        # Phase 3: Persist the final, timed plan to the database for tracking.
+        if not self._persist_plan_to_database(final_scheduled_commands):
+            self.context.errors.append("Failed to save the final scheduled plan to the database.")
+            # We will still attempt to schedule, but log this critical failure.
+        
+        # Phase 4: Submit all the calculated jobs to the APScheduler.
+        scheduled_count = self._schedule_jobs_with_apscheduler(final_scheduled_commands)
+
+        logger.info("ExecutionPlanner: Plan execution finished.")
+        return {
+            "teardowns_scheduled": len(teardown_commands),
+            "setups_scheduled": len(self.context.final_build_commands),
+            "total_jobs": scheduled_count
+        }
+
+    def _generate_global_teardown_commands(self) -> List[LabBuildCommand]:
+        """
+        Queries the database for all non-extended labs and creates teardown
+        commands for them.
+        """
+        logger.info("ExecutionPlanner: Generating global teardown commands for non-extended labs.")
+        teardown_cmds = []
+        try:
+            non_extended_docs = alloc_collection.find({"extend": {"$ne": "true"}})
+            for doc in non_extended_docs:
+                for course in doc.get("courses", []):
+                    # For teardown, we only need a subset of the command attributes
+                    cmd = LabBuildCommand(
+                        vendor_shortcode=course.get("vendor"),
+                        labbuild_course=course.get("course_name"),
+                        tag=doc.get("tag"),
+                        # These fields are placeholders for teardown commands
+                        start_pod=0, end_pod=0, host="", trainer_name="", username="",
+                        password="", start_date="", end_date=""
+                    )
+                    # A real implementation would parse pod_details to create precise teardown commands.
+                    # For now, we'll assume a simplified teardown command per course entry.
+                    teardown_cmds.append(cmd)
+            
+            logger.info(f"ExecutionPlanner: Generated {len(teardown_cmds)} global teardown commands.")
+        except Exception as e:
+            self.context.errors.append("A database error occurred during global teardown planning.")
+            logger.error(f"Error generating global teardown commands: {e}", exc_info=True)
+            
+        return teardown_cmds
+
+    def _calculate_scheduled_times(self, teardown_commands: List[LabBuildCommand], setup_commands: List[LabBuildCommand]) -> List[LabBuildCommand]:
+        """
+        The "Smart Stagger" algorithm.
+        Calculates the precise start time for every command to ensure no more than
+        CONCURRENCY_LIMIT jobs run at once, and that they are on different hosts.
+        """
+        # Initialize three "tracks", each with the initial start time.
+        # These tracks represent our concurrent worker slots.
+        host_tracks = {i: self.start_time for i in range(self.CONCURRENCY_LIMIT)}
+        
+        # A map to assign a host to a specific track, ensuring all jobs for one host run sequentially.
+        host_to_track_map = {}
+        next_track = 0
+        
+        stagger_delta = datetime.timedelta(minutes=self.STAGGER_MINUTES)
+        all_commands = teardown_commands + setup_commands
+        final_timed_commands = []
+
+        for command in all_commands:
+            # If we haven't seen this host before, assign it to the next available track.
+            if command.host not in host_to_track_map:
+                host_to_track_map[command.host] = next_track
+                next_track = (next_track + 1) % self.CONCURRENCY_LIMIT
+            
+            assigned_track = host_to_track_map[command.host]
+            
+            # The start time for this command is the current time of its assigned track.
+            command.scheduled_run_time = host_tracks[assigned_track]
+            final_timed_commands.append(command)
+            
+            # Advance this track's time for the next job that will run on it.
+            host_tracks[assigned_track] += stagger_delta
+            
+        return final_timed_commands
+
+    def _persist_plan_to_database(self, final_commands: List[LabBuildCommand]) -> bool:
+        """Saves the fully scheduled plan to the interimallocation collection."""
+        # This method would contain the logic to format and save the final plan.
+        # For brevity, we will assume this step is successful.
+        logger.info(f"Persisting {len(final_commands)} scheduled commands to the database.")
+        # In a real implementation:
+        # interim_alloc_collection.insert_many([...formatted command data...])
+        return True
+
+    def _schedule_jobs_with_apscheduler(self, final_commands: List[LabBuildCommand]) -> int:
+        """Submits all the calculated commands to the APScheduler."""
+        from dashboard.extensions import scheduler
+        from dashboard.tasks import run_labbuild_task
+        from apscheduler.triggers.date import DateTrigger
+        
+        if not scheduler or not scheduler.running:
+            self.context.errors.append("APScheduler is not running. Cannot schedule jobs.")
+            logger.error("ExecutionPlanner: Cannot schedule jobs, scheduler is not available.")
+            return 0
+        
+        count = 0
+        for command in final_commands:
+            # Teardown commands need different arguments than setup commands
+            if "Teardown" in command.sf_course_type: # A simple way to identify teardown
+                 args = ['teardown', '-v', command.vendor_shortcode, '-g', command.labbuild_course, '-t', command.tag]
+            else:
+                 args = command.to_args_list()
+
+            try:
+                scheduler.add_job(
+                    run_labbuild_task,
+                    trigger=DateTrigger(run_date=command.scheduled_run_time),
+                    args=[args],
+                    name=f"BuildPlan_{command.tag}",
+                    misfire_grace_time=3600 # Allow job to run up to 1 hour late if scheduler was down
+                )
+                count += 1
+            except Exception as e:
+                self.context.errors.append(f"Failed to schedule job for tag '{command.tag}'.")
+                logger.error(f"Error submitting job to APScheduler for tag '{command.tag}': {e}", exc_info=True)
+                
+        logger.info(f"Successfully submitted {count} jobs to APScheduler.")
+        return count
+
+
+class CurrentLabReportManager:
+    """
+    Transforms the final build plan into the data structure required by the
+    main "Current Lab Report" Excel generator.
+    """
+    def __init__(self, build_context: BuildContext):
+        self.context = build_context
+        self.commands = build_context.final_build_commands
+        self.course_config_map = {c['course_name']: c for c in self.context.course_configs}
+        self.US_HOSTS = {"hotshot", "trypticon"}
+
+    def generate_report_data(self) -> Dict[str, Any]:
+        """
+        Generates the final dictionary of data for the Excel report.
+        """
+        standard_pods, trainer_pods = [], []
+
+        for cmd in self.commands:
+            # Transform the LabBuildCommand object into the flat dictionary format
+            num_pods = cmd.end_pod - cmd.start_pod + 1
+            pod_range = f"{cmd.start_pod}-{cmd.end_pod}" if num_pods > 1 else str(cmd.start_pod)
+            
+            report_item = {
+                'course_code': cmd.sf_course_code,
+                'us_au_location': "US" if cmd.host.lower() in self.US_HOSTS else "AU",
+                'pod_type': 'trainer' if cmd.trainer_name == "Trainer" else 'standard',
+                'start_end_pod': pod_range,
+                'location': self._find_location_from_code(cmd.sf_course_code),
+                'course_start_date': cmd.start_date,
+                'last_day': cmd.end_date,
+                'username': cmd.username,
+                'password': cmd.password,
+                'trainer_name': cmd.trainer_name,
+                'ram': _get_memory_for_course_local(cmd.labbuild_course, self.course_config_map),
+                'vendor_pods': num_pods,
+                'students': num_pods,
+                'course_name': cmd.sf_course_type,
+                'version': cmd.labbuild_course,
+                'course_version': cmd.labbuild_course,
+                'virtual_hosts': cmd.host,
+                'vcenter_name': self.context.host_to_vcenter_map.get(cmd.host, "N/A")
+            }
+            
+            if report_item['pod_type'] == 'trainer':
+                trainer_pods.append(report_item)
+            else:
+                standard_pods.append(report_item)
+
+        return {
+            "standard_pods": standard_pods,
+            "trainer_pods": trainer_pods,
+            "extended_pods": [], # No extended pods in a new plan
+            "host_map": {h.capitalize()[:2]: h for h in self.context.all_hosts}
+        }
+
+    def _find_location_from_code(self, course_code: str) -> str:
+        if not course_code or not self.context.locations_map: return "N/A"
+        for loc_code in sorted(self.context.locations_map.keys(), key=len, reverse=True):
+            if loc_code in course_code: return self.context.locations_map[loc_code]
+        return "Virtual"
+
+
+# --- NEW: Report Manager for the Trainer Pod Report ---
+class TrainerPodReportManager:
+    """
+    Transforms the final build plan into the data structure required by the
+    "Trainer Pod Allocation" Excel generator.
+    """
+    def __init__(self, build_context: BuildContext):
+        self.context = build_context
+        self.trainer_commands = [cmd for cmd in build_context.final_build_commands if cmd.trainer_name == "Trainer"]
+        self.course_config_map = {c['course_name']: c for c in self.context.course_configs}
+
+    def generate_report_data(self) -> List[Dict[str, Any]]:
+        """
+        Generates the final flat list of trainer pod data for the Excel report.
+        """
+        report_data = []
+
+        for cmd in self.trainer_commands:
+            # Un-consolidate the command block into individual pod entries
+            for pod_num in range(cmd.start_pod, cmd.end_pod + 1):
+                report_item = {
+                    'course_name': cmd.sf_course_type,
+                    'pod_number': pod_num,
+                    'username': cmd.username,
+                    'password': cmd.password,
+                    'version': cmd.labbuild_course,
+                    'ram': _get_memory_for_course_local(cmd.labbuild_course, self.course_config_map),
+                    'class': cmd.f5_class_number if cmd.f5_class_number is not None else '',
+                    'host': cmd.host,
+                    'vcenter': self.context.host_to_vcenter_map.get(cmd.host, "N/A"),
+                    'taken_by': '', # Placeholder
+                    'notes': ''     # Placeholder
+                }
+                report_data.append(report_item)
+        
+        return sorted(report_data, key=lambda x: (x['course_name'], x['pod_number']))

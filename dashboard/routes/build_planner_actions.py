@@ -30,7 +30,12 @@ from .apm_actions import _generate_apm_data_for_plan as generate_apm_helper
 from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 from bson import ObjectId
 from bson.errors import InvalidId
-from ..build_planner import BuildPlanner
+from ..build_planner import BuildPlanner, ExecutionPlanner
+
+from ..report_generator import generate_excel_in_memory
+from ..trainer_report_generator import create_trainer_report_in_memory
+from ..utils import get_next_monday_date_str
+from flask import Response
 
 bp = Blueprint('build_planner_actions', __name__, url_prefix='/build-planner')
 logger = logging.getLogger('dashboard.routes.build_planner')
@@ -1569,3 +1574,150 @@ def plan_selected_courses():
         logger.error(f"Fatal error during build plan generation: {e}", exc_info=True)
         flash("A critical error occurred while generating the build plan. Please check the server logs.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
+    
+
+@bp.route('/execute-plan', methods=['POST'])
+def execute_plan():
+    """
+    Receives the final build plan and user scheduling choices, then uses the
+    ExecutionPlanner to schedule all the necessary teardown and setup jobs.
+    """
+    # --- 1. Get User Choices from the Form ---
+    final_plan_json = request.form.get('final_plan_data')
+    schedule_option = request.form.get('schedule_option', 'now')
+    start_time_str = request.form.get('schedule_start_time')
+    perform_teardown = request.form.get('perform_global_teardown') == 'on'
+
+    try:
+        final_build_commands_data = json.loads(final_plan_json)
+        if not isinstance(final_build_commands_data, list):
+            raise ValueError("Plan data is not a list.")
+    except (json.JSONDecodeError, ValueError):
+        flash("Invalid final plan data received. Please try again.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+
+    # --- 2. Calculate the Start Time in UTC ---
+    # We must use a timezone-aware datetime for the scheduler.
+    scheduler_tz = pytz.timezone('Australia/Sydney') # Or get from your app config
+    start_time_utc = datetime.datetime.now(pytz.utc) # Default to now
+
+    if schedule_option == 'specific_time' and start_time_str:
+        try:
+            naive_dt = datetime.datetime.fromisoformat(start_time_str)
+            # Interpret the user's input as being in the server's local timezone
+            local_dt = scheduler_tz.localize(naive_dt)
+            # Convert it to UTC for the scheduler
+            start_time_utc = local_dt.astimezone(pytz.utc)
+        except ValueError:
+            flash("Invalid date/time format. Scheduling for 'now' instead.", "warning")
+    
+    logger.info(f"Execution plan starting. Global teardown: {perform_teardown}. First job at (UTC): {start_time_utc.isoformat()}")
+
+    # --- 3. Re-create the BuildContext (or fetch it from a session/cache) ---
+    # For this example, we re-run the planner to get the full context. A more
+    # advanced implementation might cache the context from the previous step.
+    # We pass the user's selections back in case they were modified.
+    
+    # This step is complex. For now, let's assume we re-fetch the context.
+    # In a real app, you would pass the full BuildContext ID or cache it.
+    
+    # Let's simplify: We have the build commands, and we need the rest of the context.
+    planner = BuildPlanner()
+    # Fetch data but not from SF
+    initial_data = planner._fetch_initial_data(fetch_sf_data=False)
+    # Re-create a context (we won't re-run planners, just need the shell)
+    context = BuildPlanner.BuildContext(
+        all_hosts=initial_data["hosts_list"],
+        course_configs=initial_data["course_configs"],
+        build_rules=initial_data["build_rules"],
+        trainer_emails=initial_data["trainer_emails"],
+        host_to_vcenter_map=initial_data["host_to_vcenter_map"]
+    )
+    # Manually re-insert the finalized commands from the form
+    # Note: This is a simplification. A real app would pass a context_id.
+    context.final_build_commands = [BuildPlanner.LabBuildCommand(**cmd) for cmd in final_build_commands_data]
+
+
+    # --- 4. Instantiate and Run the Execution Planner ---
+    try:
+        execution_planner = ExecutionPlanner(
+            build_context=context,
+            start_time=start_time_utc,
+            global_teardown=perform_teardown
+        )
+        summary = execution_planner.execute_plan()
+        
+        if context.errors:
+            flash("The following errors occurred during execution planning: " + " | ".join(context.errors), "warning")
+
+        flash(f"Successfully scheduled {summary['total_jobs']} operations. ({summary['teardowns_scheduled']} teardowns, {summary['setups_scheduled']} setups)", "success")
+        return redirect(url_for('main.index'))
+        
+    except Exception as e:
+        logger.error(f"Fatal error during plan execution: {e}", exc_info=True)
+        flash("A critical error occurred while scheduling the build plan.", "danger")
+        return redirect(url_for('.plan_selected_courses')) # Redirect back to the review page on failure
+    
+@bp.route('/export-planned-lab-report', methods=['POST'])
+def export_planned_lab_report():
+    """
+    Receives the planned report data, generates the main lab report Excel file,
+    and serves it for download.
+    """
+    report_data_json = request.form.get('planned_report_data')
+    if not report_data_json:
+        flash("Report data was missing.", "danger")
+        return redirect(request.referrer or url_for('main.index'))
+
+    try:
+        report_data = json.loads(report_data_json)
+        
+        excel_stream = generate_excel_in_memory(
+            course_allocations=report_data.get("standard_pods", []),
+            trainer_pods=report_data.get("trainer_pods", []),
+            extended_pods=report_data.get("extended_pods", []),
+            host_map=report_data.get("host_map", {})
+        )
+
+        filename = f"Lab Build PREVIEW - {get_next_monday_date_str('%Y%m%d')}.xlsx"
+        
+        return Response(
+            excel_stream,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment;filename={filename}'}
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate planned lab report preview: {e}", exc_info=True)
+        flash(f"Could not generate the report preview. Error: {e}", 'danger')
+        return redirect(request.referrer or url_for('main.index'))
+
+
+# --- NEW ROUTE: For downloading the planned trainer pod report ---
+# --- MODIFICATION: Added methods=['POST'] to allow the form to submit here ---
+@bp.route('/export-planned-trainer-report', methods=['POST'])
+def export_planned_trainer_report():
+    """
+    Receives the planned trainer data, generates the trainer pod report Excel file,
+    and serves it for download.
+    """
+    trainer_data_json = request.form.get('planned_trainer_data')
+    if not trainer_data_json:
+        flash("Trainer report data was missing.", "danger")
+        return redirect(request.referrer or url_for('main.index'))
+
+    try:
+        trainer_data = json.loads(trainer_data_json)
+        
+        excel_stream = create_trainer_report_in_memory(trainer_data)
+
+        filename = f"Trainer Pod Allocation PREVIEW - {get_next_monday_date_str('%Y%m%d')}.xlsx"
+
+        return Response(
+            excel_stream,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment;filename={filename}'}
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate planned trainer report preview: {e}", exc_info=True)
+        flash(f"Could not generate the trainer report preview. Error: {e}", 'danger')
+        return redirect(request.referrer or url_for('main.index'))
