@@ -10,9 +10,11 @@ import socket
 import ssl
 import sys
 import threading
+import os
 print("testing from the latest pano.py")
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from db_utils import get_vcenter_by_host
 
 VERBOSE = False
@@ -65,16 +67,22 @@ def resolve_ip(ip_template, pod, host):
     return ip_template
 
 def get_vm_power_map(si, pod):
+    content = si.RetrieveContent()
+    rp_name = f"pa-pod{pod}"
+    container_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.ResourcePool], True)
+
     try:
-        content = si.RetrieveContent()
-        rp_name = f"pa-pod{pod}"
-        container_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.ResourcePool], True)
         for rp in container_view.view:
-            if rp.name == rp_name:
+            if rp.name.strip() == rp_name:
                 return {vm.name: vm.runtime.powerState for vm in rp.vm}
         return {}
     except Exception as e:
-        print(f"⚠️ Could not fetch VMs for pod {pod}: {e}"); return {}
+        print(f"⚠️ Could not fetch VMs for pod {pod}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
+    finally:
+        container_view.Destroy()
 
 # Renaming this function to what the test runner expects
 def run_ssh_checks(pod, components, host, power_map, print_lock):
@@ -86,7 +94,7 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
         with print_lock:
             print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) for internal tests...")
         child = pexpect.spawn(f"ssh {host_fqdn}", timeout=30, echo=False)
-        child.expect(["[>#\$]"], timeout=10)
+        child.expect(["[>#\\$]"], timeout=10)
         child.sendline("export PS1='PROMPT> '"); child.expect_exact("PROMPT> ", timeout=10)
         with print_lock:
             print(f"✅ SSH to {host_fqdn} successful. Starting tests...")
@@ -104,27 +112,14 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
         ip = resolve_ip(raw_ip, pod, host)
         status = "UNKNOWN"
         nmap_output = ""
-        # Replace {X} in names
-        clone_name = raw_clone_name.replace('{X}', str(pod))
-        ip = resolve_ip(raw_ip, pod, host)
-
-        # TEMP DEBUG
 
         try:
-            print(f"1Testing {component.name} ({component.ip}:{component.port}) from {'host' if is_endpoint else 'vr'}")
-            # 🛑 Skip VRs
-            if 'pavr' in clone_name.lower() or 'vr' in clone_name.lower():
-                log(f"Skipping VR: {clone_name}")
-                continue
-
-            # 🌐 Run external check for endpoints
-            print(f"2Testing {component.name} ({component.ip}:{component.port}) from {'host' if is_endpoint else 'vr'}")
-            if "endpoint" in component.name:
-                log(f"🌐 External test for endpoint: {clone_name} @ {ip}:{port}")
+            log(f"1Testing {clone_name} ({ip}:{port}) from {'host' if 'endpoint' in clone_name.lower() else 'vr'}")
+            if 'vr' in clone_name.lower():
+                log(f"🔁 VR component: {clone_name} — performing local nmap check")
                 command = ["nmap", "-Pn", "-p", str(port), ip]
                 result = subprocess.run(command, capture_output=True, text=True, timeout=20)
                 nmap_output = result.stdout.lower()
-                # Parse and store result
                 match = re.search(rf"{port}/tcp\s+(\w+)", nmap_output)
                 if match:
                     status = match.group(1).upper()
@@ -133,15 +128,32 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
                 else:
                     status = "DOWN"
 
-                # Record result
+                check_results.append({
+                    'pod': pod, 'component': clone_name, 'ip': ip, 'port': port,
+                    'status': status, 'host': "localhost"
+                })
+                continue
+
+
+            if "endpoint" in clone_name.lower():
+                log(f"🌐 External test for endpoint: {clone_name} @ {ip}:{port}")
+                command = ["nmap", "-Pn", "-p", str(port), ip]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+                nmap_output = result.stdout.lower()
+                match = re.search(rf"{port}/tcp\s+(\w+)", nmap_output)
+                if match:
+                    status = match.group(1).upper()
+                elif "host is up" in nmap_output:
+                    status = "FILTERED"
+                else:
+                    status = "DOWN"
+
                 check_results.append({
                     'pod': pod, 'component': clone_name, 'ip': ip, 'port': port,
                     'status': status, 'host': f"pavr{pod}"
                 })
-                continue  # ✅ Prevent SSH check below
-            print(f"3Testing {component.name} ({component.ip}:{component.port}) from {'host' if is_endpoint else 'vr'}")
+                continue
 
-            # 🔐 Otherwise, test from inside pod via SSH
             log(f"🔐 Internal test via SSH: {clone_name} @ {ip}:{port}")
             child.sendline(f"nmap -Pn -p {port} {ip}")
             child.expect_exact("PROMPT>", timeout=20)
@@ -164,10 +176,8 @@ def run_ssh_checks(pod, components, host, power_map, print_lock):
             'status': status, 'host': f"pavr{pod}"
         })
 
-        check_results.append({
-        'pod': pod, 'component': clone_name, 'ip': ip, 'port': port,
-        'status': status, 'host': f"pavr{pod}"
-    })
+    print_results_table(pod, check_results, power_map)
+    return check_results
 
 def print_results_table(pod, check_results, power_map):
     if not check_results:
