@@ -709,6 +709,20 @@ def view_upcoming_courses():
         flash("An unexpected error occurred while loading upcoming courses.", "danger")
         error_message = "Server error."
         courses_with_preselects = []
+    
+    saved_plan_batch_id = None
+    if interim_alloc_collection is not None:
+        try:
+            # Find the most recently created document that is saved for later
+            latest_plan = interim_alloc_collection.find_one(
+                {"status": "saved_for_later"},
+                sort=[("created_at", DESCENDING)]
+            )
+            if latest_plan:
+                saved_plan_batch_id = latest_plan.get('batch_review_id')
+        except PyMongoError as e:
+            logger.warning(f"Could not check for saved plans: {e}")
+
 
     # Pass augmented data (courses) and configs (for dropdowns) to template
     return render_template(
@@ -716,6 +730,7 @@ def view_upcoming_courses():
         courses=courses_with_preselects, # This list now HAS preselect_* fields
         error_message=error_message,
         course_configs_list=course_configs_list, # Still needed for dropdown options
+        saved_plan_batch_id=saved_plan_batch_id,
         current_theme=current_theme
     )
     

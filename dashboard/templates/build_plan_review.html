@@ -1,59 +1,71 @@
 <!-- In dashboard/templates/build_plan_review.html -->
 
-{# This template inherits the basic page structure (navbar, sidebar, etc.) from base.html #}
+{# This template inherits the main layout, navbar, and sidebar from base.html #}
 {% extends 'base.html' %}
 
-{# Sets the title of the browser tab for this specific page #}
+{# This block sets the title that appears in the browser's title bar or tab. #}
 {% block title %}Final Build Plan Review{% endblock %}
 
 {% block head %}
-    {{ super() }}
-    <!-- Add some specific styles for this page to handle things like modal content -->
-    <style>
-        /* Styling for the <pre> blocks in the modals to make them look like code terminals */
-        .modal-body pre {
-            background-color: var(--bs-tertiary-bg);
-            border: 1px solid var(--bs-border-color-translucent);
-            padding: 15px;
-            border-radius: var(--bs-border-radius);
-            max-height: 70vh; /* Ensure the block doesn't get too tall on large screens */
-            overflow-y: auto;
-            font-family: monospace;
-            font-size: 0.85rem;
-            white-space: pre-wrap;   /* Allow long lines to wrap */
-            word-break: break-all; /* Force long strings without spaces to break */
-        }
-    </style>
+{# This includes all the standard CSS from the base template. #}
+{{ super() }}
+<!-- Add some specific styles for this page to make the command previews look better. -->
+<style>
+    /* Styling for the <pre> blocks in the modals and APM tab to make them look like code terminals */
+    .modal-body pre,
+    #apmCommandsOutput {
+        background-color: var(--bs-tertiary-bg);
+        border: 1px solid var(--bs-border-color-translucent);
+        padding: 15px;
+        border-radius: var(--bs-border-radius);
+        max-height: 70vh;
+        /* Ensure the block doesn't get too tall on large screens */
+        overflow-y: auto;
+        font-family: monospace;
+        font-size: 0.85rem;
+        white-space: pre-wrap;
+        /* Allow long lines to wrap */
+        word-break: break-all;
+        /* Force long strings without spaces to break */
+    }
+
+    /* Styles for the accordion items in the email preview tab */
+    .email-preview-section {
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+    }
+</style>
 {% endblock %}
 
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1>Final Build Plan Review</h1>
-   {# Provides an easy way for the user to go back to the previous page #}
-   <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-sm btn-outline-secondary">Back to Upcoming Courses</a>
+    <h1>Final Build Plan Review</h1>
+    {# A simple link to navigate back to the previous page #}
+    <a href="{{ url_for('main.view_upcoming_courses') }}" class="btn btn-sm btn-outline-secondary">Back to Upcoming
+        Courses</a>
 </div>
 
 {# --- Error Display Block --- #}
-{# If the BuildPlanner encountered any errors (e.g., couldn't find a host), they are displayed here. #}
+{# If the BuildPlanner encountered any errors, they are displayed in a prominent alert box. #}
 {% if build_context.errors %}
-    <div class="alert alert-danger">
-        <h5 class="alert-heading">Errors occurred during planning:</h5>
-        <ul>
-            {% for error in build_context.errors %}
-                <li>{{ error }}</li>
-            {% endfor %}
-        </ul>
-    </div>
+<div class="alert alert-danger">
+    <h5 class="alert-heading">Errors occurred during planning:</h5>
+    <ul>
+        {% for error in build_context.errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+    </ul>
+</div>
 {% endif %}
 
 <div class="card">
     <div class="card-header">
         {# --- Tab Navigation --- #}
-        {# This uses Bootstrap's Nav Tabs component to create a clean, tabbed interface. #}
+        {# This uses Bootstrap's Nav Tabs to create a clean, tabbed interface for the different plan outputs. #}
         <ul class="nav nav-tabs card-header-tabs">
             <li class="nav-item">
-                {# The 'active' class makes this the default visible tab #}
+                {# The 'active' class makes this the default visible tab when the page loads. #}
                 <a class="nav-link active" data-bs-toggle="tab" href="#buildCommandsTab">
                     Build Commands ({{ build_context.final_build_commands|length }})
                 </a>
@@ -74,210 +86,161 @@
         <!-- Build Commands Tab Pane -->
         <div class="tab-pane fade show active" id="buildCommandsTab">
             {% if build_context.final_build_commands %}
-                <div class="table-responsive">
-                    <table class="table table-sm table-striped table-hover mb-0">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Vendor</th>
-                                <th>Host</th>
-                                <th>Pods / <span class="text-info">Class</span></th>
-                                <th>Tag / SF Code</th>
-                                <th>LabBuild Course</th>
-                                <th>Trainer</th>
-                                <th>Dates</th>
-                                <th>APM User</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {# Loop through each final build command object from the context #}
-                            {% for command in build_context.final_build_commands %}
-                            <tr>
-                                <td>{{ command.vendor_shortcode | upper }}</td>
-                                <td>{{ command.host }}</td>
-                                <td>
-                                    {{ command.start_pod }} - {{ command.end_pod }}
-                                    {# Conditionally display the F5 class number if it exists #}
-                                    {% if command.f5_class_number is not none %}
-                                        <br><small class="text-info fw-bold">(Class: {{ command.f5_class_number }})</small>
-                                    {% endif %}
-                                </td>
-                                <td><code>{{ command.tag }}</code></td>
-                                <td>{{ command.labbuild_course }}</td>
-                                <td>{{ command.trainer_name }}</td>
-                                <td>{{ command.start_date }}</td>
-                                <td><code>{{ command.username }}</code></td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Vendor</th>
+                            <th>Host</th>
+                            <th>Pods / <span class="text-info">Class</span></th>
+                            <th>Tag / SF Code</th>
+                            <th>LabBuild Course</th>
+                            <th>Trainer</th>
+                            <th>Dates</th>
+                            <th>APM User</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {# Loop through each final build command object from the context and display its details. #}
+                        {% for command in build_context.final_build_commands %}
+                        <tr>
+                            <td>{{ command.vendor_shortcode | upper }}</td>
+                            <td>{{ command.host }}</td>
+                            <td>
+                                {{ command.start_pod }} - {{ command.end_pod }}
+                                {# Conditionally display the F5 class number only if it exists. #}
+                                {% if command.f5_class_number is not none %}
+                                <br><small class="text-info fw-bold">(Class: {{ command.f5_class_number }})</small>
+                                {% endif %}
+                            </td>
+                            <td><code>{{ command.tag }}</code></td>
+                            <td>{{ command.labbuild_course }}</td>
+                            <td>{{ command.trainer_name }}</td>
+                            <td>{{ command.start_date }}</td>
+                            <td><code>{{ command.username }}</code></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
             {% else %}
-                <p class="text-muted">No valid build commands were generated.</p>
+            <p class="text-muted">No valid build commands were generated.</p>
             {% endif %}
         </div>
 
         <!-- APM Commands Tab Pane -->
         <div class="tab-pane fade" id="apmCommandsTab">
             {% if build_context.final_apm_commands %}
-                <div class="d-flex justify-content-end mb-2">
-                    <button type="button" class="btn btn-sm btn-outline-secondary" id="copyApmCommandsBtn" title="Copy all commands to clipboard">
-                        <i class="fas fa-copy"></i> Copy All Commands
-                    </button>
-                </div>
-                {# The 'pre' tag preserves whitespace, and 'code' is for semantic meaning #}
-                <pre id="apmCommandsOutput"><code>{% for command in build_context.final_apm_commands %}{{ command.to_cli_string() }}
+            <div class="d-flex justify-content-end mb-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="copyApmCommandsBtn"
+                    title="Copy all commands to clipboard">
+                    <i class="fas fa-copy"></i> Copy All Commands
+                </button>
+            </div>
+            {# The 'pre' and 'code' tags are ideal for displaying preformatted code snippets. #}
+            <pre id="apmCommandsOutput"><code>{% for command in build_context.final_apm_commands %}{{ command.to_cli_string() }}
 {% endfor %}</code></pre>
             {% else %}
-                <p class="text-muted">No APM commands were generated.</p>
+            <p class="text-muted">No APM commands were generated.</p>
             {% endif %}
         </div>
 
         <!-- Email Previews Tab Pane -->
-        <div class="tab-pane fade p-3" id="emailPreviewTab" 
-             data-send-real-url="{{ url_for('email_actions.send_trainer_email') }}"
-             data-send-test-url="{{ url_for('email_actions.send_test_email') }}">
+        <div class="tab-pane fade p-3" id="emailPreviewTab">
             {% if build_context.final_emails %}
-                <!-- === RESTORED BULK EMAIL BUTTONS === -->
-                <div class="d-flex justify-content-end mb-3">
-                    <button class="btn btn-warning btn-sm me-2" id="sendAllTestsBtn">
-                        <i class="fas fa-vial"></i> Send All as TEST
-                    </button>
-                    <button class="btn btn-success btn-sm" id="sendAllEmailsBtn">
-                        <i class="fas fa-mail-bulk"></i> Send All REAL
-                    </button>
-                </div>
-                <!-- === END MODIFICATION === -->
-
-                <div class="accordion" id="emailAccordion">
-                    {% for email in build_context.final_emails %}
-                    <div class="accordion-item">
-                        <h2 class="accordion-header" id="heading-{{ loop.index }}">
-                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ loop.index }}">
-                                To: {{ email.trainer_name }} ({{ email.recipient_email }})
-                            </button>
-                        </h2>
-                        <div id="collapse-{{ loop.index }}" class="accordion-collapse collapse" data-bs-parent="#emailAccordion">
-                            <div class="accordion-body email-preview-section p-3">
-                                <!-- === INDIVIDUAL EMAIL BUTTONS & FORM === -->
-                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <h6 class="mb-0">Email for {{ email.trainer_name }}</h6>
-                                    <div class="btn-group" role="group" 
-                                         data-trainer-name="{{ email.trainer_name }}" 
-                                         data-course-payload='{{ email.courses | tojson | e }}'>
-                                        <button type="button" class="btn btn-sm btn-outline-warning send-test-email-btn">
-                                            <i class="fas fa-vial"></i> Test
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-primary send-one-email-btn">
-                                            <i class="fas fa-paper-plane"></i> Send
-                                        </button>
-                                    </div>
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label form-label-sm">Subject:</label>
-                                    <input type="text" class="form-control form-control-sm email-subject-input" value="{{ email.subject }}">
-                                </div>
-                                <div class="mb-0">
-                                    <label class="form-label form-label-sm">Body:</label>
-                                    <iframe class="email-body-iframe" srcdoc="{{ email.html_body | e }}" style="width: 100%; height: 400px; border: 1px solid #ccc;"></iframe>
-                                </div>
-                            </div>
+            {# The accordion provides a clean, collapsible interface for multiple emails. #}
+            <div class="accordion" id="emailAccordion">
+                {% for email in build_context.final_emails %}
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="heading-{{ loop.index }}">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                            data-bs-target="#collapse-{{ loop.index }}">
+                            To: {{ email.trainer_name }} ({{ email.recipient_email }}) - Subject: {{ email.subject }}
+                        </button>
+                    </h2>
+                    <div id="collapse-{{ loop.index }}" class="accordion-collapse collapse"
+                        data-bs-parent="#emailAccordion">
+                        <div class="accordion-body">
+                            {# The 'iframe' with 'srcdoc' renders the raw email HTML safely, isolating its styles. #}
+                            <iframe srcdoc="{{ email.html_body | e }}"
+                                style="width: 100%; height: 400px; border: 1px solid #ccc;"></iframe>
                         </div>
                     </div>
-                    {% endfor %}
                 </div>
+                {% endfor %}
+            </div>
             {% else %}
-                <p class="text-muted">No emails were generated.</p>
+            <p class="text-muted">No emails were generated.</p>
             {% endif %}
         </div>
     </div>
     <div class="card-footer">
-        {# --- MODIFICATION: This is now a full scheduling form --- #}
-        <form action="{{ url_for('build_planner_actions.execute_plan') }}" method="POST" id="executionForm">
+        <div class="d-flex align-items-center flex-wrap gap-2">
             
-            <input type="hidden" name="final_plan_data" value="{{ build_context.final_build_commands | tojson | e }}">
-            
-            <h5 class="mb-3">Execution & Scheduling</h5>
-            
-            <div class="mb-3 form-check bg-danger-subtle border border-danger-subtle rounded p-3">
-                <input type="checkbox" class="form-check-input" id="perform_global_teardown" name="perform_global_teardown" value="on">
-                <label class="form-check-label fw-bold" for="perform_global_teardown">
-                    Execute Global Cleanup First
-                </label>
-                <div class="form-text text-danger-emphasis">Warning: This will tear down ALL existing labs in vCenter that are NOT marked for extension.</div>
-            </div>
+            <!-- 
+                This is the main action form for this page. Its single purpose is to save
+                the generated build plan to the database for later execution.
+            -->
+            <form action="{{ url_for('build_planner_actions.save_plan_for_later') }}" method="POST" class="d-inline">
+                
+                <!-- 
+                    This hidden input contains the entire build plan. It uses the
+                    pre-processed `final_commands_json_data` variable from the route
+                    to ensure it's a valid JSON string.
+                -->
+                <input type="hidden" name="final_build_commands_json" value='{{ final_commands_json_data | tojson }}'>
 
-            <div class="row align-items-end">
-                <div class="col-md-4">
-                    <label for="schedule_option" class="form-label">Scheduling Option</label>
-                    <select class="form-select" id="schedule_option" name="schedule_option">
-                        <option value="now" selected>Run Now</option>
-                        <option value="specific_time">Schedule for a Specific Time</option>
-                    </select>
-                </div>
-                <div class="col-md-4" id="start_time_wrapper" style="display: none;">
-                    <label for="schedule_start_time" class="form-label">Start Time (Local)</label>
-                    <input type="datetime-local" class="form-control" id="schedule_start_time" name="schedule_start_time">
-                </div>
-            </div>
-
-            <div class="mt-4">
-                <button type="submit" class="btn btn-success btn-lg" onclick="return confirm('Are you sure you want to schedule and execute this entire build plan?');">
-                    <i class="fas fa-calendar-check"></i> Confirm & Schedule Plan
-                </button>
-                <button type="button" class="btn btn-outline-info ms-2" data-bs-toggle="modal" data-bs-target="#labbuildCommandsModal">
-                    <i class="fas fa-eye"></i> Preview LabBuild Commands
-                </button>
-                <!-- Form to Generate the Main Lab Report -->
-            <form action="{{ url_for('build_planner_actions.export_planned_lab_report') }}" method="POST" class="d-inline">
-                <!-- This input contains only the data needed for the lab report -->
-                <input type="hidden" name="planned_report_data" value="{{ build_context.lab_report_data | tojson | e }}">
-                <button type="submit" class="btn btn-outline-success">
-                    <i class="fas fa-file-excel"></i> Preview Lab Report
+                <!-- 
+                    This is the primary user action button. It submits the form.
+                    The onclick confirmation provides a safety check for the user.
+                -->
+                <button type="submit" class="btn btn-primary btn-lg" 
+                        onclick="return confirm('Are you sure you want to save this build plan? This will overwrite any previously saved plan.');">
+                    <i class="fas fa-save"></i> Save Build Plan
                 </button>
             </form>
 
-            <!-- Form 3: Form to Generate the Trainer Pod Report -->
-            <form action="{{ url_for('build_planner_actions.export_planned_trainer_report') }}" method="POST" class="d-inline">
-                <!-- This input contains only the data needed for the trainer report -->
-                <input type="hidden" name="planned_trainer_data" value="{{ build_context.trainer_report_data | tojson | e }}">
-                <button type="submit" class="btn btn-outline-primary">
-                    <i class="fas fa-user-graduate"></i> Preview Trainer Allocations
-                </button>
-            </form>
-            </div>
-        </form>
+            <!-- 
+                This is a secondary action button. It does NOT submit the form (type="button").
+                Its only job is to open the modal that shows a preview of the raw commands.
+            -->
+            <button type="button" class="btn btn-outline-info ms-2" data-bs-toggle="modal" data-bs-target="#labbuildCommandsModal">
+                <i class="fas fa-eye"></i> Preview Build Commands
+            </button>
+        </div>
     </div>
 </div>
 
-<!-- MODAL for LabBuild Commands -->
-<div class="modal fade" id="labbuildCommandsModal" tabindex="-1" aria-labelledby="labbuildCommandsModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-xl modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="labbuildCommandsModalLabel">LabBuild Commands Preview</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <pre id="labbuildCommandsOutput"><code>{# Loop through the commands and format them into the CLI string #}
-{%- for command in build_context.final_build_commands -%}
-labbuild {{ command.to_args_list() | join(' ') }}
+<!-- MODAL for LabBuild Commands Preview -->
+<div class="modal fade" id="labbuildCommandsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">LabBuild Commands Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="labbuildCommandsOutput"><code>{# Loop through the commands and format them into the final CLI string. #}
+{%- for command in final_commands_json_data -%}
+labbuild setup -v {{ command.vendor_shortcode }} -g "{{ command.labbuild_course }}" --host {{ command.host }} -s {{ command.start_pod }} -e {{ command.end_pod }} -t "{{ command.tag }}" --start-date {{ command.start_date }} --end-date {{ command.end_date }} --trainer-name "{{ command.trainer_name }}" --username {{ command.username }} --password {{ command.password }}{% if command.f5_class_number %} -cn {{ command.f5_class_number }}{% endif %}
 {% endfor -%}
 </code></pre>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" id="copyLabbuildCommandsBtn" title="Copy all commands to clipboard">
-            <i class="fas fa-copy"></i> Copy All Commands
-        </button>
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-      </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" id="copyLabbuildCommandsBtn"
+                    title="Copy all commands to clipboard">
+                    <i class="fas fa-copy"></i> Copy All Commands
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
     </div>
-  </div>
 </div>
 {% endblock %}
 
 
 {% block scripts %}
-    {{ super() }}
-    {# Link to the JavaScript file that adds interactivity (like the copy buttons) #}
-    <script src="{{ url_for('static', filename='js/build_plan_review.js') }}" defer></script>
+{{ super() }}
+{# This links to the JavaScript file that adds interactivity, like the "Copy" buttons. #}
+<script src="{{ url_for('static', filename='js/build_plan_review.js') }}" defer></script>
 {% endblock %}

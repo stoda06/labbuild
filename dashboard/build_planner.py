@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Union, Set
 from dataclasses import dataclass, field
 from collections import defaultdict
 from datetime import datetime
+from dataclasses import asdict
 
 # Imports for data fetching and helpers
 from .extensions import (
@@ -56,6 +57,11 @@ class LabBuildCommand:
         if self.f5_class_number is not None:
             args.extend(['-cn', str(self.f5_class_number)])
         return args
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Converts the dataclass instance to a dictionary."""
+        return asdict(self)
+    
 
 # --- Data Structure for a single APM Command ---
 @dataclass

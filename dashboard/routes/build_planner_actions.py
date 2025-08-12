@@ -1,7 +1,7 @@
 import logging
 import json
 import threading
-import datetime
+from datetime import datetime
 import pytz
 import re
 from flask import (
@@ -30,7 +30,7 @@ from .apm_actions import _generate_apm_data_for_plan as generate_apm_helper
 from constants import SUBSEQUENT_POD_MEMORY_FACTOR
 from bson import ObjectId
 from bson.errors import InvalidId
-from ..build_planner import BuildPlanner, ExecutionPlanner
+from ..build_planner import BuildPlanner, ExecutionPlanner, LabBuildCommand
 
 from ..report_generator import generate_excel_in_memory
 from ..trainer_report_generator import create_trainer_report_in_memory
@@ -397,7 +397,7 @@ def intermediate_build_review():
 
             
             base_interim_doc = {
-                "batch_review_id": batch_review_id, "created_at": datetime.datetime.now(pytz.utc),
+                "batch_review_id": batch_review_id, "created_at": datetime.now(pytz.utc),
                 "status": "pending_student_review", "sf_course_code": sf_code,
                 "sf_course_type": sf_course_type, "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
                 "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code),
@@ -517,7 +517,7 @@ def intermediate_build_review():
             
             interim_doc = {
                 "_id": ObjectId(), "batch_review_id": batch_review_id,
-                "created_at": datetime.datetime.now(pytz.utc), "status": "pending_student_review",
+                "created_at": datetime.now(pytz.utc), "status": "pending_student_review",
                 "sf_course_code": sf_code, "sf_course_type": sf_course_type,
                 "sf_trainer_name": course_input.get('sf_trainer_name', 'N/A'),
                 "sf_start_date": _format_date_for_review(course_input.get('sf_start_date'), sf_code),
@@ -649,7 +649,7 @@ def prepare_trainer_pods():
             update_payload = {
                 "assignments": item.get("interactive_assignments", []),
                 "status": "student_confirmed", 
-                "updated_at": datetime.datetime.now(pytz.utc)
+                "updated_at": datetime.now(pytz.utc)
             }
             update_ops.append(UpdateOne({"_id": ObjectId(doc_id_str), "batch_review_id": batch_id}, {"$set": update_payload}))
 
@@ -726,7 +726,7 @@ def prepare_trainer_pods():
         relevant_rules = _find_all_matching_rules(prep_data["build_rules"], vendor, student_sf_code, sf_type)
         is_disabled = any(r.get("actions", {}).get("disable_trainer_pod") for r in relevant_rules)
 
-        db_update_payload = {"updated_at": datetime.datetime.now(pytz.utc)}
+        db_update_payload = {"updated_at": datetime.now(pytz.utc)}
         display_data = {"interim_doc_id": str(student_course_doc["_id"]), "sf_course_code": tp_sf_code, "vendor": vendor.upper(), "f5_class_number": f5_class_number}
 
         if is_disabled:
@@ -959,7 +959,7 @@ def finalize_and_display_build_plan():
                 new_doc = {
                     "_id": ObjectId(),
                     "batch_review_id": batch_id,
-                    "created_at": datetime.datetime.now(pytz.utc),
+                    "created_at": datetime.now(pytz.utc),
                     "sf_course_code": trainer_group_data.get("tag"),
                     "sf_course_type": final_course_type, # <-- USE THE NEW VARIABLE
                     "sf_trainer_name": "Trainer Pods",
@@ -1065,12 +1065,12 @@ def execute_scheduled_builds():
                 f"batch '{batch_review_id}' with option: '{schedule_option}'.")
     
     scheduler_tz_obj = scheduler.timezone
-    base_run_time_utc: datetime.datetime = datetime.datetime.now(pytz.utc) # Default to now in UTC
+    base_run_time_utc: datetime = datetime.now(pytz.utc) # Default to now in UTC
 
     if schedule_start_time_str: # Only process if a start time was provided
         try:
             # 1. Parse the naive datetime string from the form
-            naive_dt_from_form = datetime.datetime.fromisoformat(schedule_start_time_str)
+            naive_dt_from_form = datetime.fromisoformat(schedule_start_time_str)
             
             # --- MODIFICATION: Handle both pytz and zoneinfo timezone objects ---
             # 2. Make the naive datetime "aware" of the scheduler's timezone.
@@ -1093,7 +1093,7 @@ def execute_scheduled_builds():
             error_msg = f"Invalid or ambiguous schedule time '{schedule_start_time_str}'. Scheduling for 'now'. Error: {e_date_sched}"
             logger.error(error_msg)
             flash(error_msg, "warning")
-            base_run_time_utc = datetime.datetime.now(pytz.utc) # Fallback to now
+            base_run_time_utc = datetime.now(pytz.utc) # Fallback to now
 
     current_operation_block_start_time_utc = base_run_time_utc
     stagger_delta = datetime.timedelta(minutes=stagger_minutes)
@@ -1194,7 +1194,7 @@ def execute_scheduled_builds():
     if interim_alloc_collection is not None and batch_review_id:
         try:
             update_filter = {"batch_review_id": batch_review_id, "status": {"$in": ["student_confirmed", "trainer_confirmed", "trainer_disabled_by_rule", "trainer_skipped_by_user"]}}
-            update_doc = {"$set": {"status": final_batch_status, "scheduled_operations": scheduled_op_details_for_interim, "scheduled_at_utc": datetime.datetime.now(pytz.utc)}}
+            update_doc = {"$set": {"status": final_batch_status, "scheduled_operations": scheduled_op_details_for_interim, "scheduled_at_utc": datetime.now(pytz.utc)}}
             interim_alloc_collection.update_many(update_filter, update_doc)
         except PyMongoError as e_upd_interim:
             logger.error(f"Error updating final interim status for batch '{batch_review_id}': {e_upd_interim}", exc_info=True)
@@ -1413,7 +1413,7 @@ def _prepare_and_render_final_review(batch_review_id: str, regenerate_apm: bool 
         if isinstance(data, list): return [_sanitize_for_json(i) for i in data]
         if isinstance(data, dict): return {str(k): _sanitize_for_json(v) for k,v in data.items()}
         if isinstance(data, ObjectId): return str(data)
-        if isinstance(data, datetime.datetime): return data.astimezone(pytz.utc).isoformat().replace("+00:00", "Z")
+        if isinstance(data, datetime): return data.astimezone(pytz.utc).isoformat().replace("+00:00", "Z")
         if isinstance(data, datetime.date): return data.isoformat()
         return data
 
@@ -1533,191 +1533,146 @@ def generate_new_build_plan():
         flash("A critical error occurred while generating the build plan. Check the server logs.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
 
+
 @bp.route('/plan-selected-courses', methods=['POST'])
 def plan_selected_courses():
     """
     Receives user-selected courses, runs the new BuildPlanner, and displays
-    the final, consolidated review page. This is the main entry point for the new workflow.
+    the final review page.
     """
     current_theme = request.cookies.get('theme', 'light')
     selected_courses_json = request.form.get('selected_courses')
 
     if not selected_courses_json:
-        flash("No courses were selected to plan. Please check at least one course.", "warning")
+        flash("No courses were selected to plan.", "warning")
         return redirect(url_for('main.view_upcoming_courses'))
 
     try:
         selected_courses = json.loads(selected_courses_json)
         if not isinstance(selected_courses, list):
-            raise ValueError("Data is not in the expected list format.")
+            raise ValueError("Data is not a list.")
     except (json.JSONDecodeError, ValueError):
-        flash("Invalid data format received from the course selection page.", "danger")
+        flash("Invalid data format received from course selection.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
     
     try:
-        # --- MODIFICATION: Use the new BuildPlanner class ---
-        # 1. Instantiate the master planner.
         planner = BuildPlanner()
-        
-        # 2. Generate the full plan using the user's selections.
         build_context = planner.plan_selected_courses(selected_courses)
 
-        # 3. Render the new review template with the complete context.
+        # --- MODIFICATION: Create JSON-serializable versions of the data HERE ---
+        # Instead of doing this in the template, we do it in the Python route.
+        final_commands_for_json = [cmd.to_dict() for cmd in build_context.final_build_commands]
+        lab_report_for_json = build_context.lab_report_data
+        trainer_report_for_json = build_context.trainer_report_data
+        # --- END MODIFICATION ---
+
         return render_template(
             'build_plan_review.html',
             build_context=build_context,
+            # --- MODIFICATION: Pass the pre-processed lists to the template ---
+            final_commands_json_data=final_commands_for_json,
+            lab_report_json_data=lab_report_for_json,
+            trainer_report_json_data=trainer_report_for_json,
             current_theme=current_theme
         )
-        # --- END MODIFICATION ---
 
     except Exception as e:
         logger.error(f"Fatal error during build plan generation: {e}", exc_info=True)
-        flash("A critical error occurred while generating the build plan. Please check the server logs.", "danger")
+        flash("A critical error occurred while generating the build plan.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
     
 
-@bp.route('/execute-plan', methods=['POST'])
-def execute_plan():
+@bp.route('/save-plan', methods=['POST'])
+def save_plan_for_later():
     """
-    Receives the final build plan and user scheduling choices, then uses the
-    ExecutionPlanner to schedule all the necessary teardown and setup jobs.
+    Receives a finalized build plan and saves it to the interimallocation
+    collection with a status of 'saved_for_later'. It clears any
+    previously saved plans first.
     """
-    # --- 1. Get User Choices from the Form ---
-    final_plan_json = request.form.get('final_plan_data')
-    schedule_option = request.form.get('schedule_option', 'now')
-    start_time_str = request.form.get('schedule_start_time')
-    perform_teardown = request.form.get('perform_global_teardown') == 'on'
+    final_build_commands_json = request.form.get('final_build_commands_json')
+
+    # MODIFICATION: Add detailed logging for debugging
+    logger.debug(f"Received raw data for 'final_build_commands_json': {final_build_commands_json}")
+
+    if not final_build_commands_json:
+        flash("No build plan data received to save.", "danger")
+        # MODIFICATION: Add logging for this specific failure case
+        logger.warning("Save plan request received but 'final_build_commands_json' was empty.")
+        return redirect(url_for('main.view_upcoming_courses'))
 
     try:
-        final_build_commands_data = json.loads(final_plan_json)
-        if not isinstance(final_build_commands_data, list):
+        commands_data = json.loads(final_build_commands_json)
+        if not isinstance(commands_data, list):
             raise ValueError("Plan data is not a list.")
-    except (json.JSONDecodeError, ValueError):
-        flash("Invalid final plan data received. Please try again.", "danger")
+    except (json.JSONDecodeError, ValueError) as e:
+        # MODIFICATION: Log the specific error and traceback
+        logger.error(f"Failed to parse build plan JSON: {e}", exc_info=True)
+        flash("Invalid build plan data format.", "danger")
+        return redirect(url_for('main.view_upcoming_courses'))
+    
+    # MODIFICATION: Log a concise summary of what was received.
+    logger.info(f"Received build plan with {len(commands_data)} commands to save.")
+    
+    # MODIFICATION: Log the full data at a debug level.
+    logger.debug(f"Full plan data to be saved: {json.dumps(commands_data)}")
+    
+    batch_id = str(ObjectId())
+    docs_to_insert = []
+    for cmd_data in commands_data:
+        cmd = LabBuildCommand(**cmd_data)
+        doc = cmd.to_dict()
+        doc['batch_review_id'] = batch_id
+        doc['status'] = 'saved_for_later'
+        doc['created_at'] = datetime.utcnow()
+        docs_to_insert.append(doc)
+
+    try:
+        interim_alloc_collection.delete_many({"status": "saved_for_later"})
+        # MODIFICATION: Add logging
+        logger.info("Cleared previously saved build plans.")
+
+        if docs_to_insert:
+            interim_alloc_collection.insert_many(docs_to_insert)
+            # MODIFICATION: Add logging
+            logger.info(f"Successfully saved {len(docs_to_insert)} commands for batch ID {batch_id}.")
+        
+        flash("Build plan saved successfully!", "success")
+        return redirect(url_for('.view_saved_plan', batch_id=batch_id))
+
+    except Exception as e:
+        # MODIFICATION: Improve the final catch-all logging
+        logger.error(f"Error saving build plan: {e}", exc_info=True)
+        flash("A critical error occurred while saving the build plan.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
 
-    # --- 2. Calculate the Start Time in UTC ---
-    # We must use a timezone-aware datetime for the scheduler.
-    scheduler_tz = pytz.timezone('Australia/Sydney') # Or get from your app config
-    start_time_utc = datetime.datetime.now(pytz.utc) # Default to now
-
-    if schedule_option == 'specific_time' and start_time_str:
-        try:
-            naive_dt = datetime.datetime.fromisoformat(start_time_str)
-            # Interpret the user's input as being in the server's local timezone
-            local_dt = scheduler_tz.localize(naive_dt)
-            # Convert it to UTC for the scheduler
-            start_time_utc = local_dt.astimezone(pytz.utc)
-        except ValueError:
-            flash("Invalid date/time format. Scheduling for 'now' instead.", "warning")
+@bp.route('/view-saved-plan/<batch_id>', methods=['GET'])
+def view_saved_plan(batch_id):
+    """
+    Displays the details of a specific saved build plan from the database.
+    """
+    current_theme = request.cookies.get('theme', 'light')
+    saved_commands = []
     
-    logger.info(f"Execution plan starting. Global teardown: {perform_teardown}. First job at (UTC): {start_time_utc.isoformat()}")
-
-    # --- 3. Re-create the BuildContext (or fetch it from a session/cache) ---
-    # For this example, we re-run the planner to get the full context. A more
-    # advanced implementation might cache the context from the previous step.
-    # We pass the user's selections back in case they were modified.
-    
-    # This step is complex. For now, let's assume we re-fetch the context.
-    # In a real app, you would pass the full BuildContext ID or cache it.
-    
-    # Let's simplify: We have the build commands, and we need the rest of the context.
-    planner = BuildPlanner()
-    # Fetch data but not from SF
-    initial_data = planner._fetch_initial_data(fetch_sf_data=False)
-    # Re-create a context (we won't re-run planners, just need the shell)
-    context = BuildPlanner.BuildContext(
-        all_hosts=initial_data["hosts_list"],
-        course_configs=initial_data["course_configs"],
-        build_rules=initial_data["build_rules"],
-        trainer_emails=initial_data["trainer_emails"],
-        host_to_vcenter_map=initial_data["host_to_vcenter_map"]
-    )
-    # Manually re-insert the finalized commands from the form
-    # Note: This is a simplification. A real app would pass a context_id.
-    context.final_build_commands = [BuildPlanner.LabBuildCommand(**cmd) for cmd in final_build_commands_data]
-
-
-    # --- 4. Instantiate and Run the Execution Planner ---
     try:
-        execution_planner = ExecutionPlanner(
-            build_context=context,
-            start_time=start_time_utc,
-            global_teardown=perform_teardown
-        )
-        summary = execution_planner.execute_plan()
-        
-        if context.errors:
-            flash("The following errors occurred during execution planning: " + " | ".join(context.errors), "warning")
+        # Find all documents in the interim collection that match this batch ID
+        saved_docs = list(interim_alloc_collection.find({"batch_review_id": batch_id, "status": "saved_for_later"}))
+        if not saved_docs:
+            flash(f"No saved plan found for Batch ID: {batch_id}", "warning")
+            return redirect(url_for('main.index'))
+            
+        # Group commands by batch ID (even though there's only one)
+        saved_batches = {
+            batch_id: {
+                "commands": saved_docs
+            }
+        }
 
-        flash(f"Successfully scheduled {summary['total_jobs']} operations. ({summary['teardowns_scheduled']} teardowns, {summary['setups_scheduled']} setups)", "success")
+        return render_template(
+            'saved_plans.html',
+            saved_batches=saved_batches,
+            current_theme=current_theme
+        )
+    except Exception as e:
+        logger.error(f"Error fetching saved plan for batch {batch_id}: {e}", exc_info=True)
+        flash("A critical error occurred while fetching the saved plan.", "danger")
         return redirect(url_for('main.index'))
-        
-    except Exception as e:
-        logger.error(f"Fatal error during plan execution: {e}", exc_info=True)
-        flash("A critical error occurred while scheduling the build plan.", "danger")
-        return redirect(url_for('.plan_selected_courses')) # Redirect back to the review page on failure
-    
-@bp.route('/export-planned-lab-report', methods=['POST'])
-def export_planned_lab_report():
-    """
-    Receives the planned report data, generates the main lab report Excel file,
-    and serves it for download.
-    """
-    report_data_json = request.form.get('planned_report_data')
-    if not report_data_json:
-        flash("Report data was missing.", "danger")
-        return redirect(request.referrer or url_for('main.index'))
-
-    try:
-        report_data = json.loads(report_data_json)
-        
-        excel_stream = generate_excel_in_memory(
-            course_allocations=report_data.get("standard_pods", []),
-            trainer_pods=report_data.get("trainer_pods", []),
-            extended_pods=report_data.get("extended_pods", []),
-            host_map=report_data.get("host_map", {})
-        )
-
-        filename = f"Lab Build PREVIEW - {get_next_monday_date_str('%Y%m%d')}.xlsx"
-        
-        return Response(
-            excel_stream,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            headers={'Content-Disposition': f'attachment;filename={filename}'}
-        )
-    except Exception as e:
-        logger.error(f"Failed to generate planned lab report preview: {e}", exc_info=True)
-        flash(f"Could not generate the report preview. Error: {e}", 'danger')
-        return redirect(request.referrer or url_for('main.index'))
-
-
-# --- NEW ROUTE: For downloading the planned trainer pod report ---
-# --- MODIFICATION: Added methods=['POST'] to allow the form to submit here ---
-@bp.route('/export-planned-trainer-report', methods=['POST'])
-def export_planned_trainer_report():
-    """
-    Receives the planned trainer data, generates the trainer pod report Excel file,
-    and serves it for download.
-    """
-    trainer_data_json = request.form.get('planned_trainer_data')
-    if not trainer_data_json:
-        flash("Trainer report data was missing.", "danger")
-        return redirect(request.referrer or url_for('main.index'))
-
-    try:
-        trainer_data = json.loads(trainer_data_json)
-        
-        excel_stream = create_trainer_report_in_memory(trainer_data)
-
-        filename = f"Trainer Pod Allocation PREVIEW - {get_next_monday_date_str('%Y%m%d')}.xlsx"
-
-        return Response(
-            excel_stream,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            headers={'Content-Disposition': f'attachment;filename={filename}'}
-        )
-    except Exception as e:
-        logger.error(f"Failed to generate planned trainer report preview: {e}", exc_info=True)
-        flash(f"Could not generate the trainer report preview. Error: {e}", 'danger')
-        return redirect(request.referrer or url_for('main.index'))

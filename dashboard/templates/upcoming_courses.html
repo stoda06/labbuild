@@ -11,8 +11,16 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1>Upcoming Courses (Next Week)</h1>
-   <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+  <h1>Upcoming Courses (Next Week)</h1>
+  <div>
+    {% if saved_plan_batch_id %}
+    <a href="{{ url_for('build_planner_actions.view_saved_plan', batch_id=saved_plan_batch_id) }}"
+      class="btn btn-sm btn-outline-info me-2">
+      <i class="fas fa-save"></i> View Saved Plan
+    </a>
+    {% endif %}
+    <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+  </div>
 </div>
 
 <div class="card">
@@ -20,37 +28,46 @@
   <div class="card-body p-0">
     {% if courses is not none and courses %}
     <form id="courseSelectionForm" action="{{ url_for('build_planner_actions.plan_selected_courses') }}" method="POST">
+      <input type="hidden" name="selected_courses" id="selectedCoursesInput">
       <div class="table-responsive">
         <table class="table table-sm table-striped table-hover mb-0 upcoming-table" id="upcoming-courses-table">
           <thead class="table-light">
             <tr>
-              <th scope="col" class="col-checkbox"><input type="checkbox" id="selectAllCourses" title="Select/Deselect All"></th>
-              <th scope="col" class="col-dates sortable-header" data-column="Start Date" data-type="date">Start Date<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-code sortable-header" data-column="Course Code" data-type="string">Course Code<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-type sortable-header" data-column="Course Type" data-type="string">Course Type<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-trainer sortable-header" data-column="Trainer" data-type="string">Trainer<span class="sort-icon ms-1"></span></th>
-              <th scope="col" class="col-numbers sortable-header" data-column="Pods Req." data-type="number">Pods Req.<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-checkbox"><input type="checkbox" id="selectAllCourses"
+                  title="Select/Deselect All"></th>
+              <th scope="col" class="col-dates sortable-header" data-column="Start Date" data-type="date">Start
+                Date<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-code sortable-header" data-column="Course Code" data-type="string">Course
+                Code<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-type sortable-header" data-column="Course Type" data-type="string">Course
+                Type<span class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-trainer sortable-header" data-column="Trainer" data-type="string">Trainer<span
+                  class="sort-icon ms-1"></span></th>
+              <th scope="col" class="col-numbers sortable-header" data-column="Pods Req." data-type="number">Pods
+                Req.<span class="sort-icon ms-1"></span></th>
               <th scope="col" class="col-trainer-toggle">Add Trainer Pod?</th>
               <th scope="col" class="col-labbuild-course">LabBuild Course</th>
             </tr>
           </thead>
           <tbody id="upcoming-courses-tbody">
-             {# JavaScript will render the table rows here #}
-             <tr><td colspan="8" class="text-center p-3">Loading courses...</td></tr>
+            {# JavaScript will render the table rows here #}
+            <tr>
+              <td colspan="8" class="text-center p-3">Loading courses...</td>
+            </tr>
           </tbody>
         </table>
       </div>
 
       <div class="card-footer bg-light-subtle">
-          <button type="submit" class="btn btn-success" id="reviewSelectedBtn">
-              <i class="fas fa-cogs"></i> Review Selected Courses
-          </button>
+        <button type="submit" class="btn btn-success" id="reviewSelectedBtn">
+          <i class="fas fa-cogs"></i> Review Selected Courses
+        </button>
       </div>
     </form>
     {% elif error_message %}
-        <div class="alert alert-warning m-3">{{ error_message }}</div>
+    <div class="alert alert-warning m-3">{{ error_message }}</div>
     {% else %}
-        <p class="p-3">No upcoming courses found.</p>
+    <p class="p-3">No upcoming courses found.</p>
     {% endif %}
   </div>
 </div>
@@ -65,6 +82,6 @@
 {% endblock %}
 
 {% block scripts %}
-  {{ super() }}
-  <script src="{{ url_for('static', filename='js/upcoming_courses.js') }}" defer></script>
+{{ super() }}
+<script src="{{ url_for('static', filename='js/upcoming_courses.js') }}" defer></script>
 {% endblock %}
