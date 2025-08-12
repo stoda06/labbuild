@@ -13,6 +13,12 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1>Upcoming Courses (Next Week)</h1>
   <div>
+    <a href="#" class="btn btn-sm btn-outline-success me-2" title="Feature coming soon">
+           <i class="fas fa-file-excel"></i> Export Upcoming Report
+       </a>
+       <a href="#" class="btn btn-sm btn-outline-primary me-2" title="Feature coming soon">
+           <i class="fas fa-user-graduate"></i> Export Upcoming Trainer Pods
+       </a>
     {% if saved_plan_batch_id %}
     <a href="{{ url_for('build_planner_actions.view_saved_plan', batch_id=saved_plan_batch_id) }}"
       class="btn btn-sm btn-outline-info me-2">
