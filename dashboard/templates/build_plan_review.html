@@ -189,7 +189,7 @@
                     to ensure it's a valid JSON string.
                 -->
                 <input type="hidden" name="final_build_commands_json" value='{{ final_commands_json_data | tojson }}'>
-
+                <input type="hidden" name="apm_commands_by_code_json" value='{{ apm_commands_by_code | tojson }}'>
                 <!-- 
                     This is the primary user action button. It submits the form.
                     The onclick confirmation provides a safety check for the user.

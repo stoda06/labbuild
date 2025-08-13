@@ -1559,20 +1559,30 @@ def plan_selected_courses():
         planner = BuildPlanner()
         build_context = planner.plan_selected_courses(selected_courses)
 
-        # --- MODIFICATION: Create JSON-serializable versions of the data HERE ---
-        # Instead of doing this in the template, we do it in the Python route.
+        # --- MODIFICATION: Generate command strings and add to command objects ---
+        for cmd in build_context.final_build_commands:
+            cmd.cli_command = cmd.to_cli_string() # Add the string to the object
+        
+        # Generate APM command strings
+        apm_commands_by_code = defaultdict(list)
+        for apm_cmd in build_context.final_apm_commands:
+            # Assumes APMCommand objects have sf_course_code and to_cli_string()
+            apm_commands_by_code[apm_cmd.sf_course_code].append(apm_cmd.to_cli_string())
+
+        # --- END MODIFICATION ---
+
         final_commands_for_json = [cmd.to_dict() for cmd in build_context.final_build_commands]
         lab_report_for_json = build_context.lab_report_data
         trainer_report_for_json = build_context.trainer_report_data
-        # --- END MODIFICATION ---
-
+        
         return render_template(
             'build_plan_review.html',
             build_context=build_context,
-            # --- MODIFICATION: Pass the pre-processed lists to the template ---
             final_commands_json_data=final_commands_for_json,
             lab_report_json_data=lab_report_for_json,
             trainer_report_json_data=trainer_report_for_json,
+            # --- MODIFICATION: Pass APM commands to the template ---
+            apm_commands_by_code=dict(apm_commands_by_code),
             current_theme=current_theme
         )
 
@@ -1580,7 +1590,6 @@ def plan_selected_courses():
         logger.error(f"Fatal error during build plan generation: {e}", exc_info=True)
         flash("A critical error occurred while generating the build plan.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
-    
 
 @bp.route('/save-plan', methods=['POST'])
 def save_plan_for_later():
@@ -1590,57 +1599,53 @@ def save_plan_for_later():
     previously saved plans first.
     """
     final_build_commands_json = request.form.get('final_build_commands_json')
-
-    # MODIFICATION: Add detailed logging for debugging
-    logger.debug(f"Received raw data for 'final_build_commands_json': {final_build_commands_json}")
+    apm_commands_by_code_json = request.form.get('apm_commands_by_code_json')
 
     if not final_build_commands_json:
         flash("No build plan data received to save.", "danger")
-        # MODIFICATION: Add logging for this specific failure case
-        logger.warning("Save plan request received but 'final_build_commands_json' was empty.")
         return redirect(url_for('main.view_upcoming_courses'))
 
     try:
         commands_data = json.loads(final_build_commands_json)
-        if not isinstance(commands_data, list):
-            raise ValueError("Plan data is not a list.")
-    except (json.JSONDecodeError, ValueError) as e:
-        # MODIFICATION: Log the specific error and traceback
-        logger.error(f"Failed to parse build plan JSON: {e}", exc_info=True)
+        apm_commands_by_code = json.loads(apm_commands_by_code_json) if apm_commands_by_code_json else {}
+        if not isinstance(commands_data, list) or not isinstance(apm_commands_by_code, dict):
+            raise ValueError("Plan data is not in the expected format (list for build, dict for apm).")
+    except (json.JSONDecodeError, ValueError):
         flash("Invalid build plan data format.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
     
-    # MODIFICATION: Log a concise summary of what was received.
-    logger.info(f"Received build plan with {len(commands_data)} commands to save.")
-    
-    # MODIFICATION: Log the full data at a debug level.
-    logger.debug(f"Full plan data to be saved: {json.dumps(commands_data)}")
+    logger.info(f"Received build plan with {len(commands_data)} build commands and APM commands for {len(apm_commands_by_code)} courses.")
     
     batch_id = str(ObjectId())
     docs_to_insert = []
+    
+    # MODIFICATION: Use the dictionary from the form directly instead of re-creating objects.
+    # This correctly preserves the 'cli_command' field that was generated earlier.
     for cmd_data in commands_data:
-        cmd = LabBuildCommand(**cmd_data)
-        doc = cmd.to_dict()
+        doc = cmd_data.copy()  # Start with the dictionary received from the form
         doc['batch_review_id'] = batch_id
         doc['status'] = 'saved_for_later'
-        doc['created_at'] = datetime.utcnow()
+        doc['created_at'] = datetime.now(pytz.utc)
+
+        sf_code = cmd_data.get('sf_course_code')
+        if sf_code and sf_code in apm_commands_by_code:
+            doc['apm_commands'] = apm_commands_by_code[sf_code]
+        
         docs_to_insert.append(doc)
+    # --- END MODIFICATION ---
 
     try:
         interim_alloc_collection.delete_many({"status": "saved_for_later"})
-        # MODIFICATION: Add logging
         logger.info("Cleared previously saved build plans.")
 
         if docs_to_insert:
             interim_alloc_collection.insert_many(docs_to_insert)
-            # MODIFICATION: Add logging
-            logger.info(f"Successfully saved {len(docs_to_insert)} commands for batch ID {batch_id}.")
+            logger.info(f"Successfully saved {len(docs_to_insert)} documents for batch ID {batch_id}.")
         
         flash("Build plan saved successfully!", "success")
         return redirect(url_for('.view_saved_plan', batch_id=batch_id))
 
     except Exception as e:
-        # MODIFICATION: Improve the final catch-all logging
         logger.error(f"Error saving build plan: {e}", exc_info=True)
         flash("A critical error occurred while saving the build plan.", "danger")
         return redirect(url_for('main.view_upcoming_courses'))
@@ -1651,21 +1656,29 @@ def view_saved_plan(batch_id):
     Displays the details of a specific saved build plan from the database.
     """
     current_theme = request.cookies.get('theme', 'light')
-    saved_commands = []
     
     try:
-        # Find all documents in the interim collection that match this batch ID
         saved_docs = list(interim_alloc_collection.find({"batch_review_id": batch_id, "status": "saved_for_later"}))
         if not saved_docs:
             flash(f"No saved plan found for Batch ID: {batch_id}", "warning")
             return redirect(url_for('main.index'))
             
-        # Group commands by batch ID (even though there's only one)
+        # --- MODIFICATION: Aggregate unique APM commands from all build documents ---
+        build_commands = saved_docs
+        
+        unique_apm_commands = set()
+        for doc in build_commands:
+            if 'apm_commands' in doc and isinstance(doc['apm_commands'], list):
+                for cmd in doc['apm_commands']:
+                    unique_apm_commands.add(cmd)
+
         saved_batches = {
             batch_id: {
-                "commands": saved_docs
+                "commands": build_commands,
+                "apm_commands": sorted(list(unique_apm_commands)) # Pass the aggregated list
             }
         }
+        # --- END MODIFICATION ---
 
         return render_template(
             'saved_plans.html',
