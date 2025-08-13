@@ -105,13 +105,13 @@ def _fetch_credentials_from_course2() -> Dict[str, Dict[str, str]]:
     return credential_map
 
 
+# In your trainer pod report generator file
+
 def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: Dict) -> List[Dict]:
     """Data Source 1: Fetches trainer pods from 'currentallocation'."""
     processed_data = []
     collection = db[ALLOCATION_COLLECTION]
     
-    # This query assumes the field name for tags is 'tag'.
-    # If it's different, you'll need to change 'tag' to the correct field name.
     query = {
         "$or": [
             {"tag": "untagged"},
@@ -138,7 +138,9 @@ def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: 
             creds = credential_map.get(course_name_from_db.strip(), {})
             vendor_code = course_item.get('vendor', '').upper()
             vendor_group_name = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
-            class_value = ''
+            
+            # <<< FIX: Use the 'class' value from the credential map instead of a blank string.
+            class_value = creds.get('class', '')
 
             for pod_detail in course_item.get('pod_details', []):
                 if not isinstance(pod_detail, dict): continue
@@ -154,7 +156,7 @@ def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: 
                     'password': creds.get('password', ''),
                     'version': course_name_from_db,
                     'ram': pod_detail.get('memory_gb_one_pod', 'N/A'),
-                    'class': class_value,
+                    'class': class_value, # Use the correct class value
                     'host': host_name_from_alloc, 
                     'vcenter': full_vcenter.split('.')[0],
                     'taken_by': '', 'notes': '', 'vendor': vendor_group_name
@@ -162,48 +164,72 @@ def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: 
     return processed_data
 
 
+# In your trainer pod report generator file
+
 def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: Dict) -> List[Dict]:
     """Data Source 2: Fetches trainer pods from 'interimallocation'."""
     processed_data = []
     collection = db[INTERIM_ALLOCATION_COLLECTION]
-    query = {"sf_trainer_name": "Trainer Pods"}
-    logger.info(f"Fetching NEXT week data from '{INTERIM_ALLOCATION_COLLECTION}' with query: {query}")
+    
+    # <<< IMPROVEMENT 1: More robust query to find trainer pods.
+    query = {
+        "$or": [
+            {"sf_trainer_name": "Trainer Pods"},
+            {"sf_course_type": {"$regex": "Trainer Pod", "$options": "i"}},
+            {"sf_course_code": {"$regex": "Trainer Pod", "$options": "i"}}
+        ]
+    }
+    logger.info(f"Fetching NEXT week data from '{INTERIM_ALLOCATION_COLLECTION}'...")
 
-    for doc in collection.find(query):
+    all_docs = list(collection.find(query))
+    logger.info(f"Found {len(all_docs)} documents matching the interim trainer pod query.")
+
+    # <<< FIX 1: Add the same data normalization step as the other report.
+    # This handles both flat and nested 'assignments' structures.
+    for doc in all_docs:
+        if not doc.get('assignments'):
+            host = doc.get('host')
+            start_pod = doc.get('start_pod')
+            if host and start_pod is not None:
+                doc['assignments'] = [{
+                    'host': host,
+                    'start_pod': start_pod,
+                    'end_pod': doc.get('end_pod', start_pod)
+                }]
+
+    for doc in all_docs:
         username = ''
         password = ''
 
-        # --- NEW LOGIC START ---
-        # PRIORITY 1: Check for credentials directly within the MongoDB document.
-        doc_username = doc.get('student_apm_username')
-        doc_password = doc.get('student_apm_password')
+        doc_username = doc.get('student_apm_username') or doc.get('username')
+        doc_password = doc.get('student_apm_password') or doc.get('password')
 
         if doc_username and doc_password:
             username = doc_username
             password = doc_password
-            logger.info(f"Found direct credentials in interim doc ID {doc.get('_id')}")
         else:
-            # PRIORITY 2 (FALLBACK): If not found, use the API credential map.
-            course_version_key_from_db = doc.get('final_labbuild_course')
+            course_version_key_from_db = doc.get('final_labbuild_course') or doc.get('labbuild_course')
             credential_lookup_key = course_version_key_from_db.strip() if course_version_key_from_db else None
             
             if credential_lookup_key:
                 creds = credential_map.get(credential_lookup_key, {})
                 username = creds.get('username', '')
                 password = creds.get('password', '')
-                if not username: # Add a warning if the fallback also fails
+                if not username:
                     logger.warning(f"Direct creds missing. Fallback to API also FAILED for interim doc ID {doc.get('_id')} with key '{credential_lookup_key}'")
             else:
-                 logger.warning(f"Direct creds missing and no 'final_labbuild_course' key in interim doc ID {doc.get('_id')}")
-        # --- NEW LOGIC END ---
+                 logger.warning(f"Direct creds missing and no course key in interim doc ID {doc.get('_id')}")
 
-        # Now, continue building the record with the username/password we found.
-        course_version_key_from_db = doc.get('final_labbuild_course')
-        vendor_code = doc.get('vendor', '').upper()
+        course_version_key_from_db = doc.get('final_labbuild_course') or doc.get('labbuild_course')
+        
+        # <<< FIX 2: Use the correct field 'vendor_shortcode' for vendor information.
+        vendor_code = doc.get('vendor_shortcode', '').upper()
         vendor_group_name = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
+        
         class_value = ''
         ram_per_pod = doc.get('memory_gb_one_pod', 'N/A')
         
+        # This loop now works for ALL document structures because of the normalization step.
         for assignment in doc.get('assignments', []):
             try:
                 start, end = assignment.get('start_pod'), assignment.get('end_pod')
@@ -217,8 +243,8 @@ def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: 
                         processed_data.append({
                             'course_name': doc.get('sf_course_type', 'N/A'),
                             'pod_number': pod_num,
-                            'username': username,  # Use the determined username
-                            'password': password,  # Use the determined password
+                            'username': username,
+                            'password': password,
                             'version': course_version_key_from_db,
                             'ram': ram_per_pod,
                             'class': class_value,
@@ -226,7 +252,7 @@ def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: 
                             'vcenter': full_vcenter.split('.')[0],
                             'taken_by': '', 
                             'notes': doc.get('trainer_assignment_warning', ''),
-                            'vendor': vendor_group_name
+                            'vendor': vendor_group_name # This will now be correctly assigned
                         })
             except (ValueError, TypeError) as e:
                 logger.warning(f"Skipping malformed assignment in doc '{doc.get('_id')}': {e}")
