@@ -1,6 +1,7 @@
 from pyVmomi import vim, vmodl
 from managers.vcenter import VCenter
 from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 import re
 
 class NetworkManager(VCenter):
@@ -532,3 +533,29 @@ class NetworkManager(VCenter):
                     overall_success = False
 
             return overall_success
+        
+    def find_vswitch_by_name_substring(self, host_name: str, substring: str) -> Optional[str]:
+        """
+        Finds the first vSwitch on a host whose name contains a given substring.
+
+        :param host_name: The name of the host to search.
+        :param substring: The substring to look for in the vSwitch name.
+        :return: The name of the found vSwitch, or None if not found.
+        """
+        host = self.get_obj([vim.HostSystem], host_name)
+        if not host:
+            self.logger.error(f"Host '{host_name}' not found for vSwitch search.")
+            return None
+
+        try:
+            network_system = host.configManager.networkSystem
+            for vswitch in network_system.networkConfig.vswitch:
+                if substring in vswitch.name:
+                    self.logger.info(f"Found suitable vSwitch '{vswitch.name}' on host '{host_name}' containing '{substring}'.")
+                    return vswitch.name
+            
+            self.logger.error(f"No vSwitch found on host '{host_name}' with the substring '{substring}' in its name.")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error searching for vSwitch on host '{host_name}': {e}")
+            return None

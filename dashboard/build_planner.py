@@ -59,24 +59,110 @@ class LabBuildCommand:
         return args
     
     def to_dict(self) -> Dict[str, Any]:
-        """Converts the dataclass instance to a dictionary."""
-        return asdict(self)
+        """Converts the command object to a dictionary for JSON serialization."""
+        data = {
+            "sf_course_code": self.sf_course_code,
+            "sf_course_type": self.sf_course_type,
+            "trainer_name": self.trainer_name,
+            "start_date": self.start_date,
+            "end_date": self.end_date,
+            "labbuild_course": self.labbuild_course,
+            "vendor_shortcode": self.vendor_shortcode,
+            "host": self.host,
+            "start_pod": self.start_pod,
+            "end_pod": self.end_pod,
+            "f5_class_number": self.f5_class_number,
+            "username": self.username,
+            "password": self.password,
+            "tag": self.tag
+        }
+        # --- MODIFICATION: Safely add the cli_command attribute to the dictionary ---
+        # This attribute is added dynamically in the route, so we use getattr
+        # to prevent an error if to_dict is called at a different time.
+        data['cli_command'] = getattr(self, 'cli_command', None)
+        # --- END MODIFICATION ---
+        return data
+    
+    def to_cli_string(self) -> str:
+        """Generates the full labbuild CLI command string for this command."""
+        # --- NEW METHOD ---
+        parts = ['labbuild', 'setup']
+        parts.extend(['-v', self.vendor_shortcode])
+        parts.extend(['-g', f'"{self.labbuild_course}"']) # Quote course name
+        parts.extend(['--host', self.host])
+        parts.extend(['-s', str(self.start_pod)])
+        parts.extend(['-e', str(self.end_pod)])
+        parts.extend(['-t', f'"{self.tag}"']) # Quote tag
+
+        if self.f5_class_number is not None:
+            parts.extend(['-cn', str(self.f5_class_number)])
+
+        # Add optional metadata arguments
+        if self.start_date:
+            parts.extend(['--start-date', self.start_date])
+        if self.end_date:
+            parts.extend(['--end-date', self.end_date])
+        if self.trainer_name:
+            parts.extend(['--trainer-name', f'"{self.trainer_name}"']) # Quote trainer name
+        if self.username:
+            parts.extend(['--username', self.username])
+        if self.password:
+            parts.extend(['--password', self.password])
+        
+        return ' '.join(parts)
     
 
 # --- Data Structure for a single APM Command ---
 @dataclass
 class APMCommand:
-    """A structured container for one executable 'course2' APM command."""
-    command: str
-    username: str
-    arguments: List[str]
-    server: str
+    """Represents a single command to be run on the APM server."""
+    # MODIFICATION: Corrected __init__ signature and attributes
+    def __init__(self, command: str, username: str, sf_course_code: str, 
+                 arguments: List[str], server: str = 'au'):
+        self.command = command
+        self.username = username
+        self.sf_course_code = sf_course_code
+        self.arguments = arguments
+        self.server = server
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Converts the command to a dictionary for JSON serialization."""
+        return {
+            'command': self.command,
+            'username': self.username,
+            'sf_course_code': self.sf_course_code,
+            'arguments': self.arguments,
+            'server': self.server,
+            'cli_command': self.to_cli_string()
+        }
 
     def to_cli_string(self) -> str:
         """Converts the object into a fully formatted command-line string."""
         prefix = "course2 -u" if self.server == 'us' else "course2"
-        quoted_args = [f'"{arg}"' if ' ' in str(arg) else str(arg) for arg in self.arguments]
+        # MODIFICATION: Handle arguments that might be None or need quoting
+        quoted_args = []
+        for arg in self.arguments:
+            if arg is None:
+                continue
+            arg_str = str(arg)
+            # Quote if it contains spaces and isn't already quoted
+            if ' ' in arg_str and not (arg_str.startswith('"') and arg_str.endswith('"')):
+                quoted_args.append(f'"{arg_str}"')
+            else:
+                quoted_args.append(arg_str)
+        
         return f"{prefix} {self.command} {self.username} {' '.join(quoted_args)}"
+    
+    # MODIFICATION: Add __eq__ for comparing objects in lists
+    def __eq__(self, other):
+        if not isinstance(other, APMCommand):
+            return NotImplemented
+        return (self.command == other.command and
+                self.username == other.username and
+                self.arguments == other.arguments and
+                self.server == other.server and
+                self.sf_course_code == other.sf_course_code)
+
 
 # --- Data Structure for a single Email ---
 @dataclass
@@ -855,22 +941,15 @@ class APMManager:
     def generate_commands(self) -> List[APMCommand]:
         """Main public method to generate the full list of APM commands."""
         
-        # --- MODIFICATION: The entire logic is now consolidated and refactored here ---
-        
-        # This dictionary will hold the consolidated data for each final APM user.
-        # The key is a tuple: (username, server_location)
         desired_users: Dict[tuple, Dict] = defaultdict(lambda: {"pods": set(), "details": {}})
         
-        # --- Phase 1: Consolidate all build commands into the desired user state ---
         for cmd in self.build_commands:
             target_server = 'us' if cmd.host.lower() in self.US_APM_HOSTS else 'au'
             user_key = (cmd.username, target_server)
             
-            # Add this command's pods to the set for this user
             for pod in range(cmd.start_pod, cmd.end_pod + 1):
                 desired_users[user_key]["pods"].add(pod)
 
-            # Store the details from the first command we see for this user
             if not desired_users[user_key]["details"]:
                 desired_users[user_key]["details"] = {
                     "password": cmd.password,
@@ -885,37 +964,46 @@ class APMManager:
         delete_commands = []
         add_commands = []
 
-        # --- Phase 2: Determine Deletions ---
-        # Get a set of all usernames that are required in the new plan, regardless of server.
         all_desired_usernames = {key[0] for key in desired_users.keys()}
 
         for username, details in self.current_apm_state.items():
             is_needed = username in all_desired_usernames
-            is_extended = details.get("vpn_auth_course_code") in self.extended_tags
+            sf_code_from_apm = details.get("vpn_auth_course_code", "")
+            is_extended = sf_code_from_apm in self.extended_tags
             
             if not is_needed and not is_extended:
                 source = details.get("source", "au")
-                delete_commands.append(APMCommand(command="del", username=username, arguments=[], server=source))
+                # MODIFICATION: Use correct keyword arguments for APMCommand
+                delete_commands.append(APMCommand(
+                    command="del", 
+                    username=username, 
+                    arguments=[], 
+                    server=source,
+                    sf_course_code=sf_code_from_apm
+                ))
 
-        # --- Phase 3: Generate Add/Repurpose Commands ---
         for (username, server), data in desired_users.items():
             details = data["details"]
+            sf_code_for_user = details["sf_course_code"]
             
-            # If this user already exists, it must be deleted first before being added back.
-            # This handles both repurposing and region-moves.
             if username in self.current_apm_state:
                 existing_details = self.current_apm_state[username]
-                if existing_details.get("vpn_auth_course_code") not in self.extended_tags:
+                existing_sf_code = existing_details.get("vpn_auth_course_code", "")
+                if existing_sf_code not in self.extended_tags:
                     source = existing_details.get("source", "au")
-                    del_command = APMCommand(command="del", username=username, arguments=[], server=source)
-                    # Add to delete list only if not already there
+                    # MODIFICATION: Use correct keyword arguments
+                    del_command = APMCommand(
+                        command="del", 
+                        username=username, 
+                        arguments=[], 
+                        server=source,
+                        sf_course_code=existing_sf_code
+                    )
                     if del_command not in delete_commands:
                         delete_commands.append(del_command)
             
-            # Now, generate the 'add' command for every desired user.
             description = f"{details['trainer_name']} - {details['sf_course_type']}" if "Trainer" not in details['trainer_name'] else details['sf_course_type']
             
-            # Handle Nutanix pod expansion here
             final_pods_for_range = data["pods"]
             if details['vendor_shortcode'] == 'nu':
                 logical_pods = set()
@@ -930,9 +1018,13 @@ class APMManager:
             
             apm_version = self._determine_apm_version(details["vendor_shortcode"], details["labbuild_course"], details["sf_course_code"])
             
+            # MODIFICATION: Use correct keyword arguments
             add_command = APMCommand(
-                command="add", username=username, server=server,
-                arguments=[details["password"], pod_range_str, apm_version, description[:250], "8", details["tag"]]
+                command="add", 
+                username=username, 
+                server=server,
+                arguments=[details["password"], pod_range_str, apm_version, description[:250], "8", details["tag"]],
+                sf_course_code=sf_code_for_user
             )
             add_commands.append(add_command)
 

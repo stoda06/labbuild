@@ -18,13 +18,19 @@
     {% for batch_id, plan in saved_batches.items() %}
     <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="mb-0">Plan Batch ID: <code>{{ batch_id }}</code></h5>
-            <form action="#" method="POST"> {# This will be the execution form #}
-                <input type="hidden" name="batch_id_to_execute" value="{{ batch_id }}">
-                <button type="submit" class="btn btn-primary">
-                    <i class="fas fa-play-circle"></i> Execute this Plan
+            <h5 class="mb-0">Plan Batch ID: code>{{ batch_id }}</code></h5>
+            <div>
+                {# --- MODIFICATION: Add buttons to view saved commands --- #}
+                {% if plan.apm_commands %}
+                <button type="button" class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#apmCommandsModal-{{ batch_id }}">
+                    <i class="fas fa-terminal"></i> View APM Commands ({{ plan.apm_commands|length }})
                 </button>
-            </form>
+                {% endif %}
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#labbuildCommandsModal-{{ batch_id }}">
+                    <i class="fas fa-cogs"></i> View Build Commands ({{ plan.commands|length }})
+                </button>
+                {# --- END MODIFICATION --- #}
+            </div>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
@@ -60,7 +66,47 @@
                 </table>
             </div>
         </div>
+        <div class="card-footer text-end">
+             <form action="#" method="POST"> {# This will be the execution form #}
+                <input type="hidden" name="batch_id_to_execute" value="{{ batch_id }}">
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-play-circle"></i> Execute this Plan
+                </button>
+            </form>
+        </div>
     </div>
+
+    {# --- MODIFICATION: Add Modals for displaying commands --- #}
+    <!-- LabBuild Commands Modal -->
+    <div class="modal fade" id="labbuildCommandsModal-{{ batch_id }}" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Saved LabBuild Commands</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <pre style="background-color: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color-translucent); padding: 15px; border-radius: var(--bs-border-radius); max-height: 70vh; overflow-y: auto; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all;"><code>{{ (plan.commands|map(attribute='cli_command')|join('\n')) }}</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- APM Commands Modal -->
+    <div class="modal fade" id="apmCommandsModal-{{ batch_id }}" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Saved APM Commands</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <pre style="background-color: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color-translucent); padding: 15px; border-radius: var(--bs-border-radius); max-height: 70vh; overflow-y: auto; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all;"><code>{{ plan.apm_commands | join('\n') }}</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+    {# --- END MODIFICATION --- #}
+
     {% endfor %}
 {% else %}
     <p class="text-muted">No saved plans found.</p>
