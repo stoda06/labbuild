@@ -385,63 +385,111 @@ def extract_apm_command(apm_cmds):
             return parts[-4]
     return ""
     
+# In labbuild/dashboard/upcoming_report_generator.py
+# Final version - handles both flat (your sample) and nested 'assignments' structures.
+
+# In labbuild/dashboard/upcoming_report_generator.py
+# Final version - fixes grouping for consolidated trainer pods.
+
 def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_map, host_vcenter_map):
     logger.info("Starting unpack_interim_allocations process...")
+
+    # Data Normalization Step (handles flat vs. nested structure)
+    for doc in documents:
+        if not doc.get('assignments'):
+            host = doc.get('host')
+            start_pod = doc.get('start_pod')
+            if host and start_pod is not None:
+                doc['assignments'] = [{
+                    'host': host,
+                    'start_pod': start_pod,
+                    'end_pod': doc.get('end_pod', start_pod)
+                }]
+                logger.debug(f"Normalized flat allocation for doc with tag '{doc.get('tag')}' into assignments array.")
+
     standard_docs_raw = []
     trainer_docs_raw = []
 
     for doc in documents:
-        course_code_value = doc.get('sf_course_code')
-        if course_code_value and '-trainer pod' in str(course_code_value).lower():
+        course_type = str(doc.get('sf_course_type', '')).lower()
+        course_code = str(doc.get('sf_course_code', '')).lower()
+        if 'trainer pod' in course_type or 'trainer pod' in course_code:
             trainer_docs_raw.append(doc)
         else:
             standard_docs_raw.append(doc)
+            
     logger.info(f"Separated documents: {len(standard_docs_raw)} standard, {len(trainer_docs_raw)} trainer.")
 
     processed_trainer_pods = []
     for doc in trainer_docs_raw:
         ram = doc.get('memory_gb_one_pod')
-        course_version = doc.get('final_labbuild_course')
-        if not ram:
-            if course_version in ram_lookup_map:
-                ram = ram_lookup_map.get(course_version)
+        course_version = doc.get('final_labbuild_course') or doc.get('labbuild_course')
+        if not ram and course_version in ram_lookup_map:
+            ram = ram_lookup_map.get(course_version)
 
-        username = doc.get('student_apm_username') or doc.get('apm_username')
-        password = doc.get('student_apm_password') or doc.get('apm_password')
-        hosts = sorted(set(a.get('host') for a in doc.get('assignments', []) if a.get('host')))
+        username = doc.get('student_apm_username') or doc.get('apm_username') or doc.get('username')
+        password = doc.get('student_apm_password') or doc.get('apm_password') or doc.get('password')
+        
+        assignments = doc.get('assignments', [])
+        hosts = sorted(set(a.get('host') for a in assignments if a.get('host')))
         host_str = ", ".join(hosts)
         vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in hosts if h)))
         vcenter_str = ", ".join(filter(None, vcenters))
 
-        pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in doc.get('assignments', []) if a.get('start_pod')]
+        pod_ranges = []
+        pod_count = 0
+        for a in assignments:
+            start, end = a.get('start_pod'), a.get('end_pod', a.get('start_pod'))
+            if start is not None:
+                pod_ranges.append(str(start) if end is None or start == end else f"{start}-{end}")
+                pod_count += (int(end) - int(start) + 1)
 
+        # ======================================================================
+        # MODIFIED LOGIC: Intelligently determine the grouping code.
+        # This is the key fix.
+        # ======================================================================
         related_courses = doc.get('related_student_courses', [])
-        grouping_code = related_courses[0] if related_courses else doc.get('sf_course_code')
+        sf_code = doc.get('sf_course_code', '')
+        grouping_code = ''
+
+        if related_courses:
+            grouping_code = related_courses[0]
+        elif sf_code.lower().startswith("consolidated for:"):
+            # If it's a consolidated code, parse it to get a real course code for grouping.
+            # E.g., "Consolidated for: PA330VEU250820, ..." -> "PA330VEU250820"
+            code_part = sf_code[17:].strip() # Get everything after "Consolidated for:"
+            first_code = code_part.split(',')[0].strip()
+            grouping_code = first_code
+        else:
+            # Fallback to the original code if it's not a consolidated string.
+            grouping_code = sf_code
+        # ======================================================================
 
         trainer_pod_entry = {
-            'course_code': grouping_code,
+            'course_code': grouping_code,  # Use the newly determined grouping_code
             'location': "",
             'us_au_location': determine_us_au_location(host_str),
-            'course_start_date': format_date(doc.get('sf_start_date')),
-            'last_day': format_date(doc.get('sf_end_date')),
-            'trainer_name': doc.get('sf_trainer_name') or "Trainer",
+            'course_start_date': format_date(doc.get('sf_start_date') or doc.get('start_date')),
+            'last_day': format_date(doc.get('sf_end_date') or doc.get('end_date')),
+            'trainer_name': doc.get('sf_trainer_name') or doc.get('trainer_name') or "Trainer",
             'course_name': doc.get('sf_course_type', ''),
-            'start_end_pod': ", ".join(pod_ranges),
+            'start_end_pod': ", ".join(sorted(pod_ranges)),
             'username': username,
             'password': password,
-            'class_number': "",
+            'class_number': doc.get('f5_class_number'),
             'students': len(related_courses),
-            'vendor_pods': doc.get('effective_pods_req', len(pod_ranges) or 0),
+            'vendor_pods': doc.get('effective_pods_req') or pod_count or 0,
             'ram': ram,
             'virtual_hosts': host_str,
             'vcenter': vcenter_str,
             'pod_type': 'trainer',
             'version': course_version,
             'course_version': course_version,
-            # ✅ MODIFIED: Fallback to course version if APM command is not found
             'apm_command_value': extract_apm_command(doc.get('apm_commands', [])) or course_version,
         }
         processed_trainer_pods.append(trainer_pod_entry)
+
+    # ... (The rest of the function remains the same) ...
 
     grouped_courses = defaultdict(lambda: {'docs': [], 'assignments': []})
     for doc in standard_docs_raw:
@@ -449,7 +497,6 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
             grouped_courses[code]['docs'].append(doc)
             new_assignments = doc.get('assignments', [])
             existing_assignments = grouped_courses[code]['assignments']
-            # ✅ De-duplicate assignments safely
             for a in new_assignments:
                 if a not in existing_assignments:
                     existing_assignments.append(a)
@@ -458,47 +505,53 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
     logger.info(f"Processing {len(grouped_courses)} unique standard course codes.")
     for code, data in grouped_courses.items():
         base_doc = data['docs'][0]
+        all_docs = data['docs']
 
-        final_username = _find_value_across_docs(data['docs'], ['student_apm_username', 'apm_username'])
-        final_password = _find_value_across_docs(data['docs'], ['student_apm_password', 'apm_password'])
-        final_ram = _find_value_across_docs(data['docs'], ['memory_gb_one_pod', 'ram'])
+        final_username = _find_value_across_docs(all_docs, ['student_apm_username', 'apm_username', 'username'])
+        final_password = _find_value_across_docs(all_docs, ['student_apm_password', 'apm_password', 'password'])
+        final_ram = _find_value_across_docs(all_docs, ['memory_gb_one_pod', 'ram'])
         
-        course_version = base_doc.get('final_labbuild_course')
-        if not final_ram:
-            if course_version in ram_lookup_map:
-                final_ram = ram_lookup_map.get(course_version)
+        course_version = base_doc.get('final_labbuild_course') or base_doc.get('labbuild_course')
+        if not final_ram and course_version in ram_lookup_map:
+            final_ram = ram_lookup_map.get(course_version)
 
         hosts_from_assignments = sorted(set(a.get('host') for a in data['assignments'] if a.get('host')))
-        final_host_str = ", ".join(hosts_from_assignments) or _find_value_across_docs(data['docs'], ['virtual_hosts']) or ""
+        final_host_str = ", ".join(hosts_from_assignments) or _find_value_across_docs(all_docs, ['virtual_hosts']) or ""
 
         final_hosts_list = [h.strip() for h in final_host_str.split(',') if h.strip()]
         vcenters = sorted(list(set(host_vcenter_map.get(h.lower(), '') for h in final_hosts_list if h)))
         final_vcenter_str = ", ".join(filter(None, vcenters))
 
-        pod_ranges = [f"{a.get('start_pod')}-{a.get('end_pod')}" for a in data['assignments'] if a.get('start_pod')]
+        pod_ranges = []
+        pod_count = 0
+        for a in data['assignments']:
+            start, end = a.get('start_pod'), a.get('end_pod', a.get('start_pod'))
+            if start is not None:
+                pod_ranges.append(str(start) if end is None or start == end else f"{start}-{end}")
+                pod_count += (int(end) - int(start) + 1)
+        
         us_au_loc = determine_us_au_location(final_host_str)
 
         course = {
             'course_code': code,
             'location': find_location_from_code(code, location_map),
             'us_au_location': us_au_loc,
-            'course_start_date': format_date(base_doc.get('sf_start_date')),
-            'last_day': format_date(base_doc.get('sf_end_date')),
-            'trainer_name': base_doc.get('sf_trainer_name'),
+            'course_start_date': format_date(base_doc.get('sf_start_date') or base_doc.get('start_date')),
+            'last_day': format_date(base_doc.get('sf_end_date') or base_doc.get('end_date')),
+            'trainer_name': base_doc.get('sf_trainer_name') or base_doc.get('trainer_name'),
             'course_name': base_doc.get('sf_course_type'),
-            'start_end_pod': ", ".join(pod_ranges),
+            'start_end_pod': ", ".join(sorted(pod_ranges)),
             'username': final_username,
             'password': final_password,
             'class_number': base_doc.get('f5_class_number'),
             'students': base_doc.get('sf_pax_count', 0),
-            'vendor_pods': base_doc.get('effective_pods_req', len(pod_ranges) or 0),
+            'vendor_pods': base_doc.get('effective_pods_req') or pod_count or 0,
             'ram': final_ram,
             'virtual_hosts': final_host_str,
             'vcenter': final_vcenter_str,
             'pod_type': 'default',
             'version': course_version,
             'course_version': course_version,
-            # ✅ MODIFIED: Fallback to course version if APM command is not found
             'apm_command_value': extract_apm_command(base_doc.get('apm_commands', [])) or course_version,
         }
         processed_standard_courses.append(course)
@@ -708,20 +761,31 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
     wb.save(in_memory_fp)
     in_memory_fp.seek(0)
     return in_memory_fp
-# labbuild/dashboard/upcoming_report_generator.py
 
 def get_upcoming_report_data(db):
     try:
         if db is None:
             raise ConnectionError("A valid database connection was not provided.")
 
-        logger.info("Fetching data for upcoming report from INTERIM_ALLOCATION_COLLECTION...")
+        # --- Data Fetching ---
+        logger.info("Fetching data for current/staged labs from INTERIM_ALLOCATION_COLLECTION...")
         interim_docs = list(db[INTERIM_ALLOCATION_COLLECTION].find({}))
 
-        logger.info("Fetching extended courses from CURRENT_ALLOCATION_COLLECTION...")
+        logger.info("Fetching extended courses from ALLOCATION_COLLECTION...")
         extended_docs = list(db[ALLOCATION_COLLECTION].find({"extend": "true"}))
         logger.info(f"Found {len(extended_docs)} allocations marked for extension.")
 
+        # ✅ FIXED: Fetch future-dated, non-extended courses from the main allocation collection to capture all upcoming labs.
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        logger.info(f"Fetching upcoming labs from ALLOCATION_COLLECTION starting from {today_str}...")
+        upcoming_query = {
+            "courses.0.start_date": {"$gte": today_str},
+            "extend": {"$ne": "true"}
+        }
+        upcoming_docs_from_alloc = list(db[ALLOCATION_COLLECTION].find(upcoming_query))
+        logger.info(f"Found {len(upcoming_docs_from_alloc)} upcoming non-extended allocations.")
+
+        # --- Lookup Data ---
         logger.info("Fetching course configs for RAM fallback...")
         course_configs = list(db[COURSE_CONFIG_COLLECTION].find({}, {"course_name": 1, "memory": 1}))
         ram_lookup_map = {doc['course_name']: doc['memory'] for doc in course_configs if 'course_name' in doc and 'memory' in doc}
@@ -731,7 +795,6 @@ def get_upcoming_report_data(db):
         location_map = {loc['code']: loc['name'] for loc in locations_data if 'code' in loc and 'name' in loc}
 
         host_docs = list(db[HOST_COLLECTION].find({}))
-
         host_vcenter_map = {}
         logger.info("Building robust host-to-vCenter lookup map...")
         for doc in host_docs:
@@ -743,29 +806,41 @@ def get_upcoming_report_data(db):
                 if identifier := doc.get(key):
                     if isinstance(identifier, str):
                         host_vcenter_map[identifier.lower()] = short_vcenter
-
         logger.info(f"Built vCenter map with {len(host_vcenter_map)} keys.")
-        if not host_vcenter_map:
-            logger.warning("The host-to-vCenter map is EMPTY. The 'vCenter' column in the report will be blank.")
 
         vendor_map = get_vendor_prefix_map()
-
         host_map_for_summary = {
-            doc['host_shortcode'].capitalize(): doc['host_name'] # <-- MODIFIED LINE
+            doc['host_shortcode'].capitalize(): doc['host_name']
             for doc in host_docs
             if 'host_shortcode' in doc and 'host_name' in doc and str(doc.get('include_for_build')).lower() == 'true'
         }
 
+        # --- Data Unpacking & Merging ---
+
+        # Unpack from interim collection first (these are often high-priority or currently staging)
         course_allocs, trainer_pods = unpack_interim_allocations(
             interim_docs, vendor_map, location_map, ram_lookup_map, host_vcenter_map
         )
 
+        # Unpack the newly fetched upcoming courses from the main allocation collection
+        upcoming_allocs = unpack_extended_allocations(
+            upcoming_docs_from_alloc, location_map, ram_lookup_map, host_vcenter_map
+        )
+
+        # Unpack extended courses as before
         extended_pods = unpack_extended_allocations(
             extended_docs, location_map, ram_lookup_map, host_vcenter_map
         )
 
-        logger.info(f"Processed for Upcoming Report: {len(course_allocs)} Standard Courses | {len(trainer_pods)} Trainer Pods | {len(extended_pods)} Extended Pods")
+        # ✅ FIXED: Merge and de-duplicate, giving interim-sourced data priority to prevent double-counting.
+        interim_course_codes = {c['course_code'] for c in course_allocs}
+        unique_upcoming_allocs = [
+            alloc for alloc in upcoming_allocs
+            if alloc.get('course_code') not in interim_course_codes
+        ]
+        course_allocs.extend(unique_upcoming_allocs)
 
+        logger.info(f"Report Data Summary: {len(course_allocs)} Standard/Upcoming Courses | {len(trainer_pods)} Trainer Pods | {len(extended_pods)} Extended Pods")
         return course_allocs, trainer_pods, extended_pods, host_map_for_summary
 
     except Exception as e:
