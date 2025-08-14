@@ -1110,7 +1110,7 @@ class EmailManager:
             location_display = self._find_location_from_code(sf_code)
             
             # The host display is now simple, just the hostname for this specific row.
-            host_display_str = cmd.host
+            host_display_str = f"{cmd.host} ({pod_range_str})"
 
             table_rows_html += f"""
                 <tr>

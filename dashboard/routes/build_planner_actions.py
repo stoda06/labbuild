@@ -1562,6 +1562,9 @@ def plan_selected_courses():
         # --- MODIFICATION: Generate command strings and add to command objects ---
         for cmd in build_context.final_build_commands:
             cmd.cli_command = cmd.to_cli_string() # Add the string to the object
+
+        for email in build_context.final_emails:
+            email.courses_as_dicts = [course.to_dict() for course in email.courses]
         
         # Generate APM command strings
         apm_commands_by_code = defaultdict(list)
