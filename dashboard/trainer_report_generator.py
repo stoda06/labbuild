@@ -13,10 +13,10 @@ from openpyxl.utils import get_column_letter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Constants ---
-# CORRECTED to match your database collection name
 ALLOCATION_COLLECTION = "currentallocation"
 HOST_COLLECTION = "host"
 INTERIM_ALLOCATION_COLLECTION = "interimallocation"
+COURSE_CONFIG_COLLECTION = "courseconfig"  ### NEW: Added constant for the course config collection
 
 class ExcelStyle:
     CENTER_ALIGNMENT = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -73,6 +73,25 @@ def _create_host_to_vcenter_map(db: object) -> Dict[str, str]:
     logger.info(f"Host-to-vCenter Map created. Total entries: {len(host_map)}")
     return host_map
 
+### NEW: Helper function to create the RAM lookup map for fallbacks ###
+def _create_ram_lookup_map(db: object) -> Dict[str, int]:
+    """
+    Creates a fallback map from course version names to their standard RAM values
+    by reading from the course_config collection.
+    """
+    ram_map = {}
+    try:
+        collection = db[COURSE_CONFIG_COLLECTION]
+        # Fetch only the fields we need
+        course_configs = list(collection.find({}, {"course_name": 1, "memory": 1}))
+        for doc in course_configs:
+            # Ensure both fields exist and are valid before adding to the map
+            if doc.get('course_name') and doc.get('memory'):
+                ram_map[doc['course_name']] = doc['memory']
+        logger.info(f"Built RAM lookup map with {len(ram_map)} entries for fallbacks.")
+    except Exception as e:
+        logger.error(f"Could not create RAM lookup map from '{COURSE_CONFIG_COLLECTION}': {e}", exc_info=True)
+    return ram_map
 
 def _fetch_credentials_from_course2() -> Dict[str, Dict[str, str]]:
     """Fetches credentials and stores username, password, and class name."""
@@ -104,10 +123,8 @@ def _fetch_credentials_from_course2() -> Dict[str, Dict[str, str]]:
         logger.error(f"FATAL: Could not parse JSON response from course2 service.")
     return credential_map
 
-
-# In your trainer pod report generator file
-
-def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: Dict) -> List[Dict]:
+### MODIFIED: Added `ram_lookup_map` as a parameter ###
+def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: Dict, ram_lookup_map: Dict) -> List[Dict]:
     """Data Source 1: Fetches trainer pods from 'currentallocation'."""
     processed_data = []
     collection = db[ALLOCATION_COLLECTION]
@@ -138,12 +155,22 @@ def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: 
             creds = credential_map.get(course_name_from_db.strip(), {})
             vendor_code = course_item.get('vendor', '').upper()
             vendor_group_name = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
-            
-            # <<< FIX: Use the 'class' value from the credential map instead of a blank string.
             class_value = creds.get('class', '')
 
             for pod_detail in course_item.get('pod_details', []):
                 if not isinstance(pod_detail, dict): continue
+
+                ### MODIFIED: Replaced the simple .get() with the new resilient logic ###
+                # Step 1: Check for specific RAM keys in the pod_detail or course_item.
+                ram_value = pod_detail.get('memory_gb_one_pod') or pod_detail.get('ram')
+                if not ram_value:
+                    ram_value = course_item.get('memory_gb_one_pod') or course_item.get('ram')
+
+                # Step 2: If still not found, use the fallback lookup map.
+                if not ram_value:
+                    course_version_key = course_name_from_db.strip()
+                    ram_value = ram_lookup_map.get(course_version_key, 'N/A') # Use 'N/A' as the final default.
+                
                 host_name_from_alloc = pod_detail.get('host', 'N/A')
                 short_host_name = host_name_from_alloc.strip().split('.')[0]
                 lookup_key = short_host_name.lower()
@@ -155,23 +182,20 @@ def _fetch_from_current_allocations(db: object, host_map: Dict, credential_map: 
                     'username': creds.get('username', ''),
                     'password': creds.get('password', ''),
                     'version': course_name_from_db,
-                    'ram': pod_detail.get('memory_gb_one_pod', 'N/A'),
-                    'class': class_value, # Use the correct class value
+                    'ram': ram_value,  # Use the resiliently-fetched RAM value
+                    'class': class_value,
                     'host': host_name_from_alloc, 
                     'vcenter': full_vcenter.split('.')[0],
                     'taken_by': '', 'notes': '', 'vendor': vendor_group_name
                 })
     return processed_data
 
-
-# In your trainer pod report generator file
-
-def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: Dict) -> List[Dict]:
+### MODIFIED: Added `ram_lookup_map` as a parameter ###
+def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: Dict, ram_lookup_map: Dict) -> List[Dict]:
     """Data Source 2: Fetches trainer pods from 'interimallocation'."""
     processed_data = []
     collection = db[INTERIM_ALLOCATION_COLLECTION]
     
-    # <<< IMPROVEMENT 1: More robust query to find trainer pods.
     query = {
         "$or": [
             {"sf_trainer_name": "Trainer Pods"},
@@ -184,52 +208,50 @@ def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: 
     all_docs = list(collection.find(query))
     logger.info(f"Found {len(all_docs)} documents matching the interim trainer pod query.")
 
-    # <<< FIX 1: Add the same data normalization step as the other report.
-    # This handles both flat and nested 'assignments' structures.
     for doc in all_docs:
         if not doc.get('assignments'):
             host = doc.get('host')
             start_pod = doc.get('start_pod')
             if host and start_pod is not None:
                 doc['assignments'] = [{
-                    'host': host,
-                    'start_pod': start_pod,
-                    'end_pod': doc.get('end_pod', start_pod)
+                    'host': host, 'start_pod': start_pod, 'end_pod': doc.get('end_pod', start_pod)
                 }]
 
     for doc in all_docs:
-        username = ''
-        password = ''
-
+        username, password = '', ''
         doc_username = doc.get('student_apm_username') or doc.get('username')
         doc_password = doc.get('student_apm_password') or doc.get('password')
 
         if doc_username and doc_password:
-            username = doc_username
-            password = doc_password
+            username, password = doc_username, doc_password
         else:
             course_version_key_from_db = doc.get('final_labbuild_course') or doc.get('labbuild_course')
             credential_lookup_key = course_version_key_from_db.strip() if course_version_key_from_db else None
             
             if credential_lookup_key:
                 creds = credential_map.get(credential_lookup_key, {})
-                username = creds.get('username', '')
-                password = creds.get('password', '')
-                if not username:
-                    logger.warning(f"Direct creds missing. Fallback to API also FAILED for interim doc ID {doc.get('_id')} with key '{credential_lookup_key}'")
+                username, password = creds.get('username', ''), creds.get('password', '')
+                if not username: logger.warning(f"Creds fallback FAILED for interim doc ID {doc.get('_id')} with key '{credential_lookup_key}'")
             else:
                  logger.warning(f"Direct creds missing and no course key in interim doc ID {doc.get('_id')}")
 
         course_version_key_from_db = doc.get('final_labbuild_course') or doc.get('labbuild_course')
-        
-        # <<< FIX 2: Use the correct field 'vendor_shortcode' for vendor information.
         vendor_code = doc.get('vendor_shortcode', '').upper()
         vendor_group_name = VENDOR_GROUP_MAP.get(vendor_code, 'Other Vendors')
-        
         class_value = ''
-        ram_per_pod = doc.get('memory_gb_one_pod', 'N/A')
         
-        # This loop now works for ALL document structures because of the normalization step.
+        ### MODIFIED: Replaced the simple .get() with the new resilient logic ###
+        # Step 1: Check for specific RAM keys at the top level of the document.
+        ram_per_pod = doc.get('memory_gb_one_pod') or doc.get('ram')
+
+        # Step 2: If not found, use the fallback lookup map with the course version.
+        if not ram_per_pod:
+            course_version_key = (course_version_key_from_db or "").strip()
+            if course_version_key:
+                ram_per_pod = ram_lookup_map.get(course_version_key, 'N/A')
+            else:
+                ram_per_pod = 'N/A' # Final fallback if no version key exists
+        
         for assignment in doc.get('assignments', []):
             try:
                 start, end = assignment.get('start_pod'), assignment.get('end_pod')
@@ -246,13 +268,13 @@ def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: 
                             'username': username,
                             'password': password,
                             'version': course_version_key_from_db,
-                            'ram': ram_per_pod,
+                            'ram': ram_per_pod, # Use the resiliently-fetched RAM value
                             'class': class_value,
                             'host': host_name_from_alloc, 
                             'vcenter': full_vcenter.split('.')[0],
                             'taken_by': '', 
                             'notes': doc.get('trainer_assignment_warning', ''),
-                            'vendor': vendor_group_name # This will now be correctly assigned
+                            'vendor': vendor_group_name
                         })
             except (ValueError, TypeError) as e:
                 logger.warning(f"Skipping malformed assignment in doc '{doc.get('_id')}': {e}")
@@ -263,20 +285,27 @@ def _fetch_from_interim_allocations(db: object, host_map: Dict, credential_map: 
 # MAIN PUBLIC FUNCTION WITH DECISION LOGIC
 # ==============================================================================
 
+### MODIFIED: Orchestrator now creates and passes the ram_lookup_map ###
 def fetch_trainer_pod_data(db: object) -> List[Dict]:
     """Decides data source, fetches and processes trainer pod data."""
     today_weekday = datetime.today().weekday()
+    
+    # Create all necessary lookup maps once
     host_map = _create_host_to_vcenter_map(db)
     credential_map = _fetch_credentials_from_course2()
+    ram_lookup_map = _create_ram_lookup_map(db) # NEW: Create the RAM fallback map
+    
     if today_weekday < 2:
         logger.info("Day is before Wednesday. Using CURRENT week's data source ('currentallocation').")
-        return _fetch_from_current_allocations(db, host_map, credential_map)
+        # Pass the ram_lookup_map to the function
+        return _fetch_from_current_allocations(db, host_map, credential_map, ram_lookup_map)
     else:
         logger.info("Day is on or after Wednesday. Using NEXT week's data source ('interimallocation').")
-        return _fetch_from_interim_allocations(db, host_map, credential_map)
+        # Pass the ram_lookup_map to the function
+        return _fetch_from_interim_allocations(db, host_map, credential_map, ram_lookup_map)
 
 # ==============================================================================
-# EXCEL REPORT GENERATION LOGIC
+# EXCEL REPORT GENERATION LOGIC (No changes needed here)
 # ==============================================================================
 
 def _apply_style(cell, fill=None, font=None, alignment=None, border=None):
@@ -290,7 +319,6 @@ def create_trainer_report_in_memory(trainer_pods: List[Dict]) -> io.BytesIO:
     """Generates the trainer pod allocation report in memory."""
     if not trainer_pods:
         logger.warning("No trainer pod data was provided to the report generator. Returning an empty report.")
-        # You might want to create a workbook with a message like "No Data Found"
         wb = Workbook()
         sheet = wb.active
         sheet['A1'] = "No Trainer Pod Data Found"
