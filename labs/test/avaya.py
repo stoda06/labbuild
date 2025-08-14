@@ -1,183 +1,166 @@
+# FILE: labs/test/avaya.py
 #!/usr/bin/env python3.10
 
-import argparse, re, socket, ssl, sys, pexpect, threading
+import argparse
+import threading
 from pymongo import MongoClient
 from tabulate import tabulate
-from pyVim.connect import SmartConnect, Disconnect
-from pyVmomi import vim
-from db_utils import get_vcenter_by_host
+import subprocess
+import os
+from db_utils import get_vcenter_by_host  # kept for compatibility if used elsewhere
 
+# --- Global Settings ---
 VERBOSE = False
-ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-RED, ENDC = '\033[91m', '\033[0m'
+RED = '\033[91m'
+ENDC = '\033[0m'
+
+# --- Helper Functions ---
 
 def log(msg, print_lock):
+    """Prints a message if verbose mode is enabled."""
     if VERBOSE:
-        with print_lock: print(f"[DEBUG] {msg}")
-
-def strip_ansi(text): return ANSI_ESCAPE.sub('', text)
-
-def resolve_ip(ip_template, pod, print_lock):
-    if "+X" in ip_template:
-        base, _, offset = ip_template.partition("+X")
-        parts = base.split(".")
-        if len(parts) == 4:
-            try:
-                parts[-1] = str(int(parts[-1]) + pod)
-                ip_template = ".".join(parts)
-            except ValueError:
-                log(f"Invalid integer in last octet for '+X': {base}", print_lock)
-        log(f"IP after +X resolution: {ip_template}", print_lock)
-    return ip_template
+        with print_lock:
+            print(f"[DEBUG] {msg}")
 
 def get_course_components(course_name, print_lock):
+    """Fetches all components for a course from the database."""
     try:
         client = MongoClient("mongodb://labbuild_user:%24%24u1QBd6%26372%23%24rF@builder:27017/?authSource=labbuild_db")
         db = client["labbuild_db"]
         collection = db["temp_courseconfig"]
         doc = collection.find_one({"course_name": course_name})
-        log(f"MongoDB raw result: {doc}", print_lock)
+        log(f"MongoDB raw result for '{course_name}': {doc}", print_lock)
+
         if not doc or "components" not in doc:
             with print_lock:
                 print(f"❌ No components found for course: {course_name}")
-            return [], []
-        components, skipped = [], []
-        for c in doc["components"]:
-            component_name, raw_name, ip, port = c.get("component_name"), c.get("clone_name"), c.get("podip"), c.get("podport")
-            if component_name and raw_name and ip and port:
-                components.append((component_name, raw_name, ip, port))
-                log(f"Component template parsed: {component_name}, Name: {raw_name}, IP: {ip}, Port: {port}", print_lock)
-            else:
-                skipped.append(c)
-        return components, skipped
+            return []
+
+        return doc["components"]
     except Exception as e:
         with print_lock:
-            print(f"❌ MongoDB error: {e}")
-        return [], []
+            print(f"❌ MongoDB error while fetching components for '{course_name}': {e}")
+        return []
 
-def get_vm_power_map(si, pod, print_lock):
-    try:
-        content, rp_name = si.RetrieveContent(), f"av-pod{pod}"
-        container_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.ResourcePool], True)
-        for rp in container_view.view:
-            if rp.name == rp_name:
-                return {vm.name: vm.runtime.powerState for vm in rp.vm}
-        return {}
-    except Exception as e:
-        with print_lock:
-            print(f"⚠️ Could not fetch VMs for pod {pod}: {e}")
-        return {}
-
-def run_ssh_checks(pod, components, host, power_map, print_lock):
+def run_local_checks(pod, components_to_test, host, print_lock):
+    """
+    Run checks from localhost:
+      - For each component, read its port from MongoDB.
+      - Always scan the single host avvrX(.us) with that port via local nmap.
+      - Skip ARP checks (they require L2 adjacency).
+    """
     host_fqdn = f"avvr{pod}.us" if host.lower() in ["hotshot", "trypticon"] else f"avvr{pod}"
     results = []
-    with print_lock:
-        print(f"\n🔐 Connecting to {host_fqdn} (Pod {pod}) via SSH...")
-    try:
-        child = pexpect.spawn(f"ssh {host_fqdn}", timeout=30)
-        child.expect(["[>#\$]"], timeout=10)
-        child.sendline("export PS1='PROMPT> '")
-        child.expect_exact("PROMPT> ", timeout=10)
-        child.sendline("echo READY")
-        child.expect_exact("READY", timeout=10)
-        child.expect_exact("PROMPT> ", timeout=10)
-        with print_lock:
-            print(f"✅ SSH to {host_fqdn} (Pod {pod}) successful")
-
-        for component_name, raw_clone_name, raw_ip, port in components:
-            clone_name = raw_clone_name.replace('{X}', str(pod))
-            ip = resolve_ip(raw_ip, pod, print_lock)
-            status = "UNKNOWN"
-            if port.lower() == "arping":
-                subnet = ".".join(ip.split(".")[:3])
-                child.sendline(f"ifconfig | grep {subnet} -B 1 | awk '{{print $1}}' | head -n 1")
-                child.expect_exact("PROMPT>", timeout=10)
-                iface = child.before.decode(errors="ignore").strip().splitlines()[-1] if child.before.decode(errors="ignore").strip().splitlines() else ""
-                if iface:
-                    child.sendline(f"arping -c 3 -I {iface} {ip}")
-                    child.expect_exact("PROMPT>", timeout=15)
-                    status = "UP" if "Unicast reply" in child.before.decode(errors="ignore") else "DOWN"
-            else:
-                child.sendline(f"nmap -Pn -p {port} {ip}")
-                child.expect_exact("PROMPT>", timeout=20)
-                match = re.search(rf"{port}/tcp\s+(\w+)", child.before.decode(errors="ignore").lower())
-                status = match.group(1).upper() if match else "DOWN"
-            results.append({'pod': pod, 'component': clone_name, 'ip': ip, 'port': port, 'status': status, 'host': host_fqdn})
-        child.sendline("exit")
-        child.expect(pexpect.EOF, timeout=10)
-        child.close()
-    except Exception as e:
-        with print_lock:
-            print(f"❌ Pod {pod}: SSH or command execution failed on {host_fqdn}: {e}")
-        results.append({'pod': pod, 'component': 'SSH Connection', 'ip': host_fqdn, 'port': 22, 'status': 'FAILED', 'host': host_fqdn})
 
     with print_lock:
-        print(f"\n📊 Network Test Summary for Pod {pod}")
-        headers = ["Component", "Component IP", "Pod ID", "Pod Port", "Status"]
-        table_data = [[r['component'], r['ip'], r['host'], r['port'], r['status']] for r in results]
-        formatted_rows = [[f"{RED}{cell}{ENDC}" if row[4] != 'UP' else cell for cell in row] for row in table_data]
-        print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
-        if any(r['status'] != 'UP' for r in results):
-            powered_off = [[vm, "POWERED OFF"] for vm, state in power_map.items() if state == vim.VirtualMachinePowerState.poweredOff]
-            if powered_off:
-                print(f"\n🔌 VM Power State Summary for Pod {pod} (Resource Pool: av-pod{pod})")
-                print(tabulate(powered_off, headers=["VM Name", "Power State"], tablefmt="fancy_grid"))
+        print(f"\n🖥️  Running checks LOCALLY for Pod {pod} (target host: {host_fqdn})")
+
+    for component in components_to_test:
+        clone_name = component.get("clone_name", "").replace('{X}', str(pod))
+        port = component.get("podport")
+        status = "UNKNOWN"
+
+        if not clone_name or not port:
+            log(f"Skipping malformed component (missing clone_name/port): {component}", print_lock)
+            continue
+
+        # If Mongo lists "arping" as a 'port', we skip: we only nmap the host/port per your requirement.
+        if isinstance(port, str) and port.lower() == "arping":
+            results.append({
+                'pod': pod, 'component': clone_name, 'target': host_fqdn, 'port': port,
+                'status': 'SKIPPED (ARP not used in host-only mode)', 'host': host_fqdn
+            })
+            continue
+
+        # Build local nmap command: single host + single port
+        # -Pn: skip ping discovery; -n: no DNS; -p: the specific port
+        cmd = ["nmap", "-Pn", "-n", "-p", str(port), host_fqdn]
+        log(f"   -> Running locally: {' '.join(cmd)}", print_lock)
+
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            output = proc.stdout
+            out_lower = output.lower()
+            log(f"   <- Output:\n{output.strip()}", print_lock)
+
+            if f"{port}/tcp open" in out_lower or f"{port}/udp open" in out_lower:
+                status = "UP"
+            elif "filtered" in out_lower:
+                status = "FILTERED"
             else:
-                print(f"\n🔌 All VMs in Pod {pod} are powered ON")
+                status = "DOWN"
+
+        except subprocess.TimeoutExpired:
+            status = "TIMEOUT"
+        except Exception as e:
+            status = f"FAILED ({e})"
+
+        results.append({
+            'pod': pod,
+            'component': clone_name,
+            'target': host_fqdn,
+            'port': port,
+            'status': status,
+            'host': host_fqdn
+        })
+
     return results
 
 def main(argv=None, print_lock=None):
     if print_lock is None:
         print_lock = threading.Lock()
     global VERBOSE
-    parser = argparse.ArgumentParser(description="AV Pod Network Checker")
-    parser.add_argument("-g", "--course", required=True)
-    parser.add_argument("--host", required=True)
-    parser.add_argument("-s", "--start", type=int, required=True)
-    parser.add_argument("-e", "--end", type=int, required=True)
+
+    parser = argparse.ArgumentParser(description="AV Pod Network Checker (host-only nmap)")
+    parser.add_argument("-g", "--course", required=True, help="Course name in MongoDB")
+    parser.add_argument("--host", required=True, help="Host selector (affects .us suffix for avvrX)")
+    parser.add_argument("-s", "--start", type=int, required=True, help="Start pod number")
+    parser.add_argument("-e", "--end", type=int, required=True, help="End pod number")
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("-c", "--component", help="Test specific components.")
+    parser.add_argument("-c", "--component", help="Test only these component_name(s), comma-separated")
     args = parser.parse_args(argv)
     VERBOSE = args.verbose
 
-    vcenter_fqdn = get_vcenter_by_host(args.host)
-    if not vcenter_fqdn:
-        with print_lock:
-            print(f"❌ Could not find vCenter for host '{args.host}' in the database.")
+    with print_lock:
+        print("🚀 Starting AV Pod Network Checker (local nmap, host-only)")
+        print(f"\n📘 Fetching components for course: {args.course}")
+
+    all_components = get_course_components(args.course, print_lock)
+    if not all_components:
         return []
 
-    try:
-        ssl._create_default_https_context = ssl._create_unverified_context
-        si = SmartConnect(host=vcenter_fqdn, user="administrator@vcenter.rededucation.com", pwd="pWAR53fht786123$")
-        with print_lock:
-            print(f"✅ Connected to vCenter: {vcenter_fqdn}")
-    except Exception as e:
-        with print_lock:
-            print(f"❌ Failed to connect to vCenter '{vcenter_fqdn}': {e}")
-        return []
-    
-    with print_lock:
-        print(f"\n📘 Fetching component templates for course: {args.course}")
-    components, _ = get_course_components(args.course, print_lock)
-    
+    # Only components that have a port defined; IPs are ignored in host-only mode
+    testable_components = [c for c in all_components if c.get("podport")]
+
     if args.component:
-        selected = [c.strip() for c in args.component.split(',')]
-        components = [c for c in components if c[0] in selected]
-    
-    if not components:
+        selected_names = [c.strip() for c in args.component.split(',')]
+        components_to_test = [c for c in testable_components if c.get("component_name") in selected_names]
+    else:
+        components_to_test = testable_components
+
+    if not components_to_test:
         with print_lock:
-            print(f"❌ No usable components found (or matched filter). Skipping tests.")
-        if si: Disconnect(si)
+            print("✅ No testable components with a port defined for this course.")
         return []
-        
+
     all_results = []
     for pod in range(args.start, args.end + 1):
-        power_map = get_vm_power_map(si, pod, print_lock)
-        log(f"Pod {pod} Power Map: {power_map}", print_lock)
-        pod_results = run_ssh_checks(pod, components, args.host, power_map, print_lock)
+        pod_results = run_local_checks(pod, components_to_test, args.host, print_lock)
+
+        with print_lock:
+            print(f"\n📊 Network Test Summary for Pod {pod}")
+            headers = ["Component", "Target Host", "Pod ID", "Port", "Status"]
+
+            table_data = []
+            for r in pod_results:
+                status = r['status']
+                status_display = f"{RED}{status}{ENDC}" if status != 'UP' else status
+                table_data.append([r['component'], r['target'], r['host'], r['port'], status_display])
+
+            print(tabulate(table_data, headers=headers, tablefmt="fancy_grid"))
+
         all_results.extend(pod_results)
-    
-    Disconnect(si)
+
     return all_results
 
 if __name__ == "__main__":
