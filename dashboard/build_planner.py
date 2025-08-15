@@ -906,7 +906,7 @@ class TrainerPodPlanner:
         labbuild_course = first_cmd.labbuild_course
 
         end_pod = start_pod + num_pods - 1
-        
+
         # Ensure the nested structure exists before trying to add to it.
         if vendor not in self.context.pods_in_use:
             self.context.pods_in_use[vendor] = defaultdict(set)
@@ -1390,7 +1390,10 @@ class BuildPlanner:
     def _fetch_initial_data(self, fetch_sf_data: bool = True) -> Dict:
         """A private helper that consolidates all data fetching operations."""
         try:
-            hosts_docs = list(host_collection.find({}, {"host_name": 1, "vcenter": 1}))
+            hosts_docs = list(host_collection.find(
+                {"include_for_build": "true"}, 
+                {"host_name": 1, "vcenter": 1}
+            ))
             hosts_list = [h['host_name'] for h in hosts_docs]
             host_to_vcenter_map = {h['host_name']: h.get('vcenter', 'N/A').split('.')[0] for h in hosts_docs}
             course_configs = list(course_config_collection.find({}))
