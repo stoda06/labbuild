@@ -273,36 +273,69 @@ class BaseVendorPlanner:
         """
         return set() # Default is no conflicts
 
-    def _find_contiguous_pod_range(self, num_pods: int, start_suggestion: int = 1) -> Optional[int]:
+    def _find_contiguous_pod_range(self, num_pods: int, start_suggestion: int = 1, upper_limit: Optional[int] = None) -> Optional[int]:
         """
         Finds the next available contiguous block of pod numbers, respecting
-        both `pods_in_use` and vendor-specific IP conflict rules.
-        
-        Returns the starting pod number of the found block, or None if no block is found.
+        both `pods_in_use` and vendor-specific IP conflict rules. This version
+        uses a more efficient search that jumps over unavailable blocks.
         """
         candidate_pod = start_suggestion
+        
+        # 1. Get all pods directly in use for this vendor by combining all sub-type sets.
+        vendor_pods_in_use = self.context.pods_in_use.get(self.vendor_code, defaultdict(set))
+        directly_in_use = vendor_pods_in_use.get('regular', set()).union(vendor_pods_in_use.get('maestro', set()))
+
+        # 2. Get all pods that are unavailable due to IP conflicts.
+        ip_conflict_pods = set()
+        # The conflict checker now correctly iterates over all used pods (both regular and maestro)
+        for used_pod in directly_in_use:
+            ip_conflict_pods.update(self._get_ip_conflict_pods(used_pod))
+            
+        # 3. Combine them into a single set of all unavailable numbers.
+        all_unavailable_pods = directly_in_use.union(ip_conflict_pods)
+
         while True:
-            pod_range_to_check = range(candidate_pod, candidate_pod + num_pods)
-            
-            # 1. Check for direct conflicts (is any pod in the range already taken?)
-            is_taken = any(p in self.context.pods_in_use[self.vendor_code] for p in pod_range_to_check)
-            
-            # 2. Check for indirect IP conflicts
-            ip_conflict = False
-            if not is_taken:
-                for pod in pod_range_to_check:
-                    conflicting_pods = self._get_ip_conflict_pods(pod)
-                    if any(p in self.context.pods_in_use[self.vendor_code] for p in conflicting_pods):
-                        ip_conflict = True
-                        break # An IP conflict was found, this range is invalid
-            
-            if not is_taken and not ip_conflict:
-                return candidate_pod # Success! Found a valid starting pod.
-            
-            # If the slot was taken or had a conflict, move to the next number and retry.
-            candidate_pod += 1
-            if candidate_pod > 200: # Safety break to prevent infinite loops
-                logger.warning(f"Pod search for {self.vendor_code} exceeded 200. No slot found.")
+            # Check 1: Does the entire proposed range exceed the upper limit?
+            if upper_limit is not None and (candidate_pod + num_pods - 1) > upper_limit:
+                logger.warning(
+                    f"Pod search for {self.vendor_code.upper()} stopped: next candidate range starting at {candidate_pod} "
+                    f"would exceed the upper limit of {upper_limit}."
+                )
+                return None
+
+            # Check 2: Is any pod within the candidate range unavailable?
+            is_valid_range = True
+            for i in range(num_pods):
+                pod_to_check = candidate_pod + i
+                if pod_to_check in all_unavailable_pods:
+                    # --- MODIFICATION: Log the specific reason for the conflict ---
+                    if pod_to_check in directly_in_use:
+                        reason = "is directly in use"
+                    else:
+                        reason = "has an IP conflict"
+                    
+                    logger.debug(
+                        f"Pod search for {self.vendor_code.upper()}: Skipping range starting at {candidate_pod} "
+                        f"because pod {pod_to_check} {reason}."
+                    )
+                    # --- END MODIFICATION ---
+                    
+                    # --- MODIFICATION: Intelligently jump to the next possible start number ---
+                    candidate_pod = pod_to_check + 1
+                    is_valid_range = False
+                    break # Restart the while loop with the new, smarter candidate_pod
+
+            if is_valid_range:
+                # If the for loop completed without breaking, we found a valid range.
+                logger.info(
+                    f"Pod search for {self.vendor_code.upper()}: Found valid contiguous range starting at {candidate_pod} "
+                    f"for {num_pods} pod(s)."
+                )
+                return candidate_pod
+
+            # Safety break to prevent rare infinite loops
+            if candidate_pod > 500: # Increased safety limit
+                logger.warning(f"Pod search for {self.vendor_code.upper()} exceeded 500. No suitable slot found.")
                 return None
 
     def _get_memory_for_course(self, course_name: str) -> float:
@@ -422,15 +455,18 @@ class DefaultVendorPlanner(BaseVendorPlanner):
                 return {"host": host, "start_pod": start_pod}
         return None
 
-    def _commit_allocation_to_context(self, allocation: Dict, params: Dict):
+    def _commit_allocation_to_context(self, allocation: Dict, params: Dict, pod_type: str = 'regular'):
         """Updates the shared BuildContext with the newly allocated resources."""
         host = allocation['host']
         start_pod = allocation['start_pod']
         num_pods = params['pods_req']
         end_pod = start_pod + num_pods - 1
         
+        if self.vendor_code not in self.context.pods_in_use:
+            self.context.pods_in_use[self.vendor_code] = defaultdict(set)
+            
         for i in range(start_pod, end_pod + 1):
-            self.context.pods_in_use[self.vendor_code].add(i)
+            self.context.pods_in_use[self.vendor_code][pod_type].add(i)
             
         memory_to_reserve = params['memory_per_pod'] * num_pods
         self.context.host_capacities[host] -= memory_to_reserve
@@ -522,13 +558,35 @@ class CheckpointPlanner(DefaultVendorPlanner):
 
     def _get_ip_conflict_pods(self, pod_number: int) -> set:
         """
-        Implements the Checkpoint IP conflict rule: a regular pod at X conflicts
-        with a Maestro pod at X-100, and vice-versa.
+        Implements the Checkpoint IP conflict rule based on course type.
+        - A regular pod (X) conflicts with a Maestro pod (X-100).
+        - A Maestro pod (Y) conflicts with a regular pod (Y+100).
         """
-        if pod_number > 100:
-            return {pod_number - 100}
-        else:
-            return {pod_number + 100}
+        conflicts = set()
+
+        try:
+            pod_num_int = int(pod_number)
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert pod number '{pod_number}' to int for IP conflict check.")
+            return conflicts
+        
+        # A trainer pod is always considered 'regular' for IP conflict purposes.
+        # So, a trainer pod at pod_number > 100 conflicts with a Maestro pod at pod_number - 100.
+        if pod_num_int > 100:
+            maestro_pods_in_use = self.context.pods_in_use.get('cp', {}).get('maestro', set())
+            conflicting_maestro_pod = pod_num_int - 100
+            if conflicting_maestro_pod in maestro_pods_in_use:
+                conflicts.add(conflicting_maestro_pod)
+        
+        # This handles a student Maestro pod (e.g., at 10) conflicting with a
+        # student/trainer regular pod (e.g., at 110).
+        else: # pod_number <= 100
+            regular_pods_in_use = self.context.pods_in_use.get('cp', {}).get('regular', set())
+            conflicting_regular_pod = pod_num_int + 100
+            if conflicting_regular_pod in regular_pods_in_use:
+                conflicts.add(conflicting_regular_pod)
+                
+        return conflicts
 
     def plan_builds(self, sf_courses: List[Dict[str, Any]]):
         """
@@ -609,7 +667,7 @@ class CheckpointPlanner(DefaultVendorPlanner):
                 self.context.errors.append(f"Could not find slot for Maestro part '{part['name']}' for SF course '{sf_code}'.")
                 continue
 
-            self._commit_allocation_to_context(allocation, part_params)
+            self._commit_allocation_to_context(allocation, part_params, pod_type='maestro')
 
             # --- MODIFICATION: Determine which region the allocation is in and select the correct username ---
             allocated_host = allocation['host']
@@ -675,6 +733,9 @@ class TrainerPodPlanner:
     The logic is split to handle F5 vendors uniquely (1-to-1 trainer pods)
     and consolidate all other vendors by their common LabBuild course.
     """
+
+    TRAINER_POD_UPPER_LIMIT = 153
+
     def __init__(self, build_context: BuildContext):
         """
         Initializes the planner with the shared build context and defines
@@ -692,6 +753,12 @@ class TrainerPodPlanner:
         }
         # A fallback starting pod number for any vendor not in the rules map.
         self.default_start_pod = 100
+
+        self.vendor_pod_cursors = {
+            'cp': self.vendor_rules['cp']['start_pod'],
+            'f5': self.vendor_rules['f5']['start_pod'],
+            # Other vendors will be added dynamically if needed
+        }
 
     def plan_trainer_pods(self, all_sf_courses: List[Dict[str, Any]]):
         """
@@ -750,16 +817,25 @@ class TrainerPodPlanner:
             try:
                 # F5 trainer pods are always single-pod allocations.
                 num_pods_needed = 1
-                start_suggestion = self.vendor_rules['f5']['start_pod']
+                start_suggestion = self.vendor_pod_cursors.get('f5', self.vendor_rules['f5']['start_pod'])
                 
                 # We need an F5Planner instance to use its pod allocation helper,
                 # which correctly respects F5-specific rules (like class numbers).
                 f5_planner = F5Planner('f5', self.context)
-                start_pod = f5_planner._find_contiguous_pod_range(num_pods_needed, start_suggestion)
+                start_pod = f5_planner._find_contiguous_pod_range(
+                    num_pods_needed, 
+                    start_suggestion, 
+                    upper_limit=self.TRAINER_POD_UPPER_LIMIT
+                )
 
                 if start_pod is None:
-                    self.context.errors.append(f"Could not find an available pod for F5 trainer for course '{student_cmd.sf_course_code}'.")
+                    self.context.errors.append(
+                        f"Could not find an available pod below the limit of {self.TRAINER_POD_UPPER_LIMIT} "
+                        f"for F5 trainer for course '{student_cmd.sf_course_code}'."
+                    )
                     continue
+
+                self.vendor_pod_cursors['f5'] = start_pod + num_pods_needed
 
                 # An F5 trainer pod uses the same host and class number as its student counterpart.
                 host = student_cmd.host
@@ -796,17 +872,26 @@ class TrainerPodPlanner:
                 total_student_pods = sum(cmd.end_pod - cmd.start_pod + 1 for cmd in commands_in_group)
                 num_pods_needed = max(1, (total_student_pods + 9) // 10)
                 
-                start_suggestion = self.vendor_rules.get(vendor, {}).get("start_pod", self.default_start_pod)
+                start_suggestion = self.vendor_pod_cursors.get(vendor, self.vendor_rules.get(vendor, {}).get("start_pod", self.default_start_pod))
                 
                 # Get the correct vendor planner to access its helpers (for IP conflict rules).
                 PlannerClass = BuildPlanner.VENDOR_MAPPING.get(vendor, DefaultVendorPlanner)
                 vendor_planner = PlannerClass(vendor, self.context)
                 
-                start_pod = vendor_planner._find_contiguous_pod_range(num_pods_needed, start_suggestion)
+                start_pod = vendor_planner._find_contiguous_pod_range(
+                    num_pods_needed, 
+                    start_suggestion,
+                    upper_limit=self.TRAINER_POD_UPPER_LIMIT
+                )
                 
                 if start_pod is None:
-                    self.context.errors.append(f"Could not find pod block for trainer group '{labbuild_course}'.")
+                    self.context.errors.append(
+                        f"Could not find a pod block below the limit of {self.TRAINER_POD_UPPER_LIMIT} "
+                        f"for trainer group '{labbuild_course}'."
+                    )
                     continue
+
+                self.vendor_pod_cursors[vendor] = start_pod + num_pods_needed
 
                 host = commands_in_group[0].host # Use the host of the first student course in the group.
                 self._create_and_commit_trainer_command(start_pod, num_pods_needed, host, commands_in_group)
@@ -821,8 +906,14 @@ class TrainerPodPlanner:
         labbuild_course = first_cmd.labbuild_course
 
         end_pod = start_pod + num_pods - 1
+        
+        # Ensure the nested structure exists before trying to add to it.
+        if vendor not in self.context.pods_in_use:
+            self.context.pods_in_use[vendor] = defaultdict(set)
+            
         for i in range(start_pod, end_pod + 1):
-            self.context.pods_in_use[vendor].add(i)
+            # All trainer pods are considered 'regular' for allocation purposes.
+            self.context.pods_in_use[vendor]['regular'].add(i)
         
         # Generate the tag and description from the associated student courses.
         sf_codes = sorted(list(set(cmd.sf_course_code for cmd in student_commands)))
@@ -1363,18 +1454,35 @@ class BuildPlanner:
                 for course in doc.get("courses", []):
                     vendor = course.get("vendor")
                     if not vendor: continue
+
+                    course_name = course.get("course_name", "").lower()
+                    pod_type = 'maestro' if vendor == 'cp' and 'maestro' in course_name else 'regular'
+                    
+                    if vendor not in context.pods_in_use:
+                        context.pods_in_use[vendor] = defaultdict(set)
                     
                     for pd in course.get("pod_details", []):
                         if pd.get("pod_number") is not None:
-                            context.pods_in_use[vendor].add(int(pd["pod_number"]))
-                            locked_count += 1
+                            try:
+                                context.pods_in_use[vendor][pod_type].add(int(pd["pod_number"]))
+                                locked_count += 1
+                            except (ValueError, TypeError):
+                                logger.warning(f"Could not parse pod_number '{pd['pod_number']}' as int.")
+                        
                         if vendor == 'f5' and pd.get("class_number") is not None:
-                            context.pods_in_use[vendor].add(int(pd["class_number"]))
-                            locked_count += 1
+                            try:
+                                context.pods_in_use[vendor]['regular'].add(int(pd["class_number"]))
+                                locked_count += 1
+                            except (ValueError, TypeError):
+                                logger.warning(f"Could not parse class_number '{pd['class_number']}' as int.")
+
                         for nested_pod in pd.get("pods", []):
                             if nested_pod.get("pod_number") is not None:
-                                context.pods_in_use[vendor].add(int(nested_pod["pod_number"]))
-                                locked_count += 1
+                                try:
+                                    context.pods_in_use[vendor]['regular'].add(int(nested_pod["pod_number"]))
+                                    locked_count += 1
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Could not parse nested pod_number '{nested_pod['pod_number']}' as int.")
             
             logger.info(f"Finished locking resources. {locked_count} pods/classes are marked as in-use.")
         except Exception as e:
