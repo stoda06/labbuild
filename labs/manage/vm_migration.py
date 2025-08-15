@@ -68,8 +68,8 @@ def migrate_pod(service_instance, source_pod_config: Dict[str, Any], dest_host_d
         if not rpm.create_resource_pool(dest_containers['parent_rp_name'], dest_containers['rp_name']):
             return False, "prep_dest_rp", f"Failed to create destination RP '{dest_containers['rp_name']}'."
         
-        # Folders are datacenter-wide, so they don't need to be recreated, just ensure permissions
-        # We can reuse the original folder
+        if not fm.create_folder(source_pod_config["vendor_shortcode"], dest_containers['folder_name']):
+             return False, "ensure_dest_folder", f"Failed to ensure destination folder '{dest_containers['folder_name']}' exists."
         
         # Recreate networks on the destination host
         for network_config in source_pod_config.get("networks", []):
@@ -85,6 +85,8 @@ def migrate_pod(service_instance, source_pod_config: Dict[str, Any], dest_host_d
         if source_pod_config.get("vendor_shortcode") == "cp":
             user = f"vcenter.rededucation.com\\labcp-{pod_number}"
             role = "labcp-0-role"
+            if not fm.assign_user_to_folder(dest_containers['folder_name'], user, role):
+                return False, "apply_dest_folder_permissions", "Failed to apply permissions to destination folder."
             if not rpm.assign_role_to_resource_pool(dest_containers['rp_name'], user, role):
                 return False, "apply_dest_permissions", "Failed to apply permissions to destination RP."
 
@@ -106,8 +108,8 @@ def migrate_pod(service_instance, source_pod_config: Dict[str, Any], dest_host_d
         logger.info(f"Migration successful. Cleaning up source resources on '{source_pod_config['host_fqdn']}'...")
         if not rpm.delete_resource_pool(source_containers['rp_name']):
             logger.warning(f"Failed to clean up source resource pool '{source_containers['rp_name']}'. Please remove it manually.")
-        if not fm.delete_folder(source_containers['folder_name'], force=True):
-             logger.warning(f"Failed to clean up source folder '{source_containers['folder_name']}'. Please remove it manually.")
+        # if not fm.delete_folder(source_containers['folder_name'], force=True):
+        #      logger.warning(f"Failed to clean up source folder '{source_containers['folder_name']}'. Please remove it manually.")
         for network_config in source_pod_config.get("networks", []):
             if not nm.delete_vswitch(source_pod_config['host_fqdn'], network_config["switch_name"]):
                 logger.warning(f"Failed to clean up source vSwitch '{network_config['switch_name']}'.")
