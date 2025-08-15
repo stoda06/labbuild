@@ -24,6 +24,7 @@ from constants import DB_NAME, ALLOCATION_COLLECTION
 import labs.setup.checkpoint as checkpoint 
 from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker
 import labs.manage.vm_operations as vm_operations
+from labs.manage.vm_relocation import relocate_pod_vms
 
 logger = logging.getLogger('labbuild.commands')
 
@@ -1151,4 +1152,69 @@ def manage_environment(args_dict: Dict[str, Any], operation_logger: OperationLog
 
     all_results.extend(task_results) # Combine submission errors with task results
     logger.info(f"VM management ({operation_arg}) tasks submitted/completed.")
+    return all_results
+
+def move_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
+    """
+    Handles the 'move' command logic to relocate VMs to their correct containers.
+    """
+    # --- Extract Arguments ---
+    vendor_arg = args_dict.get('vendor')
+    course_arg = args_dict.get('course')
+    host_arg = args_dict.get('host')
+    start_pod_arg = args_dict.get('start_pod')
+    end_pod_arg = args_dict.get('end_pod')
+    thread_arg = args_dict.get('thread', 4)
+
+    logger.info(f"Dispatching VM 'move' operation for pods {start_pod_arg}-{end_pod_arg}. RunID: {operation_logger.run_id}")
+
+    # --- Prerequisites: Connect to vCenter ---
+    try:
+        host_details = get_host_by_name(host_arg)
+        if not host_details: raise ValueError(f"Host details not found for '{host_arg}'.")
+        service_instance = get_vcenter_instance(host_details)
+        if not service_instance: raise ConnectionError(f"vCenter connection failed for host '{host_arg}'.")
+    except (ValueError, ConnectionError) as e:
+        err_msg = f"Prerequisite Error for move: {e}"
+        logger.critical(err_msg)
+        operation_logger.log_pod_status(pod_id="prereq_check", status="failed", error=err_msg)
+        return [{"identifier": "prereq_check", "status": "failed", "error_message": err_msg}]
+
+    # --- Execute Move Operation in Parallel ---
+    futures = []
+    all_results = []
+    with ThreadPoolExecutor(max_workers=thread_arg) as executor:
+        for pod_num in range(start_pod_arg, end_pod_arg + 1):
+            pod_id_str = str(pod_num)
+            try:
+                # Fetch config for each pod to know its components and naming conventions
+                pod_config = fetch_and_prepare_course_config(course_arg, pod=pod_num)
+                pod_config.update({
+                    "host_fqdn": host_details["fqdn"],
+                    "pod_number": pod_num,
+                    "vendor_shortcode": vendor_arg
+                })
+
+                future = executor.submit(relocate_pod_vms, service_instance, pod_config)
+                future.pod_number = pod_num
+                future.class_number = None # 'move' is pod-based for now
+                futures.append(future)
+
+            except Exception as e:
+                error_msg = f"Error submitting move task for pod {pod_num}: {e}"
+                logger.error(error_msg, exc_info=True)
+                operation_logger.log_pod_status(pod_id=pod_id_str, status="failed", step="submit_task_error", error=str(e))
+                all_results.append({"identifier": pod_id_str, "status": "failed", "error_message": str(e)})
+
+    # --- Wait for and Process Results ---
+    task_results = wait_for_tasks(futures, description=f"VM relocation for pods {start_pod_arg}-{end_pod_arg}")
+    for res_data in task_results:
+        operation_logger.log_pod_status(
+            pod_id=res_data["identifier"],
+            status=res_data["status"],
+            step=res_data["failed_step"],
+            error=res_data["error_message"],
+        )
+    all_results.extend(task_results)
+    logger.info(f"VM relocation tasks completed for pods {start_pod_arg}-{end_pod_arg}.")
     return all_results

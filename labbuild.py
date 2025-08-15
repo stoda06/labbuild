@@ -23,7 +23,7 @@ from logger.log_config import setup_logger # Setup logger function
 from operation_logger import OperationLogger # Import logger class
 from listing import list_vendor_courses, list_allocations # Import listing functions
 # Import command handlers and the special status constant
-from commands import setup_environment, teardown_environment, manage_environment, COMPONENT_LIST_STATUS, test_environment
+from commands import setup_environment, teardown_environment, manage_environment, COMPONENT_LIST_STATUS, test_environment, move_environment
 from config_utils import fetch_and_prepare_course_config # Needed for arg validation
 # --- NEW IMPORTS ---
 from db_utils import mongo_client
@@ -220,7 +220,7 @@ def main():
 
     # --- Subparsers for Commands ---
     subparsers = parser.add_subparsers(dest='command', title='commands',
-                                       help='Action command (setup, manage, teardown, test)')
+                                       help='Action command (setup, manage, teardown, test, move)')
 
     # --- Common Arguments for Subparsers ---
     common_parser = argparse.ArgumentParser(add_help=False)
@@ -289,6 +289,9 @@ def main():
     test_parser.add_argument("-x", "--exclude", help="Exclude pods/classes from vendor-wide test. E.g., '1-5,10,22-25'")
     test_parser.set_defaults(func=test_environment)
 
+    move_parser = subparsers.add_parser('move', help='Move pod VMs to correct folder and resource pool.',
+                                        parents=[common_parser, pod_range_parser, f5_parser])
+    move_parser.set_defaults(func=move_environment)
 
     argcomplete.autocomplete(parser)
 

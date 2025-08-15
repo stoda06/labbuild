@@ -1619,3 +1619,67 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"An unexpected error occurred while adding network adapter to '{vm_name}': {self.extract_error_message(e)}")
             return False
+    
+
+    def move_vm_to_folder(self, vm_name: str, target_folder_obj: vim.Folder) -> bool:
+        """
+        Moves a VM to a specified target folder.
+
+        :param vm_name: The name of the VM to move.
+        :param target_folder_obj: The destination vim.Folder object.
+        :return: True if the move was successful or if the VM is already in the folder, False otherwise.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"Cannot move VM '{vm_name}': VM not found.")
+            return False
+
+        # Check if the VM is already in the target folder
+        if vm.parent == target_folder_obj:
+            self.logger.info(f"VM '{vm_name}' is already in the target folder '{target_folder_obj.name}'. No action needed.")
+            return True
+
+        try:
+            self.logger.info(f"Moving VM '{vm_name}' to folder '{target_folder_obj.name}'...")
+            task = target_folder_obj.MoveIntoFolder_Task([vm])
+            if self.wait_for_task(task):
+                self.logger.info(f"Successfully moved VM '{vm_name}' to folder '{target_folder_obj.name}'.")
+                return True
+            else:
+                self.logger.error(f"Task to move VM '{vm_name}' to folder '{target_folder_obj.name}' failed.")
+                return False
+        except Exception as e:
+            self.logger.error(f"An exception occurred while moving VM '{vm_name}' to folder: {self.extract_error_message(e)}")
+            return False
+
+    def move_vm_to_resource_pool(self, vm_name: str, target_rp_obj: vim.ResourcePool) -> bool:
+        """
+        Moves a VM to a specified target resource pool.
+
+        :param vm_name: The name of the VM to move.
+        :param target_rp_obj: The destination vim.ResourcePool object.
+        :return: True if the move was successful or if the VM is already in the RP, False otherwise.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"Cannot move VM '{vm_name}': VM not found.")
+            return False
+
+        # Check if the VM is already in the target resource pool
+        if vm.resourcePool == target_rp_obj:
+            self.logger.info(f"VM '{vm_name}' is already in the target resource pool '{target_rp_obj.name}'. No action needed.")
+            return True
+
+        try:
+            self.logger.info(f"Moving VM '{vm_name}' to resource pool '{target_rp_obj.name}'...")
+            # The MoveIntoResourcePool_Task requires a list of VMs
+            task = target_rp_obj.MoveIntoResourcePool_Task(list_of_vms=[vm])
+            if self.wait_for_task(task):
+                self.logger.info(f"Successfully moved VM '{vm_name}' to resource pool '{target_rp_obj.name}'.")
+                return True
+            else:
+                self.logger.error(f"Task to move VM '{vm_name}' to resource pool '{target_rp_obj.name}' failed.")
+                return False
+        except Exception as e:
+            self.logger.error(f"An exception occurred while moving VM '{vm_name}' to resource pool: {self.extract_error_message(e)}")
+            return False
