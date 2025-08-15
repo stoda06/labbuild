@@ -1683,3 +1683,46 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"An exception occurred while moving VM '{vm_name}' to resource pool: {self.extract_error_message(e)}")
             return False
+    
+    def migrate_vm(self, vm_name: str, dest_host_obj: vim.HostSystem, dest_rp_obj: vim.ResourcePool, dest_datastore_obj: Optional[vim.Datastore] = None) -> bool:
+        """
+        Migrates a powered-off VM to a new host, resource pool, and optionally a new datastore.
+
+        :param vm_name: The name of the VM to migrate.
+        :param dest_host_obj: The destination vim.HostSystem object.
+        :param dest_rp_obj: The destination vim.ResourcePool object.
+        :param dest_datastore_obj: Optional. The destination vim.Datastore object. If None, uses the VM's current datastore.
+        :return: True if the migration was successful, False otherwise.
+        """
+        vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not vm:
+            self.logger.error(f"Cannot migrate VM '{vm_name}': VM not found.")
+            return False
+
+        # For safety and simplicity in this tool, we will only migrate powered-off VMs.
+        if vm.runtime.powerState != vim.VirtualMachine.PowerState.poweredOff:
+            self.logger.info(f"VM '{vm_name}' is powered on. Powering off before migration...")
+            if not self.poweroff_vm(vm_name):
+                self.logger.error(f"Failed to power off VM '{vm_name}' before migration. Aborting move.")
+                return False
+            # Brief pause to allow state to update
+            time.sleep(5)
+
+        relocate_spec = vim.vm.RelocateSpec()
+        relocate_spec.host = dest_host_obj
+        relocate_spec.pool = dest_rp_obj
+        if dest_datastore_obj:
+            relocate_spec.datastore = dest_datastore_obj
+
+        try:
+            self.logger.info(f"Starting migration of VM '{vm_name}' to host '{dest_host_obj.name}' and resource pool '{dest_rp_obj.name}'...")
+            task = vm.RelocateVM_Task(spec=relocate_spec)
+            if self.wait_for_task(task):
+                self.logger.info(f"Successfully migrated VM '{vm_name}'.")
+                return True
+            else:
+                self.logger.error(f"Task to migrate VM '{vm_name}' failed.")
+                return False
+        except Exception as e:
+            self.logger.error(f"An exception occurred during migration of VM '{vm_name}': {self.extract_error_message(e)}")
+            return False

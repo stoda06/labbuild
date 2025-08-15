@@ -23,7 +23,7 @@ from logger.log_config import setup_logger # Setup logger function
 from operation_logger import OperationLogger # Import logger class
 from listing import list_vendor_courses, list_allocations # Import listing functions
 # Import command handlers and the special status constant
-from commands import setup_environment, teardown_environment, manage_environment, COMPONENT_LIST_STATUS, test_environment, move_environment
+from commands import setup_environment, teardown_environment, manage_environment, COMPONENT_LIST_STATUS, test_environment, move_environment, migrate_environment
 from config_utils import fetch_and_prepare_course_config # Needed for arg validation
 # --- NEW IMPORTS ---
 from db_utils import mongo_client
@@ -220,7 +220,7 @@ def main():
 
     # --- Subparsers for Commands ---
     subparsers = parser.add_subparsers(dest='command', title='commands',
-                                       help='Action command (setup, manage, teardown, test, move)')
+                                       help='Action command (setup, manage, teardown, test, move, migrate)')
 
     # --- Common Arguments for Subparsers ---
     common_parser = argparse.ArgumentParser(add_help=False)
@@ -292,6 +292,11 @@ def main():
     move_parser = subparsers.add_parser('move', help='Move pod VMs to correct folder and resource pool.',
                                         parents=[common_parser, pod_range_parser, f5_parser])
     move_parser.set_defaults(func=move_environment)
+
+    migrate_parser = subparsers.add_parser('migrate', help='Migrate pod VMs from a source host to a destination host.',
+                                           parents=[common_parser, pod_range_parser])
+    migrate_parser.add_argument('-d', '--destination-host', required=True, help='The destination host for the migration.')
+    migrate_parser.set_defaults(func=migrate_environment)
 
     argcomplete.autocomplete(parser)
 
@@ -401,7 +406,7 @@ def main():
     # --- Validate Core Arguments for Commands (Conditional) ---
     # Note: args_dict now holds the arguments relevant to the command
     # This section does not apply to the `test` command, which has its own validation
-    if args.command in ['setup', 'manage', 'teardown']:
+    if args.command in ['setup', 'manage', 'teardown', 'move', 'migrate']:
         is_listing_components = args_dict.get('component') == "?"
         is_db_only = args_dict.get('db_only', False)
         is_monitor_only = args_dict.get('monitor_only', False)
@@ -451,6 +456,10 @@ def main():
                     if operation_logger and not operation_logger._is_finalized:
                         operation_logger.finalize("failed", 0, 0)
                     sys.exit(1)
+        
+        if args.command == 'migrate':
+            if not args_dict.get('destination_host'):
+                missing_args.append("--destination-host (Required for migrate operation)")
 
         if missing_args:
             err_msg = f"Missing required args for '{args.command}': {', '.join(missing_args)}"

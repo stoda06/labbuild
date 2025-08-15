@@ -25,6 +25,10 @@ import labs.setup.checkpoint as checkpoint
 from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker
 import labs.manage.vm_operations as vm_operations
 from labs.manage.vm_relocation import relocate_pod_vms
+from labs.manage.vm_migration import migrate_pod
+
+from managers.vm_manager import VmManager
+from pyVmomi import vim
 
 logger = logging.getLogger('labbuild.commands')
 
@@ -1217,4 +1221,83 @@ def move_environment(args_dict: Dict[str, Any], operation_logger: OperationLogge
         )
     all_results.extend(task_results)
     logger.info(f"VM relocation tasks completed for pods {start_pod_arg}-{end_pod_arg}.")
+    return all_results
+
+
+def migrate_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
+    """
+    Handles the 'migrate' command logic to move pod VMs from a source to a destination host.
+    """
+    # --- Extract Arguments ---
+    vendor_arg = args_dict.get('vendor')
+    course_arg = args_dict.get('course')
+    source_host_arg = args_dict.get('host')
+    dest_host_arg = args_dict.get('destination_host')
+    start_pod_arg = args_dict.get('start_pod')
+    end_pod_arg = args_dict.get('end_pod')
+    thread_arg = args_dict.get('thread', 2) # Use a lower default for intensive migration tasks
+
+    logger.info(f"Dispatching VM 'migrate' from '{source_host_arg}' to '{dest_host_arg}' for pods {start_pod_arg}-{end_pod_arg}. RunID: {operation_logger.run_id}")
+
+    # --- Prerequisites: Connect to vCenter and get host details ---
+    try:
+        source_host_details = get_host_by_name(source_host_arg)
+        if not source_host_details: raise ValueError(f"Source host details not found for '{source_host_arg}'.")
+        
+        dest_host_details = get_host_by_name(dest_host_arg)
+        if not dest_host_details: raise ValueError(f"Destination host details not found for '{dest_host_arg}'.")
+
+        # Connect to the vCenter that manages the source host
+        service_instance = get_vcenter_instance(source_host_details)
+        if not service_instance: raise ConnectionError(f"vCenter connection failed for source host '{source_host_arg}'.")
+
+        # Get the pyvmomi object for the destination host
+        vmm = VmManager(service_instance)
+        dest_host_obj = vmm.get_obj([vim.HostSystem], dest_host_details['fqdn'])
+        if not dest_host_obj: raise ValueError(f"Could not find destination host '{dest_host_details['fqdn']}' in vCenter.")
+        dest_host_details['pyvmomi_obj'] = dest_host_obj # Add to dict for passing to worker
+
+    except (ValueError, ConnectionError) as e:
+        err_msg = f"Prerequisite Error for migrate: {e}"
+        logger.critical(err_msg)
+        operation_logger.log_pod_status(pod_id="prereq_check", status="failed", error=err_msg)
+        return [{"identifier": "prereq_check", "status": "failed", "error_message": err_msg}]
+
+    # --- Execute Migrate Operation in Parallel ---
+    futures = []
+    all_results = []
+    with ThreadPoolExecutor(max_workers=thread_arg) as executor:
+        for pod_num in range(start_pod_arg, end_pod_arg + 1):
+            pod_id_str = str(pod_num)
+            try:
+                # Fetch config for each pod
+                source_pod_config = fetch_and_prepare_course_config(course_arg, pod=pod_num)
+                source_pod_config.update({
+                    "host_fqdn": source_host_details["fqdn"],
+                    "pod_number": pod_num,
+                    "vendor_shortcode": vendor_arg
+                })
+                
+                future = executor.submit(migrate_pod, service_instance, source_pod_config, dest_host_details)
+                future.pod_number = pod_num
+                futures.append(future)
+            except Exception as e:
+                # ... (error handling for submission) ...
+                error_msg = f"Error submitting migrate task for pod {pod_num}: {e}"
+                logger.error(error_msg, exc_info=True)
+                operation_logger.log_pod_status(pod_id=pod_id_str, status="failed", step="submit_task_error", error=str(e))
+                all_results.append({"identifier": pod_id_str, "status": "failed", "error_message": str(e)})
+
+    # --- Wait for and Process Results ---
+    task_results = wait_for_tasks(futures, description=f"VM migration for pods {start_pod_arg}-{end_pod_arg}")
+    all_results.extend(task_results)
+    # ... (log results using operation_logger) ...
+    for res_data in task_results:
+        operation_logger.log_pod_status(
+            pod_id=res_data["identifier"],
+            status=res_data["status"],
+            step=res_data["failed_step"],
+            error=res_data["error_message"],
+        )
+    logger.info(f"VM migration tasks completed.")
     return all_results
