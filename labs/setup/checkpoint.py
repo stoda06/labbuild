@@ -10,9 +10,13 @@ from typing import Optional, Dict, List, Tuple
 from monitor.prtg import PRTGManager
 from tqdm import tqdm
 from pyVmomi import vim
+import threading
 
 import logging
 logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
+
+_clone_locks = {}
+_lock_for_locks = threading.Lock()
 
 def wait_for_futures(futures):
     # Optionally, wait for all cloning tasks to complete and handle their results
@@ -200,17 +204,30 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
                 else:
                     logger.warning(f"CloneFrom: Component '{component_original_name}' not in source VM map. Defaulting to template '{base_vm_for_clone}'.")
             
-            # Perform Cloning
-            clone_successful = False
-            if not full:
-                logger.info(f"Creating linked clone '{target_vm_name}' from '{base_vm_for_clone}' (Snapshot: '{snapshot_for_clone}').")
-                clone_successful = vm_mgr.create_linked_clone(base_vm_for_clone, target_vm_name, snapshot_for_clone, target_resource_pool_name, directory_name=target_folder_name)
-            else:
-                logger.info(f"Creating full clone '{target_vm_name}' from '{base_vm_for_clone}'.")
-                clone_successful = vm_mgr.clone_vm(base_vm_for_clone, target_vm_name, target_resource_pool_name, directory_name=target_folder_name)
+            with _lock_for_locks:
+                # Get or create a lock for this specific base VM template
+                if base_vm_for_clone not in _clone_locks:
+                    _clone_locks[base_vm_for_clone] = threading.Lock()
+                clone_lock = _clone_locks[base_vm_for_clone]
 
-            if not clone_successful:
-                raise Exception(f"Clone operation failed for '{target_vm_name}'")
+            logger.info(f"Pod {target_pod_number}: Acquiring clone lock for base VM '{base_vm_for_clone}'...")
+            with clone_lock:
+                logger.info(f"Pod {target_pod_number}: Clone lock for '{base_vm_for_clone}' acquired.")
+                
+                # Perform Cloning (The entire cloning block is now inside the lock)
+                clone_successful = False
+                if not full:
+                    logger.info(f"Creating linked clone '{target_vm_name}' from '{base_vm_for_clone}' (Snapshot: '{snapshot_for_clone}').")
+                    clone_successful = vm_mgr.create_linked_clone(base_vm_for_clone, target_vm_name, snapshot_for_clone, target_resource_pool_name, directory_name=target_folder_name)
+                else:
+                    logger.info(f"Creating full clone '{target_vm_name}' from '{base_vm_for_clone}'.")
+                    clone_successful = vm_mgr.clone_vm(base_vm_for_clone, target_vm_name, target_resource_pool_name, directory_name=target_folder_name)
+
+                if not clone_successful:
+                    # No need to release the lock, the 'with' statement handles it.
+                    raise Exception(f"Clone operation failed for '{target_vm_name}'")
+            
+            logger.info(f"Pod {target_pod_number}: Clone lock for '{base_vm_for_clone}' released.")
 
             # Network Configuration
             original_template_for_net = component["base_vm"]
