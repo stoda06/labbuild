@@ -1726,3 +1726,59 @@ class VmManager(VCenter):
         except Exception as e:
             self.logger.error(f"An exception occurred during migration of VM '{vm_name}': {self.extract_error_message(e)}")
             return False
+        
+    
+    def clone_vm_cross_vcenter(self, vm_name: str, dest_vcenter_instance, dest_clone_name: str,
+                               dest_rp_obj: vim.ResourcePool, dest_folder_obj: vim.Folder,
+                               dest_datastore_obj: vim.Datastore) -> bool:
+        """
+        Performs a cold clone of a VM from the source vCenter (self) to a destination vCenter.
+
+        :param vm_name: The name of the source VM to clone.
+        :param dest_vcenter_instance: The fully connected VCenter object for the destination.
+        :param dest_clone_name: The name for the new VM on the destination.
+        :param dest_rp_obj: The destination vim.ResourcePool object from the destination vCenter.
+        :param dest_folder_obj: The destination vim.Folder object from the destination vCenter.
+        :param dest_datastore_obj: The destination vim.Datastore object from the destination vCenter.
+        :return: True if the cross-vCenter clone was successful, False otherwise.
+        """
+        source_vm = self.get_obj([vim.VirtualMachine], vm_name)
+        if not source_vm:
+            self.logger.error(f"Cross-vCenter Clone: Source VM '{vm_name}' not found on source vCenter.")
+            return False
+
+        # Ensure the VM is powered off for a cold clone
+        if source_vm.runtime.powerState != vim.VirtualMachine.PowerState.poweredOff:
+            self.logger.info(f"Powering off source VM '{vm_name}' before cross-vCenter clone.")
+            if not self.poweroff_vm(vm_name):
+                self.logger.error(f"Failed to power off source VM '{vm_name}'. Aborting clone.")
+                return False
+            time.sleep(5) # Give vCenter a moment to update state
+
+        relocate_spec = vim.vm.RelocateSpec(
+            pool=dest_rp_obj,
+            datastore=dest_datastore_obj
+        )
+
+        clone_spec = vim.vm.CloneSpec(
+            location=relocate_spec,
+            powerOn=False, # Do not power on during the clone
+            template=False
+        )
+
+        try:
+            self.logger.info(f"Starting cross-vCenter clone of '{vm_name}' to destination as '{dest_clone_name}'...")
+            # The clone task is initiated on the source VM, but the spec points to destination resources
+            task = source_vm.CloneVM_Task(folder=dest_folder_obj, name=dest_clone_name, spec=clone_spec)
+
+            # NOTE: Cross-vCenter clones can be very slow. The default task timeout might need adjustment
+            # in a production system, but for now we rely on the existing wait_for_task.
+            if self.wait_for_task(task):
+                self.logger.info(f"Successfully cloned '{vm_name}' to destination vCenter.")
+                return True
+            else:
+                self.logger.error(f"Task to clone '{vm_name}' across vCenters failed.")
+                return False
+        except Exception as e:
+            self.logger.error(f"An exception occurred during cross-vCenter clone of '{vm_name}': {self.extract_error_message(e)}")
+            return False
