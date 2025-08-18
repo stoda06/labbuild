@@ -703,8 +703,13 @@ class F5Planner(DefaultVendorPlanner):
                     self.context.errors.append(f"Could not find host/pod slot for F5 course '{sf_code}'.")
                     continue
                 class_number = self._get_next_f5_class_number()
-                self._commit_allocation_to_context(allocation, params)
-                self.context.pods_in_use[self.vendor_code].add(class_number)
+                # F5 pods and classes are all considered 'regular' type for allocation tracking.
+                self._commit_allocation_to_context(allocation, params, pod_type='regular')
+                
+                # Also commit the class number itself to the used set
+                if self.vendor_code not in self.context.pods_in_use:
+                    self.context.pods_in_use[self.vendor_code] = defaultdict(set)
+                self.context.pods_in_use[self.vendor_code]['regular'].add(class_number)
                 command = self._create_build_command(course, params, allocation)
                 command.f5_class_number = class_number
                 self.context.final_build_commands.append(command)
@@ -715,7 +720,8 @@ class F5Planner(DefaultVendorPlanner):
     def _get_next_f5_class_number(self) -> int:
         """Finds the next available F5 class number, skipping any that are already in use."""
         candidate_class_num = self.context.f5_class_cursor
-        while candidate_class_num in self.context.pods_in_use['f5']:
+        f5_used_numbers = self.context.pods_in_use.get('f5', {}).get('regular', set())
+        while candidate_class_num in f5_used_numbers:
             candidate_class_num += 1
         self.context.f5_class_cursor = candidate_class_num + 1
         return candidate_class_num
@@ -1472,20 +1478,22 @@ class BuildPlanner:
                             except (ValueError, TypeError):
                                 logger.warning(f"Could not parse pod_number '{pd['pod_number']}' as int.")
                         
-                        if vendor == 'f5' and pd.get("class_number") is not None:
-                            try:
-                                context.pods_in_use[vendor]['regular'].add(int(pd["class_number"]))
-                                locked_count += 1
-                            except (ValueError, TypeError):
-                                logger.warning(f"Could not parse class_number '{pd['class_number']}' as int.")
-
-                        for nested_pod in pd.get("pods", []):
-                            if nested_pod.get("pod_number") is not None:
+                        if vendor == 'f5':
+                            # F5 doesn't have a 'maestro' type, so all go into 'regular'.
+                            if pd.get("class_number") is not None:
                                 try:
-                                    context.pods_in_use[vendor]['regular'].add(int(nested_pod["pod_number"]))
+                                    context.pods_in_use[vendor]['regular'].add(int(pd["class_number"]))
                                     locked_count += 1
                                 except (ValueError, TypeError):
-                                    logger.warning(f"Could not parse nested pod_number '{nested_pod['pod_number']}' as int.")
+                                    logger.warning(f"Could not parse class_number '{pd['class_number']}' as int.")
+
+                            for nested_pod in pd.get("pods", []):
+                                if nested_pod.get("pod_number") is not None:
+                                    try:
+                                        context.pods_in_use[vendor]['regular'].add(int(nested_pod["pod_number"]))
+                                        locked_count += 1
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"Could not parse nested pod_number '{nested_pod['pod_number']}' as int.")
             
             logger.info(f"Finished locking resources. {locked_count} pods/classes are marked as in-use.")
         except Exception as e:
