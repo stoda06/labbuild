@@ -1662,27 +1662,108 @@ def view_saved_plan(batch_id):
     current_theme = request.cookies.get('theme', 'light')
     
     try:
-        saved_docs = list(interim_alloc_collection.find({"batch_review_id": batch_id, "status": "saved_for_later"}))
+        # 1. Fetch the user's saved plan from the interim collection
+        saved_docs = list(interim_alloc_collection.find({
+            "batch_review_id": batch_id, 
+            "status": "saved_for_later"
+        }))
+        
         if not saved_docs:
             flash(f"No saved plan found for Batch ID: {batch_id}", "warning")
             return redirect(url_for('main.index'))
             
-        # --- MODIFICATION: Aggregate unique APM commands from all build documents ---
-        build_commands = saved_docs
+        # 2. Fetch all currently extended/locked allocations from the main collection
+        extended_docs = list(alloc_collection.find({"extend": "true"}))
         
+        # 3. Process the extended allocations into a display-friendly format
+        extended_commands_display = []
+        # Group pods by tag, course, and host to consolidate ranges
+        grouped_extended_pods = defaultdict(lambda: {
+            "pods": set(),
+            "classes": set(),
+            "vendor": "",
+            "course_name": "",
+            "trainer_name": "N/A"
+        })
+
+        for doc in extended_docs:
+            tag = doc.get("tag")
+            for course in doc.get("courses", []):
+                vendor = course.get("vendor")
+                course_name = course.get("course_name")
+                trainer_name = course.get("trainer_name", "N/A")
+                if not all([tag, vendor, course_name]):
+                    continue
+                for pd in course.get("pod_details", []):
+                    host = pd.get("host")
+                    if not host:
+                        continue
+                    
+                    group_key = (tag, course_name, host)
+                    grouped_extended_pods[group_key]['vendor'] = vendor
+                    grouped_extended_pods[group_key]['course_name'] = course_name
+                    grouped_extended_pods[group_key]['trainer_name'] = trainer_name
+
+                    if vendor.lower() == 'f5' and pd.get("class_number") is not None:
+                        try:
+                            grouped_extended_pods[group_key]['classes'].add(int(pd["class_number"]))
+                        except (ValueError, TypeError):
+                            pass
+                    if pd.get("pod_number") is not None:
+                        try:
+                            grouped_extended_pods[group_key]['pods'].add(int(pd["pod_number"]))
+                        except (ValueError, TypeError):
+                            pass
+
+        # Create a display dictionary for each consolidated extended group
+        for (tag, course_name, host), details in grouped_extended_pods.items():
+            min_pod = min(details['pods']) if details['pods'] else None
+            max_pod = max(details['pods']) if details['pods'] else None
+            # For simplicity in display, we show the min/max range of pods
+            extended_commands_display.append({
+                "type": "Extended",
+                "vendor_shortcode": details['vendor'],
+                "host": host,
+                "start_pod": min_pod,
+                "end_pod": max_pod,
+                "tag": tag,
+                "labbuild_course": details['course_name'],
+                "trainer_name": details['trainer_name'],
+                "f5_class_number": min(details['classes']) if details['classes'] else None,
+            })
+
+        # 4. Group all items (saved plan + extended) by vendor
+        commands_by_vendor = defaultdict(list)
+        
+        # Add saved plan items to the structure
+        for doc in saved_docs:
+            vendor = doc.get('vendor_shortcode', 'Unknown')
+            commands_by_vendor[vendor].append(doc)
+            
+        # Add extended pod items to the structure
+        for doc in extended_commands_display:
+            vendor = doc.get('vendor_shortcode', 'Unknown')
+            commands_by_vendor[vendor].append(doc)
+
+        # 5. Sort the items within each vendor group by start_pod
+        for vendor in commands_by_vendor:
+            # Use a default value of 0 for items without a start_pod to prevent errors
+            commands_by_vendor[vendor].sort(key=lambda x: x.get('start_pod') or 0)
+
+        # 6. Aggregate unique APM commands from the saved plan documents
         unique_apm_commands = set()
-        for doc in build_commands:
+        for doc in saved_docs:
             if 'apm_commands' in doc and isinstance(doc['apm_commands'], list):
                 for cmd in doc['apm_commands']:
                     unique_apm_commands.add(cmd)
 
         saved_batches = {
             batch_id: {
-                "commands": build_commands,
-                "apm_commands": sorted(list(unique_apm_commands)) # Pass the aggregated list
+                "commands_by_vendor": commands_by_vendor, # Pass the new grouped data for display
+                "all_saved_commands": saved_docs, # Pass the original flat list for the scheduler
+                "apm_commands": sorted(list(unique_apm_commands))
             }
         }
-        # --- END MODIFICATION ---
 
         return render_template(
             'saved_plans.html',

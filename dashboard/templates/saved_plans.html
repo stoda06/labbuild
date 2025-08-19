@@ -23,64 +23,80 @@
 
 {% if saved_batches %}
 {% for batch_id, plan in saved_batches.items() %}
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Plan Batch ID: <code>{{ batch_id }}</code></h5>
-        <div>
+<div class="main-plan-container mb-4">
+
+    {# Iterate through the vendors, sorted alphabetically by vendor name #}
+    {% for vendor, commands in plan.commands_by_vendor|dictsort %}
+    <div class="card mb-3">
+        <div class="card-header">
+            <h5 class="mb-0">Vendor: {{ vendor|upper }} ({{ commands|length }} items)</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm table-striped mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Type</th>
+                            <th>Host</th>
+                            <th>Pods / Class</th>
+                            <th>Tag / SF Code</th>
+                            <th>LabBuild Course</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {# The commands are pre-sorted by the backend #}
+                        {% for command in commands %}
+                        <tr>
+                            <td>
+                                {% if command.type == 'Extended' %}
+                                <span class="badge bg-success">Extended</span>
+                                {% elif "Trainer" in command.trainer_name %}
+                                <span class="badge bg-info text-dark">Trainer</span>
+                                {% else %}
+                                <span class="badge bg-primary">Student</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ command.host }}</td>
+                            <td>
+                                {% if command.start_pod is not none and command.end_pod is not none %}
+                                {{ command.start_pod }} - {{ command.end_pod }}
+                                {% else %}
+                                N/A
+                                {% endif %}
+                                {% if command.f5_class_number is not none %}
+                                <br><small class="text-info fw-bold">(Class: {{ command.f5_class_number }})</small>
+                                {% endif %}
+                            </td>
+                            <td><code>{{ command.tag }}</code></td>
+                            <td>{{ command.labbuild_course }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+
+    {# Action buttons are now at the bottom of the entire plan group #}
+    <div class="card mt-3">
+        <div class="card-body d-flex justify-content-end align-items-center gap-2">
             {% if plan.apm_commands %}
-            <button type="button" class="btn btn-sm btn-outline-warning" data-bs-toggle="modal"
+            <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal"
                 data-bs-target="#apmCommandsModal-{{ batch_id }}">
                 <i class="fas fa-terminal"></i> View APM Commands ({{ plan.apm_commands|length }})
             </button>
             {% endif %}
-            <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+            <button type="button" class="btn btn-outline-info" data-bs-toggle="modal"
                 data-bs-target="#labbuildCommandsModal-{{ batch_id }}">
-                <i class="fas fa-cogs"></i> View Build Commands ({{ plan.commands|length }})
+                <i class="fas fa-cogs"></i> View Build Commands
+            </button>
+            <button type="button" class="btn btn-primary btn-lg" data-bs-toggle="modal"
+                data-bs-target="#scheduleExecutionModal" data-batch-id="{{ batch_id }}"
+                data-commands-json='{{ plan.all_saved_commands | tojson | e }}'>
+                <i class="fas fa-play-circle"></i> Schedule Execution...
             </button>
         </div>
-    </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-sm table-striped mb-0">
-                <thead class="table-light">
-                    <tr>
-                        <th>Type</th>
-                        <th>Vendor</th>
-                        <th>Host</th>
-                        <th>Pods</th>
-                        <th>Tag / SF Code</th>
-                        <th>LabBuild Course</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for command in plan.commands %}
-                    <tr>
-                        <td>
-                            {% if "Trainer" in command.trainer_name %}
-                            <span class="badge bg-info text-dark">Trainer</span>
-                            {% else %}
-                            <span class="badge bg-primary">Student</span>
-                            {% endif %}
-                        </td>
-                        <td>{{ command.vendor_shortcode | upper }}</td>
-                        <td>{{ command.host }}</td>
-                        <td>{{ command.start_pod }} - {{ command.end_pod }}</td>
-                        <td><code>{{ command.tag }}</code></td>
-                        <td>{{ command.labbuild_course }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-    <div class="card-footer text-end">
-        <!-- --- START OF MODIFICATION --- -->
-        <!-- This button now opens the scheduling modal instead of submitting a form directly -->
-        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#scheduleExecutionModal"
-            data-batch-id="{{ batch_id }}" data-commands-json='{{ plan.commands | tojson | e }}'>
-            <i class="fas fa-play-circle"></i> Schedule Execution...
-        </button>
-        <!-- --- END OF MODIFICATION --- -->
     </div>
 </div>
 
@@ -94,7 +110,12 @@
             </div>
             <div class="modal-body">
                 <pre
-                    style="background-color: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color-translucent); padding: 15px; border-radius: var(--bs-border-radius); max-height: 70vh; overflow-y: auto; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all;"><code>{{ (plan.commands|map(attribute='cli_command')|join('\n')) }}</code></pre>
+                    style="background-color: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color-translucent); padding: 15px; border-radius: var(--bs-border-radius); max-height: 70vh; overflow-y: auto; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all;"><code>
+                        {# This still uses the flat list for a complete, simple copy-paste view #}
+                        {%- for command in plan.all_saved_commands -%}
+                            {{ command.cli_command }}
+                        {% endfor -%}
+                    </code></pre>
             </div>
         </div>
     </div>
