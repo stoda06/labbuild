@@ -2,7 +2,8 @@
 
 import logging
 from contextlib import contextmanager
-from typing import Optional, Dict, List, Any, Generator
+from collections import defaultdict
+from typing import Optional, Dict, List, Any, Generator, Tuple, Set
 import os
 from urllib.parse import quote_plus
 
@@ -360,3 +361,93 @@ def get_prtg_url(tag: str, course_name: str, pod_number: Optional[int] = None, c
             logger.warning(f"No PRTG URL found matching criteria."); return None
     except PyMongoError as e: logger.error(f"Get PRTG URL error (PyMongoError): {e}", exc_info=True); return None
     except Exception as e: logger.error(f"Get PRTG URL error: {e}", exc_info=True); return None
+
+
+def _create_contiguous_ranges_for_jobs(item_numbers: set) -> List[Tuple[int, int]]:
+    """Helper to convert a set of numbers into a list of (start, end) tuples."""
+    if not item_numbers: return []
+    sorted_nums = sorted(list(item_numbers))
+    ranges = []
+    start = end = sorted_nums[0]
+    for i in range(1, len(sorted_nums)):
+        if sorted_nums[i] == end + 1:
+            end = sorted_nums[i]
+        else:
+            ranges.append((start, end))
+            start = end = sorted_nums[i]
+    ranges.append((start, end))
+    return ranges
+
+def get_allocations_by_range(vendor: str, start_pod: int, end_pod: int) -> List[Dict[str, Any]]:
+    """
+    Finds all allocations for a specific vendor and pod/class range and
+    groups them into executable jobs.
+    """
+    jobs = []
+    try:
+        with mongo_client() as client:
+            if not client:
+                logger.error("get_allocations_by_range: DB connection failed.")
+                return []
+
+            db = client[DB_NAME]
+            collection = db[ALLOCATION_COLLECTION]
+            query = {"courses.vendor": {"$regex": f"^{vendor}$", "$options": "i"}}
+            
+            allocations_cursor = collection.find(query)
+            
+            # Group pods by their defining characteristics (tag, course, host)
+            grouped_pods: Dict[Tuple[str, str, str], Set[int]] = defaultdict(set)
+
+            for doc in allocations_cursor:
+                tag = doc.get("tag")
+                for course in doc.get("courses", []):
+                    c_vendor = course.get("vendor")
+                    c_name = course.get("course_name")
+                    if not all([tag, c_vendor, c_name]) or c_vendor.lower() != vendor.lower():
+                        continue
+                        
+                    for pd in course.get("pod_details", []):
+                        host = pd.get("host")
+                        if not host: continue
+                        
+                        item_num = None
+                        is_f5 = c_vendor.lower() == 'f5'
+                        try:
+                            num_key = "class_number" if is_f5 else "pod_number"
+                            if pd.get(num_key) is not None:
+                                item_num = int(pd[num_key])
+                        except (ValueError, TypeError): continue
+
+                        if item_num is not None and start_pod <= item_num <= end_pod:
+                            group_key = (tag, c_name, host)
+                            grouped_pods[group_key].add(item_num)
+
+            # Create a distinct job for each contiguous range within each group
+            for (tag, course_name, host), pod_numbers in grouped_pods.items():
+                pod_ranges = _create_contiguous_ranges_for_jobs(pod_numbers)
+                for start, end in pod_ranges:
+                    job = {
+                        "tag": tag,
+                        "course": course_name,
+                        "course_name": course_name,
+                        "host": host,
+                        "vendor": vendor,
+                        "start_pod": start,
+                        "end_pod": end
+                    }
+                    # For F5, the class number is the pod number in this context
+                    if vendor.lower() == 'f5':
+                        job["class_number"] = start # Assuming a single class per job
+                    jobs.append(job)
+            
+            # Sort jobs for predictable execution order
+            jobs.sort(key=lambda x: (x['tag'], x['course_name'], x['start_pod']))
+            return jobs
+
+    except PyMongoError as e:
+        logger.error(f"get_allocations_by_range: DB Error: {e}", exc_info=True)
+        return []
+    except Exception as e:
+        logger.error(f"get_allocations_by_range: Unexpected Error: {e}", exc_info=True)
+        return []
