@@ -1,0 +1,30 @@
+/* In dashboard/static/css/saved_plans.css */
+
+#schedulePreviewTable {
+    font-size: 0.8rem;
+    table-layout: fixed;
+    width: 100%;
+}
+
+#schedulePreviewTable th,
+#schedulePreviewTable td {
+    vertical-align: middle;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#schedulePreviewTable .col-time {
+    width: 160px;
+}
+
+#schedulePreviewTable .col-host {
+    width: 120px;
+}
+
+#schedulePreviewTable .col-command {
+    width: auto; /* Takes remaining space */
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: monospace;
+}

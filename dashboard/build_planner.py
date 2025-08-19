@@ -58,6 +58,31 @@ class LabBuildCommand:
             args.extend(['-cn', str(self.f5_class_number)])
         return args
     
+    def to_args_dict(self) -> Dict[str, Any]:
+        """Converts the command's attributes into a dictionary suitable for labbuild's command functions."""
+        args = {
+            'command': 'setup',
+            'vendor': self.vendor_shortcode,
+            'course': self.labbuild_course,
+            'host': self.host,
+            'start_pod': self.start_pod,
+            'end_pod': self.end_pod,
+            'tag': self.tag,
+            'start_date': self.start_date,
+            'end_date': self.end_date,
+            'trainer_name': self.trainer_name,
+            'username': self.username,
+            'password': self.password
+        }
+        if self.f5_class_number is not None:
+            args['class_number'] = self.f5_class_number
+        
+        # Add boolean flags as True/False, the task runner will handle them
+        # For now, we assume these are not set by the planner, but could be added.
+        # e.g., args['re_build'] = self.re_build 
+        
+        return args
+
     def to_dict(self) -> Dict[str, Any]:
         """Converts the command object to a dictionary for JSON serialization."""
         data = {
@@ -74,13 +99,10 @@ class LabBuildCommand:
             "f5_class_number": self.f5_class_number,
             "username": self.username,
             "password": self.password,
-            "tag": self.tag
+            "tag": self.tag,
+            'cli_command': getattr(self, 'cli_command', None),
+            'args_dict': self.to_args_dict() # Add the structured args dictionary
         }
-        # --- MODIFICATION: Safely add the cli_command attribute to the dictionary ---
-        # This attribute is added dynamically in the route, so we use getattr
-        # to prevent an error if to_dict is called at a different time.
-        data['cli_command'] = getattr(self, 'cli_command', None)
-        # --- END MODIFICATION ---
         return data
     
     def to_cli_string(self) -> str:

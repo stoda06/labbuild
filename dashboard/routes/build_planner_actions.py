@@ -1,9 +1,10 @@
 import logging
 import json
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import re
+import shlex
 from flask import (
     Blueprint, request, redirect, url_for, flash, render_template, jsonify, session
 )
@@ -1692,3 +1693,126 @@ def view_saved_plan(batch_id):
         logger.error(f"Error fetching saved plan for batch {batch_id}: {e}", exc_info=True)
         flash("A critical error occurred while fetching the saved plan.", "danger")
         return redirect(url_for('main.index'))
+
+
+@bp.route('/execute-saved-plan', methods=['POST'])
+def execute_saved_plan():
+    """
+    Receives scheduling parameters for a saved plan, calculates the smart
+    schedule, and adds all jobs to APScheduler.
+    """
+    batch_id = request.form.get('batch_id')
+    start_time_str = request.form.get('start_time')
+    try:
+        concurrency = int(request.form.get('concurrency', 3))
+        stagger_minutes = int(request.form.get('stagger_minutes', 10))
+    except (ValueError, TypeError):
+        flash("Invalid concurrency or stagger value.", "danger")
+        return redirect(url_for('.view_saved_plan', batch_id=batch_id))
+
+    if not batch_id or not start_time_str:
+        flash("Missing batch ID or start time.", "danger")
+        return redirect(url_for('main.index'))
+
+    if not scheduler or not scheduler.running:
+        flash("Scheduler is not running. Cannot schedule jobs.", "danger")
+        return redirect(url_for('.view_saved_plan', batch_id=batch_id))
+
+    try:
+        # 1. Fetch all commands for the batch
+        commands_to_schedule = list(interim_alloc_collection.find({
+            "batch_review_id": batch_id,
+            "status": "saved_for_later"
+        }))
+
+        if not commands_to_schedule:
+            flash(f"No saved commands found for batch ID {batch_id} to execute.", "warning")
+            return redirect(url_for('main.index'))
+
+        # 2. Calculate schedule start time in UTC
+        scheduler_tz = scheduler.timezone
+        naive_dt = datetime.fromisoformat(start_time_str)
+        localized_dt = scheduler_tz.localize(naive_dt, is_dst=None)
+        start_time_utc = localized_dt.astimezone(pytz.utc)
+        
+        # 3. Implement the "Smart Stagger" scheduling algorithm
+        host_next_available_time = defaultdict(lambda: start_time_utc)
+        worker_tracks = [start_time_utc] * concurrency
+        
+        scheduled_jobs = []
+        
+        # Sort commands to prioritize different hosts first, improving interleaving
+        commands_to_schedule.sort(key=lambda x: x.get('host', ''))
+
+        for command_doc in commands_to_schedule:
+            host = command_doc['host']
+            host_available_at = host_next_available_time[host]
+
+            # Find the earliest available worker slot
+            worker_tracks.sort()
+            earliest_worker_available_at = worker_tracks[0]
+            
+            # The command runs at the later of the two times
+            run_time = max(host_available_at, earliest_worker_available_at)
+            
+            # Calculate when this host and worker will be free next
+            next_available_time = run_time + timedelta(minutes=stagger_minutes)
+            
+            # Update the state
+            host_next_available_time[host] = next_available_time
+            worker_tracks[0] = next_available_time
+            
+            scheduled_jobs.append({'doc': command_doc, 'run_time': run_time})
+
+        # 4. Add jobs to APScheduler
+        scheduled_count = 0
+        failed_count = 0
+        update_ops = []
+
+        for job_info in scheduled_jobs:
+            doc = job_info['doc']
+            run_time = job_info['run_time']
+            
+            try:
+                # The CLI command is already stored in the document
+                if 'args_dict' in doc and isinstance(doc['args_dict'], dict):
+                    args_for_task = doc['args_dict']
+                else:
+                    # Fallback logic for backward compatibility
+                    args_list = shlex.split(doc['cli_command'])[1:]
+                    args_for_task = args_list
+                job_name = f"SavedPlan_{doc.get('tag', str(doc['_id']))}"
+
+                trigger = DateTrigger(run_date=run_time, timezone=pytz.utc)
+                job = scheduler.add_job(
+                    run_labbuild_task,
+                    trigger=trigger,
+                    args=[args_for_task],
+                    name=job_name,
+                    misfire_grace_time=3600 # 1 hour grace time
+                )
+                
+                # Prepare DB update operation
+                update_payload = {
+                    "status": "scheduled",
+                    "scheduled_at": datetime.now(pytz.utc),
+                    "scheduled_job_id": job.id,
+                    "scheduled_run_time": run_time
+                }
+                update_ops.append(UpdateOne({"_id": doc['_id']}, {"$set": update_payload}))
+                scheduled_count += 1
+            except Exception as e:
+                logger.error(f"Failed to schedule job for doc ID {doc['_id']}: {e}", exc_info=True)
+                failed_count += 1
+        
+        # 5. Update the database documents in a single batch
+        if update_ops:
+            interim_alloc_collection.bulk_write(update_ops)
+        
+        flash(f"Successfully scheduled {scheduled_count} jobs. {failed_count} jobs failed to schedule.", "success" if failed_count == 0 else "warning")
+        return redirect(url_for('main.index'))
+
+    except Exception as e:
+        logger.error(f"Error executing saved plan for batch {batch_id}: {e}", exc_info=True)
+        flash("A critical error occurred while scheduling the build plan.", "danger")
+        return redirect(url_for('.view_saved_plan', batch_id=batch_id))

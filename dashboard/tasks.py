@@ -120,13 +120,52 @@ def purge_old_mongodb_logs(retention_days: int = DEFAULT_LOG_RETENTION_DAYS):
             logger.error(f"Log Purge: Error closing new MongoDB client: {e_close}")
 
 
+def _args_dict_to_list(args_dict: dict) -> list:
+    """Converts a dictionary of arguments into a list of strings for subprocess."""
+    args_list = [args_dict['command']]
+    
+    # Map keys to their command-line flags
+    arg_map = {
+        'vendor': '-v', 'course': '-g', 'host': '--host', 'start_pod': '-s',
+        'end_pod': '-e', 'class_number': '-cn', 'tag': '-t', 'component': '-c',
+        'operation': '-o', 'thread': '-th', 'clonefrom': '--clonefrom',
+        'memory': '-mem', 'prtg_server': '--prtg-server', 'datastore': '-ds',
+        'start_date': '--start-date', 'end_date': '--end-date',
+        'trainer_name': '--trainer-name', 'username': '--username', 'password': '--password'
+    }
+    
+    for key, flag in arg_map.items():
+        value = args_dict.get(key)
+        if value is not None and value != '':
+            args_list.extend([flag, str(value)])
+            
+    # Handle boolean flags that don't have a value
+    bool_flags = {
+        're_build': '--re-build', 'full': '--full', 'monitor_only': '--monitor-only',
+        'db_only': '--db-only', 'perm': '--perm', 'verbose': '--verbose'
+    }
+    for key, flag in bool_flags.items():
+        if args_dict.get(key) is True:
+            args_list.append(flag)
+            
+    return args_list
+
 # --- Core Task Execution Function ---
-def run_labbuild_task(args_list):
+def run_labbuild_task(args):
     """
     Runs labbuild.py as a subprocess with the given arguments,
     with enhanced logging for production debugging.
     This is a synchronous, non-streaming function.
     """
+
+    if isinstance(args, dict):
+        args_list = _args_dict_to_list(args)
+    elif isinstance(args, list):
+        args_list = args # Already in the correct format
+    else:
+        logger.error(f"Unsupported argument type for run_labbuild_task: {type(args)}")
+        return -1
+
     labbuild_script_path = os.path.join(project_root, 'labbuild.py')
     python_executable = sys.executable 
     command = [python_executable, '-u', labbuild_script_path, *args_list]
