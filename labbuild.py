@@ -12,10 +12,9 @@ from dotenv import load_dotenv
 
 from logger.log_config import setup_logger
 from operation_logger import OperationLogger
-from listing import list_vendor_courses, list_allocations
+from listing import list_vendor_courses
 from commands import COMPONENT_LIST_STATUS
 from arg_parser import create_parser
-from batch_operations import perform_vendor_level_operation
 from auto_operations import run_auto_lookup_operation
 
 # --- Environment & Logger Setup ---
@@ -33,37 +32,11 @@ def main():
     except SystemExit as e:
         sys.exit(e.code)
 
-    # --- Mode 1: Listing or Batch Operation ---
-    if args.list_allocations:
-        if not args.vendor:
-            parser.error("Listing allocations (-l) requires the vendor (-v) argument.")
-        
-        logger = setup_logger()
-        log_level = logging.DEBUG if args.verbose else logging.INFO
-        logger.setLevel(log_level)
-
-        if args.vendor_operation:
-            perform_vendor_level_operation(
-                args.vendor, 
-                args.vendor_operation, 
-                args.verbose,
-                start_pod_filter=args.list_start_pod,
-                end_pod_filter=args.list_end_pod
-            )
-        else:
-            list_allocations(
-                args.vendor, 
-                args.list_start_pod, 
-                args.list_end_pod, 
-                test_mode=args.test
-            )
-        sys.exit(0)
-
-    # --- Mode 2: Command Execution ---
+    # --- Command Execution ---
     if not args.command:
-        parser.error("A command (setup, manage, teardown, test) is required if not using -l.")
+        parser.error("A command (setup, manage, teardown, test, move, migrate) is required.")
 
-    # --- Mode 2a: Auto-Lookup Command Execution ---
+    # --- Auto-Lookup Mode ---
     # This mode is triggered when course/tag are omitted but a pod range is provided.
     is_auto_lookup_mode = (
         args.command in ['setup', 'manage', 'teardown'] and
@@ -80,7 +53,7 @@ def main():
         run_auto_lookup_operation(vars(args))
         sys.exit(0)
 
-    # --- Mode 2b: Standard (Manual) Command Execution ---
+    # --- Standard (Manual) Command Execution ---
     args_dict = vars(args)
     operation_logger = OperationLogger(args.command, args_dict)
     run_id_for_logs = operation_logger.run_id
