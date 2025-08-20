@@ -108,7 +108,7 @@ class LabBuildCommand:
     def to_cli_string(self) -> str:
         """Generates the full labbuild CLI command string for this command."""
         # --- NEW METHOD ---
-        parts = ['labbuild', 'setup']
+        parts = ['python', 'labbuild.py', 'setup']
         parts.extend(['-v', self.vendor_shortcode])
         parts.extend(['-g', f'"{self.labbuild_course}"']) # Quote course name
         parts.extend(['--host', self.host])

@@ -14,10 +14,6 @@ def create_parser():
     parser = argparse.ArgumentParser(prog='labbuild', description="Lab Build Management Tool")
 
     parser.add_argument('--verbose', action='store_true', help='Enable debug logging.')
-    # --- START OF MODIFICATION ---
-    parser.add_argument('-y', '--yes', action='store_true', 
-                        help='Automatically answer yes to all confirmation prompts (non-interactive mode).')
-    # --- END OF MODIFICATION ---
 
     # --- Subparsers for Commands ---
     subparsers = parser.add_subparsers(dest='command', title='commands',
@@ -29,6 +25,8 @@ def create_parser():
     common_parser.add_argument('-t', '--tag', help='A unique tag for the allocation group.')
     common_parser.add_argument('-th', '--thread', type=int, default=4, help='Concurrency thread count.')
     common_parser.add_argument('-v', '--vendor', required=True, help='Vendor code (e.g., pa, cp, f5). Required.')
+    common_parser.add_argument('-y', '--yes', action='store_true', 
+                               help='Automatically answer yes to all confirmation prompts (non-interactive mode).')
 
     pod_range_parser = argparse.ArgumentParser(add_help=False)
     pod_range_parser.add_argument('-s', '--start-pod', type=int, help='Start pod # for action.')
