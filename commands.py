@@ -803,11 +803,10 @@ def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogg
     logger.info(f"Setup process finished for course '{course_arg}'.")
     return all_results
 
-# --- Modified teardown_environment ---
-# Accepts args_dict instead of argparse.Namespace
+
 def teardown_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
     """Handles the 'teardown' command logic using args_dict."""
-    # --- Extract arguments ---
+    # --- Argument Extraction ---
     course_arg = args_dict.get('course')
     vendor_arg = args_dict.get('vendor')
     host_arg = args_dict.get('host')
@@ -897,7 +896,6 @@ def teardown_environment(args_dict: Dict[str, Any], operation_logger: OperationL
              logger.error(f"DB-only teardown failed during database deletion: {db_err}", exc_info=True)
              operation_logger.log_pod_status(pod_id="db_only", status="failed", step="db_delete_error", error=str(db_err))
              delete_success = False
-             # Return failure status for all targeted items
              deleted_items = [{"identifier": f"class-{class_number_arg}" if is_f5_vendor else str(p), "status": "failed", "error_message": str(db_err)} for p in range(start_pod_arg or class_number_arg or 0, (end_pod_arg or class_number_arg or 0) + 1)]
 
         if delete_success:
@@ -907,42 +905,58 @@ def teardown_environment(args_dict: Dict[str, Any], operation_logger: OperationL
 
     # --- Monitor Only Teardown ---
     if monitor_only_arg:
-        logger.info("Monitor-only teardown mode activated: Deleting monitors and DB entries.")
-        # This requires fetching PRTG URLs from DB, then deleting monitor, then deleting DB entry.
+        logger.info("Monitor-only teardown mode activated: Deleting monitors ONLY.")
         mon_deleted_items = []
         mon_delete_success = True
         try:
-             with mongo_client() as client: # Need client for PRTGManager.delete_monitor
+             with mongo_client() as client:
                 if not client:
                     raise ConnectionError("Monitor-only teardown: DB connection failed.")
 
                 if vendor_shortcode == "f5":
                     if class_number_arg is None: raise ValueError("F5 monitor-only teardown requires --class_number.")
-                    # Delete class monitor
-                    prtg_url_class = get_prtg_url(tag_arg, course_name_from_config, class_number=class_number_arg)
-                    if prtg_url_class:
-                         if PRTGManager.delete_monitor(prtg_url_class, client): logger.info(f"Deleted monitor for F5 class {class_number_arg}.")
-                         else: logger.warning(f"Failed to delete monitor for F5 class {class_number_arg} (URL: {prtg_url_class}).")
-                    # Delete F5 pod monitors if range provided
-                    if start_pod_arg is not None and end_pod_arg is not None:
-                        for pod in range(start_pod_arg, end_pod_arg + 1):
-                             prtg_url_pod = get_prtg_url(tag_arg, course_name_from_config, pod_number=pod, class_number=class_number_arg)
-                             if prtg_url_pod:
-                                 if PRTGManager.delete_monitor(prtg_url_pod, client): logger.info(f"Deleted monitor for F5 pod {pod}.")
-                                 else: logger.warning(f"Failed to delete monitor for F5 pod {pod} (URL: {prtg_url_pod}).")
-                    # Finally, delete the whole class DB entry
-                    delete_from_database(tag_arg, course_name=course_name_from_config, class_number=class_number_arg)
+                    
+                    class_config = fetch_and_prepare_course_config(course_name_from_config, f5_class=class_number_arg)
+                    prtg_entries = class_config.get("prtg", [])
+
+                    for entry in prtg_entries:
+                        pattern = entry.get("name")
+                        if not pattern: continue
+                        
+                        if "{Y}" in pattern and "{X}" not in pattern:
+                            monitor_name = pattern.replace("{Y}", str(class_number_arg))
+                            if PRTGManager.delete_monitor(monitor_name, vendor_shortcode, client):
+                                logger.info(f"Deleted monitor '{monitor_name}' for F5 class {class_number_arg}.")
+                            else:
+                                logger.warning(f"Failed to delete monitor '{monitor_name}' for F5 class {class_number_arg}.")
+
+                        elif "{X}" in pattern and start_pod_arg is not None and end_pod_arg is not None:
+                            for pod in range(start_pod_arg, end_pod_arg + 1):
+                                monitor_name = pattern.replace("{X}", str(pod))
+                                if PRTGManager.delete_monitor(monitor_name, vendor_shortcode, client):
+                                    logger.info(f"Deleted monitor '{monitor_name}' for F5 pod {pod}.")
+                                else:
+                                    logger.warning(f"Failed to delete monitor '{monitor_name}' for F5 pod {pod}.")
+                    
                     mon_deleted_items.append({"identifier": f"class-{class_number_arg}", "status": "skipped"})
 
                 else: # Non-F5
                     if start_pod_arg is None or end_pod_arg is None: raise ValueError("Monitor-only teardown requires --start-pod/--end-pod for non-F5.")
                     for pod in range(start_pod_arg, end_pod_arg + 1):
-                         prtg_url_pod = get_prtg_url(tag_arg, course_name_from_config, pod_number=pod)
-                         if prtg_url_pod:
-                             if PRTGManager.delete_monitor(prtg_url_pod, client): logger.info(f"Deleted monitor for pod {pod}.")
-                             else: logger.warning(f"Failed to delete monitor for pod {pod} (URL: {prtg_url_pod}).")
-                         # Delete DB entry for the pod
-                         delete_from_database(tag_arg, course_name=course_name_from_config, pod_number=pod)
+                         pod_config = fetch_and_prepare_course_config(course_name_from_config, pod=pod)
+                         prtg_details = pod_config.get("prtg", {})
+                         monitor_name_pattern = prtg_details.get("name")
+                         
+                         if monitor_name_pattern:
+                             monitor_name = monitor_name_pattern.replace("{X}", str(pod))
+                             if PRTGManager.delete_monitor(monitor_name, vendor_shortcode, client):
+                                 logger.info(f"Deleted monitor '{monitor_name}' for pod {pod}.")
+                             else:
+                                 logger.warning(f"Failed to delete monitor '{monitor_name}' for pod {pod}.")
+                         else:
+                             logger.debug(f"No PRTG name pattern in config for pod {pod}, skipping monitor deletion.")
+                         
+
                          mon_deleted_items.append({"identifier": str(pod), "status": "skipped"})
 
         except Exception as mon_err:

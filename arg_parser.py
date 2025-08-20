@@ -1,3 +1,5 @@
+# In arg_parser.py
+
 import argparse
 import argcomplete
 from commands import (
@@ -11,22 +13,11 @@ def create_parser():
     """
     parser = argparse.ArgumentParser(prog='labbuild', description="Lab Build Management Tool")
 
-    # --- Arguments for Listing/Batch Mode (-l) ---
-    parser.add_argument('-l', '--list-allocations', action='store_true',
-                        help='List current pod allocations for a vendor.')
-    parser.add_argument('-v', '--vendor',
-                        help='Vendor code (e.g., pa, cp, f5). Required.')
-    parser.add_argument('--list-start-pod', type=int, metavar='START_POD',
-                        help='Starting pod/class number for filtering list or batch operations.')
-    parser.add_argument('--list-end-pod', type=int, metavar='END_POD',
-                        help='Ending pod/class number for filtering list or batch operations.')
-    parser.add_argument('--test', action='store_true',
-                        help='Test allocation validity (use with -l).')
-    parser.add_argument('--vendor-operation',
-                        dest='vendor_operation',
-                        choices=['rebuild', 'teardown', 'start', 'stop'],
-                        help='Perform a batch operation for the specified vendor (use with -l).')
     parser.add_argument('--verbose', action='store_true', help='Enable debug logging.')
+    # --- START OF MODIFICATION ---
+    parser.add_argument('-y', '--yes', action='store_true', 
+                        help='Automatically answer yes to all confirmation prompts (non-interactive mode).')
+    # --- END OF MODIFICATION ---
 
     # --- Subparsers for Commands ---
     subparsers = parser.add_subparsers(dest='command', title='commands',
@@ -35,8 +26,7 @@ def create_parser():
     # --- Common Arguments for Subparsers ---
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument('-g', '--course', help='Course name or "?".')
-    common_parser.add_argument('--host', help='Target host.')
-    common_parser.add_argument('-t', '--tag', help='A unique tag for the allocation group (mandatory).')
+    common_parser.add_argument('-t', '--tag', help='A unique tag for the allocation group.')
     common_parser.add_argument('-th', '--thread', type=int, default=4, help='Concurrency thread count.')
     common_parser.add_argument('-v', '--vendor', required=True, help='Vendor code (e.g., pa, cp, f5). Required.')
 
@@ -47,8 +37,26 @@ def create_parser():
     f5_parser = argparse.ArgumentParser(add_help=False)
     f5_parser.add_argument('-cn', '--class_number', type=int, help='Class number (required for F5).')
 
+    # --- Help Text Definitions ---
+    setup_help = (
+        "Set up a lab environment. Run in one of two modes:\n"
+        "1. Manual: Requires --course, --tag, and --host.\n"
+        "2. Auto-Lookup: Omit --course and --tag; provide --vendor, --start-pod, and --end-pod to run on existing allocations."
+    )
+    manage_help = (
+        "Manage VM power states. Run in one of two modes:\n"
+        "1. Manual: Requires --course, --tag, and --host.\n"
+        "2. Auto-Lookup: Omit --course and --tag; provide --vendor, --start-pod, and --end-pod to run on existing allocations."
+    )
+    teardown_help = (
+        "Tear down a lab environment. Run in one of two modes:\n"
+        "1. Manual: Requires --course, --tag, and --host.\n"
+        "2. Auto-Lookup: Omit --course and --tag; provide --vendor, --start-pod, and --end-pod to run on existing allocations."
+    )
+
     # --- Setup Subparser ---
-    setup_parser = subparsers.add_parser('setup', help='Set up lab environment.',
+    setup_parser = subparsers.add_parser('setup', help=setup_help,
+                                         formatter_class=argparse.RawTextHelpFormatter,
                                          parents=[common_parser, pod_range_parser, f5_parser])
     setup_parser.add_argument('-c', '--component', help='Specify components or use "?" to list.')
     setup_parser.add_argument('-ds', '--datastore', default="vms", help='Target datastore.')
@@ -69,14 +77,16 @@ def create_parser():
     setup_parser.set_defaults(func=setup_environment)
 
     # --- Manage Subparser ---
-    manage_parser = subparsers.add_parser('manage', help='Manage VM power states.',
+    manage_parser = subparsers.add_parser('manage', help=manage_help,
+                                          formatter_class=argparse.RawTextHelpFormatter,
                                           parents=[common_parser, pod_range_parser, f5_parser])
     manage_parser.add_argument('-c', '--component', help='Specify components or use "?" to list.')
     manage_parser.add_argument('-o', '--operation', choices=['start', 'stop', 'reboot'], required=True, help='Power operation to perform.')
     manage_parser.set_defaults(func=manage_environment)
  
     # --- Teardown Subparser ---
-    teardown_parser = subparsers.add_parser('teardown', help='Tear down lab environment.',
+    teardown_parser = subparsers.add_parser('teardown', help=teardown_help,
+                                            formatter_class=argparse.RawTextHelpFormatter,
                                             parents=[common_parser, pod_range_parser, f5_parser])
     teardown_parser.add_argument('--monitor-only', action='store_true', help='Only remove monitoring entries.')
     teardown_parser.add_argument('--db-only', action='store_true', help='Only remove database allocation record.')

@@ -47,9 +47,13 @@ def run_auto_lookup_operation(args_dict: Dict[str, Any]):
         print(f"  - {desc}")
         
     print(f"\nTotal operations to run: {len(jobs_to_run)}")
-    if input("\nAre you sure you want to proceed? (yes/no): ").lower().strip() != 'yes':
-        print("\nOperation cancelled by user.")
-        return
+    # Check for the '-y' flag. If not present, ask for confirmation.
+    if not args_dict.get('yes', False):
+        if input("\nAre you sure you want to proceed? (yes/no): ").lower().strip() != 'yes':
+            print("\nOperation cancelled by user.")
+            return
+    else:
+        print("\nNon-interactive mode (-y) detected. Proceeding automatically.")
 
     # 3. Execute the jobs in parallel
     print(f"\nUser confirmed. Submitting {len(jobs_to_run)} operations now...")
@@ -78,8 +82,12 @@ def run_auto_lookup_operation(args_dict: Dict[str, Any]):
         for future in as_completed(future_to_job):
             desc = future_to_job[future]
             try:
-                future.result()
-                print(f"  [SUCCESS] Operation completed: {desc}")
+                results = future.result()  # Get the list of result dictionaries
+                # Check if any part of the operation returned a "failed" status
+                if isinstance(results, list) and any(r.get("status") == "failed" for r in results):
+                    print(f"  [FAILURE] Operation completed with errors: {desc}.")
+                else:
+                    print(f"  [SUCCESS] Operation completed: {desc}")
             except Exception as exc:
                 print(f"  [FAILURE] Operation failed: {desc}. Error: {exc}")
 
