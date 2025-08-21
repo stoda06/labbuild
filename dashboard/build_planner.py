@@ -1232,7 +1232,7 @@ class EmailManager:
             recipient_email = self.trainer_email_map.get(trainer_name)
             if not recipient_email:
                 self.context.errors.append(f"No email address for trainer '{trainer_name}' (Course '{sf_code}').")
-                continue
+                recipient_email = "it@rededucation.com"
 
             subject, html_body = self._render_email_for_group(trainer_name, sf_code, commands_in_group)
             
