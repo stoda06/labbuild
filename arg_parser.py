@@ -69,6 +69,7 @@ def create_parser():
                             help='Source pod number to clone VMs from (primarily for Checkpoint).')
     setup_parser.add_argument('--start-date', help='Course start date (YYYY-MM-DD).')
     setup_parser.add_argument('--end-date', help='Course end date (YYYY-MM-DD).')
+    setup_parser.add_argument('--host', help='Specify the host on which the pods need to be built.')
     setup_parser.add_argument('--trainer-name', help='Name of the trainer.')
     setup_parser.add_argument('--username', help='APM username for the allocation.')
     setup_parser.add_argument('--password', help='APM password for the allocation.')
