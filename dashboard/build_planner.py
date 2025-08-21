@@ -472,7 +472,12 @@ class DefaultVendorPlanner(BaseVendorPlanner):
             if self.context.host_capacities.get(host, 0) < required_memory:
                 continue
 
-            start_pod = self._find_contiguous_pod_range(params['pods_req'], params['start_pod_suggestion'])
+            # --- MODIFICATION: Pass the 'upper_limit' from params if it exists ---
+            start_pod = self._find_contiguous_pod_range(
+                params['pods_req'], 
+                params['start_pod_suggestion'],
+                upper_limit=params.get('upper_limit')
+            )
             if start_pod is not None:
                 return {"host": host, "start_pod": start_pod}
         return None
@@ -502,6 +507,8 @@ class DefaultVendorPlanner(BaseVendorPlanner):
         end_pod = start_pod + params['pods_req'] - 1
         username = self.context.apm_allocator.get_next_username(self.vendor_code)
         password = self._generate_password(sf_code)
+        trainer_value = sf_course.get('Trainer', sf_course.get('trainer'))
+        final_trainer_name = trainer_value if trainer_value and trainer_value.strip() != '-' else 'N/A'
         
         return LabBuildCommand(
             labbuild_course=params['labbuild_course'],
@@ -510,7 +517,7 @@ class DefaultVendorPlanner(BaseVendorPlanner):
             vendor_shortcode=self.vendor_code,
             tag=sf_code,
             host=allocation['host'],
-            trainer_name=sf_course.get('Trainer', 'N/A'),
+            trainer_name=final_trainer_name,
             username=username,
             password=password,
             start_date=sf_course.get('Start Date', ''),
@@ -555,6 +562,8 @@ class DefaultVendorPlanner(BaseVendorPlanner):
         sf_code = sf_course.get('Course Code')
         start_pod = allocation['start_pod']
         end_pod = start_pod + params['pods_req'] - 1
+        trainer_value = sf_course.get('Trainer', sf_course.get('trainer'))
+        final_trainer_name = trainer_value if trainer_value and trainer_value.strip() != '-' else 'N/A'
         
         return LabBuildCommand(
             labbuild_course=params['labbuild_course'],
@@ -563,7 +572,7 @@ class DefaultVendorPlanner(BaseVendorPlanner):
             vendor_shortcode=self.vendor_code,
             tag=sf_code,
             host=allocation['host'],
-            trainer_name=sf_course.get('Trainer', 'N/A'),
+            trainer_name=final_trainer_name,
             username=username, # Use provided username
             password=password,   # Use provided password
             start_date=sf_course.get('Start Date', ''),
@@ -581,8 +590,8 @@ class CheckpointPlanner(DefaultVendorPlanner):
     def _get_ip_conflict_pods(self, pod_number: int) -> set:
         """
         Implements the Checkpoint IP conflict rule based on course type.
-        - A regular pod (X) conflicts with a Maestro pod (X-100).
-        - A Maestro pod (Y) conflicts with a regular pod (Y+100).
+        - A regular pod (X) conflicts with a Maestro pod (X-200).
+        - A Maestro pod (Y) conflicts with a regular pod (Y+200).
         """
         conflicts = set()
 
@@ -592,19 +601,17 @@ class CheckpointPlanner(DefaultVendorPlanner):
             logger.warning(f"Could not convert pod number '{pod_number}' to int for IP conflict check.")
             return conflicts
         
+        # Changed conflict offset from 100 to 200
         # A trainer pod is always considered 'regular' for IP conflict purposes.
-        # So, a trainer pod at pod_number > 100 conflicts with a Maestro pod at pod_number - 100.
-        if pod_num_int > 100:
+        if pod_num_int > 100: # It's a regular pod (student or trainer)
             maestro_pods_in_use = self.context.pods_in_use.get('cp', {}).get('maestro', set())
-            conflicting_maestro_pod = pod_num_int - 100
+            conflicting_maestro_pod = pod_num_int - 200
             if conflicting_maestro_pod in maestro_pods_in_use:
                 conflicts.add(conflicting_maestro_pod)
         
-        # This handles a student Maestro pod (e.g., at 10) conflicting with a
-        # student/trainer regular pod (e.g., at 110).
-        else: # pod_number <= 100
+        else: # It's a Maestro pod (pod_number <= 100)
             regular_pods_in_use = self.context.pods_in_use.get('cp', {}).get('regular', set())
-            conflicting_regular_pod = pod_num_int + 100
+            conflicting_regular_pod = pod_num_int + 200
             if conflicting_regular_pod in regular_pods_in_use:
                 conflicts.add(conflicting_regular_pod)
                 
@@ -612,28 +619,60 @@ class CheckpointPlanner(DefaultVendorPlanner):
 
     def plan_builds(self, sf_courses: List[Dict[str, Any]]):
         """
-        Overrides the main planner to check for Maestro courses and delegate
-        to the appropriate internal method.
+        Overrides the main planner to prioritize Maestro courses, plan them first,
+        and then plan all other standard Checkpoint courses.
         """
         logger.info(f"Running CheckpointPlanner for {len(sf_courses)} courses.")
+        
+        # Separate courses into Maestro and Standard lists
+        maestro_courses = []
+        standard_courses = []
+        
+        # First, determine the type for each course
         for course in sf_courses:
-            sf_code = course.get('Course Code', 'UNKNOWN')
             try:
                 params = self._determine_build_parameters(course)
                 if not params: continue
 
-                is_maestro_build = "maestro" in params['labbuild_course'].lower()
+                # Store params with the course for later use to avoid recalculating
+                course['_build_params'] = params 
+                
+                is_maestro_build = "maestro" in params.get('labbuild_course', '').lower()
                 
                 if is_maestro_build:
-                    self._plan_maestro_build(course, params)
+                    maestro_courses.append(course)
                 else:
-                    self._plan_standard_build(course, params)
+                    standard_courses.append(course)
             except Exception as e:
-                logger.error(f"Error planning CP course '{sf_code}': {e}", exc_info=True)
-                self.context.errors.append(f"Error planning for '{sf_code}'.")
+                sf_code = course.get('Course Code', 'UNKNOWN')
+                logger.error(f"Error pre-processing CP course '{sf_code}': {e}", exc_info=True)
+                self.context.errors.append(f"Error processing '{sf_code}'.")
+
+        # Plan Maestro courses FIRST to ensure they get lower pod numbers
+        logger.info(f"Prioritizing {len(maestro_courses)} Maestro course(s).")
+        for course in maestro_courses:
+            try:
+                self._plan_maestro_build(course, course['_build_params'])
+            except Exception as e:
+                sf_code = course.get('Course Code', 'UNKNOWN')
+                logger.error(f"Error planning Maestro course '{sf_code}': {e}", exc_info=True)
+                self.context.errors.append(f"Error planning Maestro course '{sf_code}'.")
+
+        # Plan standard courses AFTER Maestro courses are allocated
+        logger.info(f"Planning {len(standard_courses)} standard Checkpoint course(s).")
+        for course in standard_courses:
+            try:
+                self._plan_standard_build(course, course['_build_params'])
+            except Exception as e:
+                sf_code = course.get('Course Code', 'UNKNOWN')
+                logger.error(f"Error planning standard CP course '{sf_code}': {e}", exc_info=True)
+                self.context.errors.append(f"Error planning standard course '{sf_code}'.")
+
 
     def _plan_standard_build(self, sf_course: Dict, params: Dict):
         """Handles a regular, non-Maestro Checkpoint build."""
+        # Add upper_limit for standard builds 
+        params['upper_limit'] = 200 # Standard pods are in the 100-200 range
         allocation = self._find_allocation_slot(params)
         if not allocation:
             self.context.errors.append(f"Could not find slot for standard CP course '{params['labbuild_course']}'.")
@@ -650,32 +689,35 @@ class CheckpointPlanner(DefaultVendorPlanner):
         sf_code = sf_course.get('Course Code')
         logger.info(f"Planning a Maestro Split Build for SF Course '{sf_code}'.")
 
-        # --- MODIFICATION: Centralize credential generation for the entire course ---
-        # Generate one username for all AU parts and one for all US parts.
         au_username = self.context.apm_allocator.get_next_username('cp')
         us_username = self.context.apm_allocator.get_next_username('cp')
-        # All parts of a single Maestro course will share the same password.
         password = self._generate_password(sf_code)
         
-        US_HOSTS = {"hotshot", "trypticon"} # Define which hosts are in the US
-        # --- END MODIFICATION ---
-
-        maestro_config = {}
+        US_HOSTS = {"hotshot", "trypticon"} 
+        
+        maestro_rule = None
         for rule in reversed(self.context.build_rules):
             if self.vendor_code == rule.get("conditions", {}).get("vendor", ""):
                  if "maestro_split_build" in rule.get("actions", {}):
-                    maestro_config = rule["actions"]["maestro_split_build"]
+                    maestro_rule = rule
                     break
 
-        if not maestro_config:
+        if not maestro_rule:
             self.context.errors.append(f"Could not find a valid 'maestro_split_build' rule for '{sf_code}'.")
             return
 
+        maestro_actions = maestro_rule.get("actions", {})
+        maestro_config = maestro_actions.get("maestro_split_build", {})
+        main_pod_host_priority = maestro_actions.get("host_priority", self.context.all_hosts)
+
         maestro_parts = [
-            {"name": "Main Pods", "pods_req": 2, "labbuild_course": maestro_config.get("main_course"), "host_priority": params.get("host_priority", self.context.all_hosts)},
+            {"name": "Main Pods", "pods_req": 2, "labbuild_course": maestro_config.get("main_course"), "host_priority": main_pod_host_priority},
             {"name": "Rack 1", "pods_req": 1, "labbuild_course": maestro_config.get("rack1_course"), "host_priority": maestro_config.get("rack_host", [])},
             {"name": "Rack 2", "pods_req": 1, "labbuild_course": maestro_config.get("rack2_course"), "host_priority": maestro_config.get("rack_host", [])},
         ]
+
+        # Initialize a cursor to track the next pod number to try
+        next_pod_to_try = params.get('start_pod_suggestion', 1)
 
         for part in maestro_parts:
             part_params = params.copy()
@@ -683,21 +725,25 @@ class CheckpointPlanner(DefaultVendorPlanner):
             part_params['pods_req'] = part['pods_req']
             part_params['memory_per_pod'] = self._get_memory_for_course(part_params['labbuild_course'])
             part_params['host_priority'] = part["host_priority"]
+            part_params['upper_limit'] = 50 
+            # Use the cursor as the starting suggestion for the pod search
+            part_params['start_pod_suggestion'] = next_pod_to_try
 
             allocation = self._find_allocation_slot(part_params)
             if not allocation:
                 self.context.errors.append(f"Could not find slot for Maestro part '{part['name']}' for SF course '{sf_code}'.")
-                continue
+                # Stop planning this Maestro build if a part fails
+                break 
+
+            # Update the cursor for the next iteration
+            next_pod_to_try = allocation['start_pod'] + part_params['pods_req']
 
             self._commit_allocation_to_context(allocation, part_params, pod_type='maestro')
 
-            # --- MODIFICATION: Determine which region the allocation is in and select the correct username ---
             allocated_host = allocation['host']
             is_us_host = allocated_host.lower() in US_HOSTS
             final_username = us_username if is_us_host else au_username
-            # --- END MODIFICATION ---
-
-            # Use the new helper to create the command with the correct, shared credentials
+            
             command = self._create_build_command_with_creds(
                 sf_course, 
                 part_params, 
