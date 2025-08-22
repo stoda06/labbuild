@@ -1813,7 +1813,12 @@ def execute_saved_plan():
         # 2. Calculate schedule start time in UTC
         scheduler_tz = scheduler.timezone
         naive_dt = datetime.fromisoformat(start_time_str)
-        localized_dt = scheduler_tz.localize(naive_dt, is_dst=None)
+        if hasattr(scheduler_tz, 'localize'):
+            # This is the method for pytz objects
+            localized_dt = scheduler_tz.localize(naive_dt, is_dst=None)
+        else:
+            # This is the method for standard library zoneinfo objects
+            localized_dt = naive_dt.replace(tzinfo=scheduler_tz)
         start_time_utc = localized_dt.astimezone(pytz.utc)
         
         # 3. Implement the "Smart Stagger" scheduling algorithm
