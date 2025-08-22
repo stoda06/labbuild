@@ -109,6 +109,7 @@ def create_parser():
     # --- Move Subparser ---
     move_parser = subparsers.add_parser('move', help='Move pod VMs to correct folder and resource pool.',
                                         parents=[common_parser, pod_range_parser, f5_parser])
+    move_parser.add_argument('--host', help='Specify the host on which the pods need to be built.')
     move_parser.set_defaults(func=move_environment)
 
     # --- Migrate Subparser ---
