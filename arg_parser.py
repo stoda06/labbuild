@@ -80,6 +80,7 @@ def create_parser():
                                           formatter_class=argparse.RawTextHelpFormatter,
                                           parents=[common_parser, pod_range_parser, f5_parser])
     manage_parser.add_argument('-c', '--component', help='Specify components or use "?" to list.')
+    manage_parser.add_argument('--host', help='Specify the host on which the pods need to be built.')
     manage_parser.add_argument('-o', '--operation', choices=['start', 'stop', 'reboot'], required=True, help='Power operation to perform.')
     manage_parser.set_defaults(func=manage_environment)
  

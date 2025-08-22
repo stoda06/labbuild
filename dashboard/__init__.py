@@ -19,7 +19,7 @@ if project_root not in sys.path:
 
 # Import extensions AFTER adding project root to path
 from .extensions import (
-    mongo_client_app, mongo_client_scheduler, scheduler, db,
+    mongo_client_app, scheduler, db,
     op_logs_collection, std_logs_collection, course_config_collection,
     host_collection, alloc_collection, course_mapping_rules_collection,
     shutdown_resources # Import the cleanup function
@@ -118,5 +118,3 @@ def create_app():
     app.logger.info(f"--- DEBUG [App Factory]: REDIS_URL = {app.config['REDIS_URL']} ---")
 
     return app
-
-# --- END OF dashboard/__init__.py ---

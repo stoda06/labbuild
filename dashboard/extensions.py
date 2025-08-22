@@ -1,5 +1,3 @@
-# dashboard/extensions.py
-
 import os
 import sys
 import logging
@@ -38,7 +36,7 @@ SCHEDULE_COLLECTION = "scheduled_jobs" # Keep this specific to scheduler
 logger = logging.getLogger('dashboard.extensions') # Specific logger
 
 mongo_client_app = None
-mongo_client_scheduler = None
+# mongo_client_scheduler = None
 db = None
 op_logs_collection = None
 std_logs_collection = None
@@ -60,7 +58,7 @@ else:
         f"@{MONGO_HOST}:27017/{DB_NAME}"
     )
     try:
-        # App client
+        # App client for the main Flask application
         mongo_client_app = MongoClient(
             MONGO_URI, serverSelectionTimeoutMS=5000, appname="LabBuildApp"
         )
@@ -78,14 +76,7 @@ else:
         locations_collection = db["locations"]
         logger.info("Successfully connected App MongoDB client.")
 
-        # Scheduler client
-        mongo_client_scheduler = MongoClient(
-            MONGO_URI, serverSelectionTimeoutMS=5000, appname="LabBuildScheduler"
-        )
-        mongo_client_scheduler.admin.command('ping')
-        logger.info("Successfully connected Scheduler MongoDB client.")
-
-        # --- Scheduler Initialization ---
+        # --- Scheduler Timezone Initialization ---
         SERVER_TIMEZONE_STR = os.getenv('SERVER_TIMEZONE', 'Australia/Sydney')
         try:
             SERVER_TIMEZONE = pytz.timezone(SERVER_TIMEZONE_STR)
@@ -94,21 +85,23 @@ else:
             logger.error(f"Unknown timezone '{SERVER_TIMEZONE_STR}'. Defaulting to UTC.")
             SERVER_TIMEZONE = pytz.utc
 
+        # --- Scheduler Initialization ---
         jobstores = {
             'default': MongoDBJobStore(
                 database=DB_NAME,
                 collection=SCHEDULE_COLLECTION,
-                client=mongo_client_scheduler
+                # Pass the connection string (URI) directly to the job store.
+                # This allows APScheduler to manage its own robust connection pooling.
+                host=MONGO_URI
             )
         }
         scheduler = BackgroundScheduler(jobstores=jobstores, timezone=SERVER_TIMEZONE)
-        # Don't start scheduler here, start it in the app factory (__init__.py)
+        # The scheduler is started in the app factory (__init__.py)
 
     except ConnectionFailure as e:
         logger.critical(f"MongoDB connection failed: {e}")
-        # Ensure clients are None if connection fails
+        # Ensure all clients are None if the connection fails
         mongo_client_app = None
-        mongo_client_scheduler = None
         db = None
         scheduler = None
         trainer_email_collection = None
@@ -116,15 +109,15 @@ else:
     except Exception as e:
         logger.critical(f"Unexpected error during MongoDB/Scheduler initialization: {e}", exc_info=True)
         mongo_client_app = None
-        mongo_client_scheduler = None
         db = None
         scheduler = None
         trainer_email_collection = None
         locations_collection = None
 
 def shutdown_resources():
-    """Shutdown scheduler and close DB connections."""
-    global mongo_client_scheduler, mongo_client_app, scheduler
+    """Shutdown scheduler and close DB connections on application exit."""
+    # Removed reference to the deleted mongo_client_scheduler
+    global mongo_client_app, scheduler
     logger.info("Executing shutdown_resources...")
     if scheduler and scheduler.running:
         logger.info("Shutting down scheduler...")
@@ -134,20 +127,12 @@ def shutdown_resources():
         except Exception as e:
             logger.error(f"Scheduler shutdown error: {e}", exc_info=True)
 
-    if mongo_client_scheduler:
-        logger.info("Closing scheduler MongoDB client...")
-        try: mongo_client_scheduler.close()
-        except Exception as e: logger.error(f"Error closing scheduler Mongo client: {e}")
-        mongo_client_scheduler = None
-        logger.info("Scheduler MongoDB client closed.")
-
     if mongo_client_app:
         logger.info("Closing app MongoDB client...")
-        try: mongo_client_app.close()
-        except Exception as e: logger.error(f"Error closing app Mongo client: {e}")
+        try:
+            mongo_client_app.close()
+        except Exception as e:
+            logger.error(f"Error closing app Mongo client: {e}")
         mongo_client_app = None
         logger.info("App MongoDB client closed.")
     logger.info("shutdown_resources finished.")
-
-
-# --- END OF dashboard/extensions.py ---
