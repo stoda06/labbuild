@@ -114,6 +114,7 @@ def create_parser():
     # --- Migrate Subparser ---
     migrate_parser = subparsers.add_parser('migrate', help='Migrate pod VMs from a source host to a destination host.',
                                            parents=[common_parser, pod_range_parser])
+    migrate_parser.add_argument('--host', help='Specify the host on which the pods need to be built.')
     migrate_parser.add_argument('-d', '--destination-host', required=True, help='The destination host for the migration.')
     migrate_parser.set_defaults(func=migrate_environment)
 
