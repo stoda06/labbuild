@@ -87,6 +87,7 @@ def create_parser():
     teardown_parser = subparsers.add_parser('teardown', help=teardown_help,
                                             formatter_class=argparse.RawTextHelpFormatter,
                                             parents=[common_parser, pod_range_parser, f5_parser])
+    teardown_parser.add_argument('--host', help='Specify the host on which the pods need to be built.')
     teardown_parser.add_argument('--monitor-only', action='store_true', help='Only remove monitoring entries.')
     teardown_parser.add_argument('--db-only', action='store_true', help='Only remove database allocation record.')
     teardown_parser.set_defaults(func=teardown_environment)

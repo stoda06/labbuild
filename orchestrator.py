@@ -536,8 +536,6 @@ def vendor_setup(
     return all_results
 
 
-# --- Vendor Teardown Orchestration ---
-# Updated signature to accept args_dict
 def vendor_teardown(
     service_instance: VCenter,
     host_details: Dict[str, Any],
@@ -564,6 +562,7 @@ def vendor_teardown(
     all_results = []
 
     if vendor_shortcode == "f5":
+        # --- No changes needed to the F5 logic, it already follows the correct sequence ---
         if class_number is None:
             err_msg = "F5 teardown requires --class_number."; logger.error(err_msg)
             operation_logger.log_pod_status(pod_id=f"f5-validation", status="failed", error=err_msg)
@@ -578,7 +577,6 @@ def vendor_teardown(
         logger.info(f"Starting teardown for F5 {log_target}...")
         td_success = True; td_error = None; td_step = None
         try:
-            # --- Moved config fetch to top to be available for monitor deletion ---
             class_config = fetch_and_prepare_course_config(course_name_arg, f5_class=class_number)
             class_config.update({
                 "host_fqdn": host_details["fqdn"],
@@ -586,18 +584,16 @@ def vendor_teardown(
                 "class_name": f"f5-class{class_number}"
             })
 
-            # Teardown VMs
+            # Teardown VMs first
             f5.teardown_class(service_instance, class_config, start_pod=start_pod, end_pod=end_pod)
 
-            # Monitor/DB cleanup only happens for full class teardown
+            # Then cleanup monitor/DB (only for full class teardown)
             if start_pod is None and end_pod is None:
                 try:
                     with mongo_client() as client:
                         if not client:
                              logger.warning(f"Cannot delete PRTG monitor for F5 class {class_number}: DB connection failed.")
                         else:
-                            # --- Logic to delete monitor by name ---
-                            # Iterate through PRTG entries in config to find monitor names
                             prtg_entries = class_config.get("prtg", [])
                             if not prtg_entries:
                                 logger.debug(f"No PRTG configuration found for F5 class {class_number}, skipping monitor deletion.")
@@ -605,16 +601,13 @@ def vendor_teardown(
                                 for entry in prtg_entries:
                                     pattern = entry.get("name")
                                     if pattern:
-                                        # Resolve the monitor name using the class number
                                         monitor_name = pattern.replace("{Y}", str(class_number))
                                         logger.info(f"Attempting to delete monitor '{monitor_name}' for F5 class {class_number}...")
-                                        # Call the new delete_monitor function
                                         if not PRTGManager.delete_monitor(monitor_name, vendor_shortcode, client):
                                             logger.warning(f"Failed to delete monitor '{monitor_name}'.")
                                     else:
                                         logger.warning("PRTG entry in config is missing a 'name' pattern.")
 
-                    # Database entry is still deleted for the entire class
                     delete_from_database(tag, course_name=course_name, class_number=class_number)
                     logger.info(f"Database entry deleted for F5 class {class_number}.")
                 except Exception as db_mon_err:
@@ -629,7 +622,7 @@ def vendor_teardown(
         operation_logger.log_pod_status(pod_id=class_id_str, status=final_status, step=td_step, error=td_error, class_id=class_number)
         all_results.append({"identifier": class_id_str, "class_identifier": class_number, "status": final_status, "failed_step": td_step, "error_message": td_error})
 
-    else: # Other Vendors Async Teardown
+    else: # --- MODIFICATION: Corrected Logic for Other Vendors Async Teardown ---
         if start_pod is None or end_pod is None:
             err_msg = f"{vendor_shortcode.upper()} teardown requires --start-pod and --end-pod."
             logger.error(err_msg); operation_logger.log_pod_status(pod_id=f"{vendor_shortcode}-validation", status="failed", error=err_msg); return [{"identifier": f"{vendor_shortcode}-validation", "status": "failed", "error_message": err_msg}]
@@ -641,15 +634,20 @@ def vendor_teardown(
             return [{"identifier": f"vendor-{vendor_shortcode}", "status": "failed", "error_message": err_msg}]
 
         futures = []
+        # --- Create a map to hold pod configurations for later use ---
+        pod_configs_map = {}
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
             for pod in range(start_pod, end_pod + 1):
                 pod_id_str = str(pod)
                 try:
                     pod_config_vendor = fetch_and_prepare_course_config(course_name_arg, pod=pod)
                     pod_config_vendor.update({
-                        "host_fqdn": host_details["fqdn"], # Pass context if needed by teardown func
+                        "host_fqdn": host_details["fqdn"],
                         "pod_number": pod
                     })
+                    # --- Store the config for use after the task completes ---
+                    pod_configs_map[pod_id_str] = pod_config_vendor
+
                     course_name_lower = pod_config_vendor.get("course_name", "").lower()
                     current_teardown_func = teardown_func
 
@@ -662,34 +660,11 @@ def vendor_teardown(
                          if "ipo" in course_name_lower: current_teardown_func = avaya.teardown_ipo
                          elif "aura" in course_name_lower: current_teardown_func = avaya.teardown_aura
                          else: raise ValueError(f"Unsupported Avaya course for teardown: {course_name_lower}")
+                    
+                    # --- REMOVED: Monitor and DB deletion logic was moved from here ---
 
-                    # --- Delete Monitor/DB Entry using monitor name ---
-                    try:
-                        with mongo_client() as client:
-                             if not client:
-                                 logger.warning(f"Cannot delete PRTG monitor for pod {pod}: DB connection failed.")
-                             else:
-                                 # Construct the monitor name from the pod's config
-                                 prtg_details = pod_config_vendor.get("prtg", {})
-                                 monitor_name_pattern = prtg_details.get("name")
-                                 if monitor_name_pattern:
-                                     monitor_name_to_delete = monitor_name_pattern.replace("{X}", str(pod))
-                                     logger.info(f"Attempting to delete monitor '{monitor_name_to_delete}' for pod {pod}...")
-                                     if not PRTGManager.delete_monitor(monitor_name_to_delete, vendor_shortcode, client):
-                                         logger.warning(f"Failed to delete monitor '{monitor_name_to_delete}'.")
-                                 else:
-                                     logger.debug(f"No PRTG name pattern in config for pod {pod}, skipping monitor deletion.")
-                        
-                        # Delete DB entry for the specific pod
-                        delete_from_database(tag, course_name=course_name, pod_number=pod)
-                        logger.info(f"Database entry deleted for pod {pod}.")
-                    except Exception as db_mon_err:
-                        logger.error(f"Error deleting monitor/DB entry for pod {pod}: {db_mon_err}", exc_info=True)
-                        operation_logger.log_pod_status(pod_id=pod_id_str, status="failed", step="delete_monitor_db", error=str(db_mon_err))
-                        all_results.append({"identifier": pod_id_str, "status": "failed", "failed_step": "delete_monitor_db", "error_message": str(db_mon_err)})
-
-                    # --- Submit Async Teardown Task ---
-                    logger.info(f"Submitting teardown task for pod {pod} using function {current_teardown_func.__name__}...")
+                    # --- Submit Async VM Teardown Task ---
+                    logger.info(f"Submitting infrastructure teardown task for pod {pod}...")
                     future = executor.submit(current_teardown_func, service_instance, pod_config_vendor)
                     future.pod_number = pod
                     future.class_number = None
@@ -705,14 +680,49 @@ def vendor_teardown(
                     all_results.append({"identifier": pod_id_str, "status": "failed", "failed_step": "submit_task_error", "error_message": str(e)})
 
         task_results = wait_for_tasks(futures, description=f"{vendor_shortcode} pod teardowns")
+        
+        # --- Process results and perform cleanup AFTER successful VM teardown ---
         for res_data in task_results:
+            pod_id = res_data["identifier"]
+            status = res_data["status"]
+            
             operation_logger.log_pod_status(
-                pod_id=res_data["identifier"],
-                status=res_data["status"],
+                pod_id=pod_id, status=status,
                 step=res_data["failed_step"] or "vm_teardown",
-                error=res_data["error_message"],
-                class_id=res_data["class_identifier"]
+                error=res_data["error_message"], class_id=res_data["class_identifier"]
             )
+            
+            if status == "success":
+                logger.info(f"VM teardown for pod {pod_id} successful. Proceeding with cleanup.")
+                pod_conf_for_cleanup = pod_configs_map.get(pod_id)
+                if not pod_conf_for_cleanup:
+                    logger.error(f"Internal error: Could not find config for pod {pod_id} after teardown. Skipping cleanup.")
+                    continue
+                
+                try:
+                    with mongo_client() as client:
+                        if not client:
+                            logger.warning(f"Cannot delete PRTG monitor for pod {pod_id}: DB connection failed.")
+                        else:
+                            prtg_details = pod_conf_for_cleanup.get("prtg", {})
+                            monitor_name_pattern = prtg_details.get("name")
+                            if monitor_name_pattern:
+                                monitor_name = monitor_name_pattern.replace("{X}", str(pod_id))
+                                logger.info(f"Attempting to delete monitor '{monitor_name}' for pod {pod_id}...")
+                                if not PRTGManager.delete_monitor(monitor_name, vendor_shortcode, client):
+                                    logger.warning(f"Failed to delete monitor '{monitor_name}'.")
+                            else:
+                                logger.debug(f"No PRTG name pattern in config for pod {pod_id}, skipping monitor deletion.")
+                    
+                    delete_from_database(tag, course_name=course_name, pod_number=int(pod_id))
+                    logger.info(f"Database entry deleted for pod {pod_id}.")
+                except Exception as db_mon_err:
+                    logger.error(f"Error during post-teardown cleanup for pod {pod_id}: {db_mon_err}", exc_info=True)
+                    operation_logger.log_pod_status(pod_id=pod_id, status="failed", step="cleanup_monitor_db", error=str(db_mon_err))
+                    res_data["status"] = "failed"
+                    res_data["failed_step"] = "cleanup_monitor_db"
+                    res_data["error_message"] = str(db_mon_err)
+
         all_results.extend(task_results)
         logger.info(f"Finished asynchronous teardown for pods {start_pod}-{end_pod}.")
 
