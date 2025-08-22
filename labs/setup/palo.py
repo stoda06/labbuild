@@ -445,13 +445,13 @@ def teardown_1110(service_instance, pod_config):
     folder_name = f'pa-pod{pod_config["pod_number"]}-folder'
 
     vm_manager.delete_folder(folder_name, force=True)
-    rpm.delete_resource_pool(group_name)
     rpm.logger.info(f'Removed resource pool {group_name} and all its VMs.')
 
     for network in pod_config['networks']:
         solved_port_groups = solve_vlan_id(network["port_groups"])
         nm.delete_port_groups(pod_config['host_fqdn'], network["switch_name"], solved_port_groups)
         nm.logger.info(f'Deleted associated port groups from vswitch {network["switch_name"]}')
+    rpm.delete_resource_pool(group_name)
 
 
 def add_monitor(pod_config, db_client, prtg_server=None):
