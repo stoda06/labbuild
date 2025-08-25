@@ -4,6 +4,7 @@ from pyVim.connect import SmartConnect, Disconnect
 import subprocess
 from pyVmomi import vim
 from tabulate import tabulate
+import re
 import ssl, argparse, sys, concurrent.futures, threading
 import paramiko
 from pymongo import MongoClient
@@ -261,26 +262,55 @@ def perform_network_checks_local_nmap(pod, components, _ignore, host_key, power_
         name = (clone or "UNKNOWN").replace("{X}", str(pod))
         ip = resolve_pod_ip(ip_raw, pod, host_key)
         status = "UNKNOWN"
+
+        # Skip powered-off VMs
         if power_map.get(name) == vim.VirtualMachinePowerState.poweredOff:
             status = "SKIPPED (powered off)"
             results.append({"pod": pod, "component": name, "ip": ip, "port": port, "status": status, "host": "localhost"})
             continue
-        cmd = ["nmap", "-Pn", "-p", str(port), ip] if str(port).isdigit() else ["nmap", "-Pn", ip]
+
+        # Build nmap cmd
+        if str(port).isdigit():
+            cmd = ["nmap", "-Pn", "-p", str(port), ip]
+        else:
+            cmd = ["nmap", "-Pn", ip]
+
         if verbose:
             with lock:
-                print(f"LOCAL‑nmap: {' '.join(cmd)}")
+                print(f"LOCAL-nmap: {' '.join(cmd)}")
+
         try:
-            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode(errors="ignore")
-            if str(port).isdigit() and f"{port}/tcp open" in out:
-                status = "UP"
-            elif str(port).isdigit() and f"{port}/tcp filtered" in out:
-                status = "FILTERED"
+            # use run() with timeout so a hung host doesn’t stall the test
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            out = proc.stdout or ""
+            if verbose and out:
+                with lock:
+                    print(f"nmap raw output for {ip}:{port}:\n{out}")
+
+            # Parse line like "3389/tcp filtered" or "3389/tcp open"
+            if str(port).isdigit():
+                m = re.search(rf"\b{port}/tcp\s+([a-zA-Z0-9|\-]+)", out)
+                if m:
+                    state = m.group(1).lower()
+                    if "open" in state:
+                        status = "UP"
+                    elif "filtered" in state or "closed|filtered" in state or "closed" in state:
+                        status = "FILTERED"  # treat as a failure state
+                    else:
+                        status = "DOWN"
+                else:
+                    status = "DOWN"
             else:
-                status = "DOWN"
-        except subprocess.CalledProcessError as e:
-            status = f"ERROR ({e.returncode})"
+                # If no port specified, consider host up/down based on Host is up.
+                status = "UP" if "Host is up" in out else "DOWN"
+
+        except subprocess.TimeoutExpired:
+            status = "ERROR (timeout)"
         except FileNotFoundError:
             status = "ERROR (nmap missing)"
+        except subprocess.CalledProcessError as e:
+            status = f"ERROR ({e.returncode})"
+
         results.append({"pod": pod, "component": name, "ip": ip, "port": port, "status": status, "host": "localhost"})
     return results
 
@@ -336,6 +366,36 @@ def main(argv=None, print_lock=None):
             res = fut.result()
             if res:
                 net_results.extend(res)
+            # After net_results are populated
+            # After collecting all net_results
+            if net_results:
+                headers = ["Component", "Component IP", "Host", "Port", "Status"]
+                table = []
+                bad = {"DOWN", "FAILED", "FILTERED", "ERROR (timeout)", "ERROR (nmap missing)"}  # decide what counts as failure
+                has_failures = False
+
+                for r in net_results:
+                    s = r["status"]
+                    if s in bad:
+                        s_print = f"{RED}{s}{END}"
+                        has_failures = True
+                    else:
+                        s_print = s
+                    table.append([r["component"], r["ip"], r["host"], r["port"], s_print])
+
+                print("\n📊 Network Test Summary (Local nmap)")
+                print(tabulate(table, headers=headers, tablefmt="fancy_grid"))
+
+                if has_failures:
+                    print("\n❌ Network checks found failures.")
+                    # If called as a script, exit non-zero so wrappers mark the job failed:
+                    sys.exit(2)
+
+
+                    # If you want a definitive success exit code too:
+                    sys.exit(0)
+
+
 
     return net_results
 
