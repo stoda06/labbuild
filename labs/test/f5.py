@@ -223,6 +223,95 @@ def main(argv=None, print_lock=None):
         else:
             print(f"\n✅ All VMs in F5-class{args.classnum} are powered ON")
     Disconnect(si)
+
+    # --- MODIFIED LOGIC TO CONSTRUCT AND STREAM testf5 COMMAND ---
+    HOST_MAP_REVERSED = {
+        "nightbird": "Ni", "cliffjumper": "Cl", "ultramagnus": "Ul",
+        "unicron": "Un", "hotshot": "Ho", "trypticon": "Tr"
+    }
+    
+    host_shortcode_raw = HOST_MAP_REVERSED.get(args.host.lower())
+    
+    if not host_shortcode_raw:
+        with print_lock:
+            print(f"\n{RED}❌ Error: Host '{args.host}' could not be mapped to a shortcode. Aborting 'testf5' command.{ENDC}")
+        return all_results
+
+    host_shortcode = host_shortcode_raw.lower()
+    command_to_run = f"testf5 {args.start} {args.end} {args.classnum} {host_shortcode}"
+    
+    with print_lock:
+        print(f"\n🚀 Executing command: {command_to_run}")
+
+    # --- NEW: Capture output while streaming for later parsing ---
+    testf5_output_lines = []
+    
+    try:
+        process = subprocess.Popen(
+            command_to_run,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        with print_lock:
+            print("\n--- Output from testf5 command ---")
+
+        if process.stdout:
+            for line in iter(process.stdout.readline, ''):
+                with print_lock:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                # Capture the line for parsing later
+                testf5_output_lines.append(line.strip())
+
+        return_code = process.wait()
+        stderr_output = ""
+        if process.stderr:
+            stderr_output = process.stderr.read()
+
+        with print_lock:
+            print("------------------------------------")
+            if return_code != 0:
+                print(f"{RED}❌ The 'testf5' command failed with exit code {return_code}{ENDC}")
+                if stderr_output:
+                    print(f"{RED}--- Error output from testf5 ---{ENDC}")
+                    print(stderr_output.strip())
+                    print(f"{RED}--------------------------------{ENDC}")
+            else:
+                print("✅ 'testf5' command executed successfully.")
+
+    except FileNotFoundError:
+        with print_lock:
+            print(f"{RED}❌ Command 'testf5' not found. Is it in your system's PATH?{ENDC}")
+    except Exception as e:
+        with print_lock:
+            print(f"{RED}❌ An unexpected error occurred while running 'testf5': {e}{ENDC}")
+
+    # --- NEW: Parse captured output and print license summary table ---
+    unlicensed_pods = []
+    for line in testf5_output_lines:
+        # Use regex to find lines that start with "Pod" and a number
+        match = re.match(r'^\s*Pod\s+(\d+)', line)
+        if match:
+            pod_number = int(match.group(1))
+            # If a pod line is found, check if it contains the word "Active"
+            if "Active" not in line:
+                unlicensed_pods.append([pod_number, line])
+
+    with print_lock:
+        print("\n--- F5 Pod License Status Summary ---")
+        if not unlicensed_pods:
+            print("✅ All checked pods are reported as 'Active'.")
+        else:
+            print(f"{RED}⚠️ Found {len(unlicensed_pods)} pod(s) not in 'Active' state:{ENDC}")
+            # Sort the list by pod number for a clean report
+            sorted_pods = sorted(unlicensed_pods, key=lambda x: x[0])
+            headers = ["Pod Number", "Full Status Line from testf5"]
+            print(tabulate(sorted_pods, headers=headers, tablefmt="fancy_grid"))
+    # --- END OF MODIFIED LOGIC ---
     
     return all_results
 
