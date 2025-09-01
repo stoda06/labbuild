@@ -26,7 +26,6 @@ from managers.folder_manager import FolderManager
 from monitor.prtg import PRTGManager
 
 # Initialize a logger specific to this module.
-# This will inherit the configuration from the main 'labbuild' logger.
 logger = logging.getLogger(__name__)
 
 
@@ -35,28 +34,15 @@ logger = logging.getLogger(__name__)
 def update_network_dict_1110(network_dict: Dict, pod_number: int) -> Dict:
     """
     Customizes a VM's network adapter configuration for PA-1110 series courses.
-    - Updates network names (e.g., 'pa-internal-1' -> 'pan-internal-{pod_number}').
-    - Assigns a unique, predictable MAC address to the RDP adapter.
-
-    Args:
-        network_dict (Dict): The original network dictionary from the base VM template.
-        pod_number (int): The pod number to apply.
-
-    Returns:
-        Dict: The updated network dictionary.
     """
-    pod_hex = format(pod_number, '02x')  # Convert pod number to a two-digit hexadecimal string
-
+    pod_hex = format(pod_number, '02x')
     for adapter, details in network_dict.items():
         if 'pa-rdp' in details['network_name']:
-            # Assign a deterministic MAC address for the RDP network.
-            # This is crucial for consistent remote access.
             mac_address_preset = '00:50:56:07:00:00'
             mac_parts = mac_address_preset.split(':')
             mac_parts[-1] = pod_hex
             details['mac_address'] = ':'.join(mac_parts)
         else:
-            # Update network names for pod-specific segmentation.
             details['network_name'] = details['network_name'].replace('pa-', 'pan-')
             if 'pan-internal-1' in details['network_name']:
                 details['network_name'] = details['network_name'].replace('1', str(pod_number))
@@ -103,7 +89,7 @@ def solve_vlan_id(port_groups: list) -> list:
                  group["vlan_id"] = eval(group["vlan_id"])
         except Exception as e:
             logger.warning(f"Could not evaluate VLAN ID '{group['vlan_id']}': {e}")
-            group["vlan_id"] = 0  # Default to 0 on error
+            group["vlan_id"] = 0
     return port_groups
 
 
@@ -114,18 +100,7 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     Builds a standard Palo Alto pod (e.g., for PCNSA/PCNSE courses).
     This process involves creating all resources from scratch, cloning all VMs,
     and performing special firewall configuration like UUID updates.
-
-    Args:
-        service_instance: The connected vCenter service instance.
-        pod_config (Dict): The fully resolved configuration for this specific pod.
-        rebuild (bool): If True, deletes existing VMs before building.
-        full (bool): If True, performs a full clone instead of a linked clone.
-        selected_components (Optional[List[str]]): If provided, only builds these components.
-
-    Returns:
-        A tuple (success, failed_step, error_message).
     """
-    # STEP 0: Initialize managers and key variables
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     folder_mgr = FolderManager(service_instance)
@@ -137,13 +112,13 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
 
     logger.info(f"Starting build for PA Pod {pod} on host '{pod_config['host_fqdn']}'.")
 
-    # STEP 1: Set up network infrastructure (vSwitches, Port Groups)
+    # STEP 1: Set up network infrastructure
     for network in tqdm(pod_config['networks'], desc=f"Pod {pod} → Setting up networks", unit="net", leave=False):
         solved_port_groups = solve_vlan_id(network["port_groups"])
         if not nm.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
 
-    # STEP 2: Create organizational containers (Resource Pool and VM Folder)
+    # STEP 2: Create organizational containers
     if not rpm.create_resource_pool(parent_rp_name, group_name, host_fqdn=pod_config["host_fqdn"]):
         return False, "create_resource_pool", f"Failed creating resource pool {group_name}"
     
@@ -162,66 +137,65 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm", leave=False):
         clone_name = component["clone_name"]
         try:
-            # 3a. Handle Rebuild: Delete the old VM if it exists.
             if rebuild:
-                logger.info(f"Rebuild requested: Deleting existing VM '{clone_name}'.")
-                if not vmm.delete_vm(clone_name):
-                    logger.warning(f"Could not delete VM '{clone_name}' during rebuild (it may not exist).")
+                vmm.delete_vm(clone_name)
 
-            # 3b. Clone the VM from its base template.
             base_vm = component["base_vm"]
             if not vmm.get_obj([vim.VirtualMachine], base_vm):
                 raise Exception(f"Base VM template '{base_vm}' not found.")
 
             clone_successful = False
-            if not full: # Default is a linked clone
-                logger.debug(f"Creating linked clone '{clone_name}' from '{base_vm}'.")
+            if not full:
                 if not vmm.snapshot_exists(base_vm, "base") and not vmm.create_snapshot(base_vm, "base", "Base snapshot for linked clones"):
                     raise Exception(f"Failed to create 'base' snapshot on {base_vm}")
                 clone_successful = vmm.create_linked_clone(base_vm, clone_name, "base", group_name, directory_name=target_folder_name)
-            else: # Full clone requested
-                logger.debug(f"Creating full clone '{clone_name}' from '{base_vm}'.")
+            else:
                 clone_successful = vmm.clone_vm(base_vm, clone_name, group_name, directory_name=target_folder_name)
             
             if not clone_successful:
                 raise Exception("The clone operation failed.")
-            logger.info(f"Successfully cloned '{clone_name}'.")
-
-            # 3c. Configure the network adapters of the new VM.
+            
             vm_network = vmm.get_vm_network(base_vm)
             updated_vm_network = update_network_dict_1110(vm_network, pod)
             if not vmm.update_vm_network(clone_name, updated_vm_network):
                 raise Exception("Failed to update VM network adapters.")
             
-            # 3d. *** CRITICAL: Update UUID for firewall licensing ***
+             # --- START OF MODIFIED LOGIC ---
+            # --- START OF THE NEW, ROBUST LOGIC ---
             if "firewall" in component["component_name"]:
                 logger.info(f"Performing VMX UUID update for firewall '{clone_name}'.")
                 
-                # 1. Get the current user's login name for the temp directory.
+                # 1. Get the current user's login name.
                 try:
-                    current_user = os.getlogin()
-                except OSError:
-                    # Fallback for environments where os.getlogin() might fail (e.g., cron jobs).
                     current_user = getpass.getuser()
+                except Exception as e:
+                    logger.warning(f"Could not determine username via getpass: {e}. Falling back to 'unknown_user'.")
+                    current_user = "unknown_user"
 
-                # 2. Define the user-specific temporary directory path.
-                user_tmp_dir = os.path.join('/tmp', current_user)
+                # 2. Define the project's root directory and a local 'tmp' directory inside it.
+                # __file__ gives the path to the current script (palo.py)
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                project_root = os.path.abspath(os.path.join(script_dir, '..', '..')) # Go up two levels
+                project_tmp_dir = os.path.join(project_root, 'tmp')
+                
+                # 3. Define the user-specific directory inside the project's tmp folder.
+                user_tmp_dir = os.path.join(project_tmp_dir, current_user)
 
-                # 3. Create the directory if it doesn't exist, with secure permissions.
+                # 4. Create the directories with the correct permissions (rwxrwxr-x).
                 try:
-                    # mode=0o700 sets permissions to rwx------ (owner only).
-                    # exist_ok=True prevents an error if the directory already exists.
-                    os.makedirs(user_tmp_dir, mode=0o700, exist_ok=True)
-                    logger.debug(f"Ensured user temp directory exists: {user_tmp_dir}")
+                    # Create the base 'tmp' directory first
+                    os.makedirs(project_tmp_dir, mode=0o775, exist_ok=True)
+                    # Then create the user-specific directory
+                    os.makedirs(user_tmp_dir, mode=0o775, exist_ok=True)
+                    logger.debug(f"Ensured user temp directory exists with group permissions: {user_tmp_dir}")
                 except OSError as e:
-                    # This is a critical failure if the script can't write to its designated temp space.
                     raise Exception(f"Failed to create user temp directory '{user_tmp_dir}': {e}") from e
 
-                # 4. Construct the full path for the VMX file inside the user's directory.
+                # 5. Construct the full path for the VMX file.
                 vmx_filename = f"{clone_name}.vmx"
                 vmx_path = os.path.join(user_tmp_dir, vmx_filename)
                 
-                # 5. Execute the download -> update -> upload -> verify sequence using the safe path.
+                # 6. Execute the download -> update -> upload -> verify sequence.
                 if not vmm.download_vmx_file(clone_name, vmx_path) or \
                    not vmm.update_vm_uuid(vmx_path, component["uuid"]) or \
                    not vmm.upload_vmx_file(clone_name, vmx_path) or \
@@ -230,7 +204,6 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
                 
                 logger.info(f"Successfully updated UUID for '{clone_name}'.")
 
-            # 3e. Create a 'base' snapshot on the newly configured clone.
             if not vmm.create_snapshot(clone_name, "base", description=f"Base snapshot of {clone_name}"):
                 raise Exception("Failed to create 'base' snapshot on the new clone.")
             
@@ -238,7 +211,7 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
 
         except Exception as e:
             error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
-            logger.error(error_msg, exc_info=True) # Log full traceback for better debugging
+            logger.error(error_msg, exc_info=True)
             component_errors.append(error_msg)
             overall_component_success = False
             continue
@@ -260,7 +233,6 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
         component_errors.append(error_msg)
         overall_component_success = False
 
-    # STEP 5: Final result reporting
     if not overall_component_success:
         final_error_message = "; ".join(component_errors)
         return False, "component_build_failure", final_error_message
@@ -270,74 +242,54 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
 
 
 def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None) -> Tuple[bool, Optional[str], Optional[str]]:
-    """
-    Builds a PA 1100-220 series pod, which uses shared, pre-existing firewalls.
-    It clones utility VMs but only reverts snapshots on the firewalls.
-    Contains special logic for even-numbered pods.
-    """
     vmm = VmManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
     pod = int(pod_config["pod_number"])
     logger.info(f"Starting build for PA 1100-220 Pod {pod}.")
-
     try:
-        components_to_process = pod_config["components"]
+        components_to_process = pod_config.get("components", [])
         if selected_components:
-            components_to_process = [c for c in components_to_process if c["component_name"] in selected_components]
-
+            components_to_process = [c for c in components_to_process if c.get("component_name") in selected_components]
         for component in tqdm(components_to_process, desc=f"Pod {pod} → Processing", unit="comp", leave=False):
-            clone_name = component["clone_name"]
-            
+            clone_name = component.get("clone_name")
             if rebuild:
-                if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
+                if "firewall" not in component.get("component_name", "") and "panorama" not in component.get("component_name", ""):
                     if not vmm.delete_vm(clone_name): return False, "delete_vm", f"Failed deleting VM '{clone_name}'"
                 else:
-                    if not vmm.poweroff_vm(component['vm_name']): return False, "poweroff_vm", f"Failed powering off VM '{component['vm_name']}'"
-            
+                    if not vmm.poweroff_vm(component.get('vm_name')): return False, "poweroff_vm", f"Failed powering off VM '{component.get('vm_name')}'"
             host_suffix_map = {"cliffjumper": "-cl", "apollo": "-ap", "nightbird": "-ni", "ultramagnus": "-ul"}
             host_suffix = host_suffix_map.get(host_details.name.lower(), "")
-            resource_pool = f"{component['group_name']}{host_suffix}"
-
-            is_even_pod = (pod % 2 == 0)
-
-            if is_even_pod and "firewall" in component["component_name"]:
-                logger.info(f"Even Pod {pod}: Reverting '{component['vm_name']}' to snapshot '{component['snapshot']}'.")
-                if not vmm.revert_to_snapshot(component["vm_name"], component["snapshot"]):
-                    return False, "revert_to_snapshot", f"Failed reverting snapshot on '{component['vm_name']}'"
+            resource_pool = f"{component.get('group_name')}{host_suffix}"
+            if pod % 2 == 0 and "firewall" in component.get("component_name", ""):
+                if not vmm.revert_to_snapshot(component.get("vm_name"), component.get("snapshot")):
+                    return False, "revert_to_snapshot", f"Failed reverting snapshot on '{component.get('vm_name')}'"
                 continue
-            
-            if "firewall" not in component["component_name"] and "panorama" not in component["component_name"]:
+            if "firewall" not in component.get("component_name", "") and "panorama" not in component.get("component_name", ""):
                 if not full:
-                    if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", "Base snapshot"):
-                        return False, "create_snapshot", f"Failed creating snapshot on '{component['base_vm']}'"
-                    if not vmm.create_linked_clone(component["base_vm"], clone_name, "base", resource_pool):
+                    if not vmm.snapshot_exists(component.get("base_vm"), "base") and not vmm.create_snapshot(component.get("base_vm"), "base", "Base snapshot"):
+                        return False, "create_snapshot", f"Failed creating snapshot on '{component.get('base_vm')}'"
+                    if not vmm.create_linked_clone(component.get("base_vm"), clone_name, "base", resource_pool):
                         return False, "create_linked_clone", f"Failed creating linked clone for '{clone_name}'"
                 else:
-                    if not vmm.clone_vm(component["base_vm"], clone_name, resource_pool):
+                    if not vmm.clone_vm(component.get("base_vm"), clone_name, resource_pool):
                         return False, "clone_vm", f"Failed cloning VM for '{clone_name}'"
-                
-                vm_network = vmm.get_vm_network(component["base_vm"])
+                vm_network = vmm.get_vm_network(component.get("base_vm"))
                 updated_vm_network = update_network_dict_1100(vm_network, pod)
                 if not vmm.update_vm_network(clone_name, updated_vm_network):
                     return False, "update_vm_network", f"Failed updating network for '{clone_name}'"
                 if not vmm.create_snapshot(clone_name, "base", "Base snapshot"):
                     return False, "create_snapshot", f"Failed creating snapshot on '{clone_name}'"
-            
-            elif "firewall" in component["component_name"] or "panorama" in component["component_name"]:
-                if not vmm.revert_to_snapshot(component["vm_name"], component["snapshot"]):
-                    return False, "revert_to_snapshot", f"Failed reverting snapshot on '{component['vm_name']}'"
-
-        vms_to_power_on = []
-        for component in components_to_process:
-            if pod % 2 == 0 and ("firewall" in component["component_name"] or "panorama" in component["component_name"]): continue
-            vm_name = component.get("clone_name") if "firewall" not in component["component_name"] and "panorama" not in component["component_name"] else component.get("vm_name")
-            if vm_name: vms_to_power_on.append(vm_name)
-        
+            elif "firewall" in component.get("component_name", "") or "panorama" in component.get("component_name", ""):
+                if not vmm.revert_to_snapshot(component.get("vm_name"), component.get("snapshot")):
+                    return False, "revert_to_snapshot", f"Failed reverting snapshot on '{component.get('vm_name')}'"
+        vms_to_power_on = [
+            comp.get("clone_name") if "firewall" not in comp.get("component_name", "") and "panorama" not in comp.get("component_name", "") else comp.get("vm_name")
+            for comp in components_to_process if not (pod % 2 == 0 and ("firewall" in comp.get("component_name", "") or "panorama" in comp.get("component_name", "")))
+        ]
         with ThreadPoolExecutor() as executor:
-            futures = {executor.submit(vmm.poweron_vm, name): name for name in vms_to_power_on}
+            futures = {executor.submit(vmm.poweron_vm, name): name for name in vms_to_power_on if name}
             for future in futures:
                 if not future.result(): return False, "poweron_vm", f"Failed powering on '{futures[future]}'"
-
         logger.info(f"Successfully completed build for PA 1100-220 Pod {pod}.")
         return True, None, None
     except Exception as e:
@@ -346,30 +298,16 @@ def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False
 
 
 def build_1100_210_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None) -> Tuple[bool, Optional[str], Optional[str]]:
-    """
-    Builds a PA 1100-210 series pod. This version always clones utility VMs
-    and reverts snapshots on shared firewalls.
-    """
-    vmm = VmManager(service_instance)
-    pod = int(pod_config["pod_number"])
-    logger.info(f"Starting build for PA 1100-210 Pod {pod}.")
-    # (Implementation is very similar to 220, but without the even/odd logic)
-    # ... This function would follow the same structure as build_1100_220_pod, just simplified ...
-    logger.warning("build_1100_210_pod logic is simplified. Ensure it meets requirements.")
-    return build_1100_220_pod(service_instance, host_details, pod_config, rebuild, full, selected_components) # Delegate for now
+    return build_1100_220_pod(service_instance, host_details, pod_config, rebuild, full, selected_components)
 
 
 def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None) -> Tuple[bool, Optional[str], Optional[str]]:
-    """
-    Builds a Cortex pod, creating a shared folder and component-specific resource pools.
-    """
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     folder_mgr = FolderManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
     pod = int(pod_config["pod_number"])
     target_folder_name = 'pa-cortex-folder'
-
     logger.info(f"Starting build for Cortex Pod {pod}.")
     try:
         for network in pod_config["networks"]:
@@ -377,12 +315,48 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
                 return False, "create_vswitch_portgroups", f"Failed creating port groups on '{network['switch_name']}'"
         if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name):
             return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
-
-        # (Rest of the implementation follows the same robust pattern as build_1110_pod)
-        # ... abridged for brevity ...
+        
+        components_to_build = pod_config.get("components", [])
+        if selected_components:
+            components_to_build = [c for c in components_to_build if c.get("component_name") in selected_components]
+        
+        successful_clones = []
+        for component in components_to_build:
+            clone_name = component["clone_name"]
+            host_prefix = pod_config["host_fqdn"].split(".")[0].lower()
+            host_suffix_map = {"cliffjumper": "-cl", "apollo": "-ap", "nightbird": "-ni", "ultramagnus": "-ul", "unicron": "-un", "hotshot": "-ho"}
+            rp_name = f"{component['component_name']}{host_suffix_map.get(host_prefix, '')}"
+            parent_rp_name = f"pa-{pod_config['host_fqdn'][0:2]}"
+            if not rpm.create_resource_pool(parent_rp_name, rp_name):
+                return False, "create_resource_pool", f"Failed creating RP '{rp_name}'"
+            if rebuild and not vmm.delete_vm(clone_name):
+                return False, "delete_vm", f"Rebuild failed: Could not delete '{clone_name}'"
+            if not vmm.get_obj([vim.VirtualMachine], component["base_vm"]):
+                return False, "find_base_vm", f"Base VM '{component['base_vm']}' not found."
+            clone_successful = False
+            if not full:
+                if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", "Base snapshot"):
+                    return False, "create_snapshot", f"Failed creating snapshot on '{component['base_vm']}'"
+                clone_successful = vmm.create_linked_clone(component["base_vm"], clone_name, "base", rp_name, directory_name=target_folder_name)
+            else:
+                clone_successful = vmm.clone_vm(component["base_vm"], clone_name, rp_name, directory_name=target_folder_name)
+            if not clone_successful:
+                return False, "clone_vm", f"Clone operation failed for '{clone_name}'"
+            vm_network = vmm.get_vm_network(component["base_vm"])
+            updated_vm_network = update_network_dict_cortex(vm_network, pod)
+            if not vmm.update_vm_network(clone_name, updated_vm_network) or not vmm.connect_networks_to_vm(clone_name, updated_vm_network):
+                return False, "configure_network", f"Failed network configuration for '{clone_name}'"
+            if not vmm.create_snapshot(clone_name, "base", "Base snapshot"):
+                return False, "create_snapshot", f"Failed to create snapshot on '{clone_name}'"
+            successful_clones.append(component)
+        
+        vms_to_power_on = [comp["clone_name"] for comp in successful_clones if comp.get("state") != "poweroff"]
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(vmm.poweron_vm, name): name for name in vms_to_power_on}
+            for future in futures:
+                if not future.result(): return False, "poweron_vm", f"Failed to power on '{futures[future]}'"
         logger.info(f"Successfully completed build for Cortex Pod {pod}.")
         return True, None, None
-
     except Exception as e:
         logger.error(f"Build for Cortex Pod {pod} failed: {e}", exc_info=True)
         return False, "build_cortex_exception", str(e)
@@ -391,7 +365,6 @@ def build_cortex_pod(service_instance, host_details, pod_config, rebuild=False, 
 # --- Teardown Functions ---
 
 def teardown_1110(service_instance, pod_config: Dict):
-    """Tears down a standard PA pod by deleting its folder, resource pool, and networks."""
     vmm = VmManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
     nm = NetworkManager(service_instance)
@@ -407,7 +380,6 @@ def teardown_1110(service_instance, pod_config: Dict):
 
 
 def teardown_1100(service_instance, pod_config: Dict):
-    """Tears down a 1100-series pod non-destructively."""
     vmm = VmManager(service_instance)
     pod_number = pod_config["pod_number"]
     logger.info(f"Starting teardown for PA 1100-series Pod {pod_number}.")
@@ -420,7 +392,6 @@ def teardown_1100(service_instance, pod_config: Dict):
 
 
 def teardown_cortex(service_instance, pod_config: Dict):
-    """Tears down a Cortex pod by deleting all its VMs and networks."""
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     pod_number = pod_config["pod_number"]
@@ -435,9 +406,6 @@ def teardown_cortex(service_instance, pod_config: Dict):
 # --- Monitoring Function ---
 
 def add_monitor(pod_config: Dict, db_client, prtg_server: Optional[str] = None) -> Optional[str]:
-    """
-    Adds or updates a PRTG monitor for a Palo Alto pod.
-    """
     try:
         pod_number = int(pod_config.get("pod_number"))
         prtg_details = pod_config.get("prtg", {})
