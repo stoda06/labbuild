@@ -93,13 +93,9 @@ def solve_vlan_id(port_groups: list) -> list:
     return port_groups
 
 
-# --- Build Functions ---
-
 def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, selected_components=None) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Builds a standard Palo Alto pod (e.g., for PCNSA/PCNSE courses).
-    This process involves creating all resources from scratch, cloning all VMs,
-    and performing special firewall configuration like UUID updates.
     """
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
@@ -125,7 +121,7 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name):
         return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
 
-    # STEP 3: Process each component (VM) for the pod
+    # STEP 3: Process each component (VM)
     components_to_build = pod_config["components"]
     if selected_components:
         components_to_build = [c for c in components_to_build if c["component_name"] in selected_components]
@@ -160,42 +156,35 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             if not vmm.update_vm_network(clone_name, updated_vm_network):
                 raise Exception("Failed to update VM network adapters.")
             
-             # --- START OF MODIFIED LOGIC ---
-            # --- START OF THE NEW, ROBUST LOGIC ---
+            # --- START OF THE CORRECTED LOGIC ---
             if "firewall" in component["component_name"]:
                 logger.info(f"Performing VMX UUID update for firewall '{clone_name}'.")
                 
-                # 1. Get the current user's login name.
+                # 1. Get the effective user ID of the current process. getpass is more reliable.
                 try:
                     current_user = getpass.getuser()
                 except Exception as e:
                     logger.warning(f"Could not determine username via getpass: {e}. Falling back to 'unknown_user'.")
                     current_user = "unknown_user"
-
-                # 2. Define the project's root directory and a local 'tmp' directory inside it.
-                # __file__ gives the path to the current script (palo.py)
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-                project_root = os.path.abspath(os.path.join(script_dir, '..', '..')) # Go up two levels
-                project_tmp_dir = os.path.join(project_root, 'tmp')
                 
-                # 3. Define the user-specific directory inside the project's tmp folder.
-                user_tmp_dir = os.path.join(project_tmp_dir, current_user)
+                logger.debug(f"Effective user for temp directory is '{current_user}'.")
 
-                # 4. Create the directories with the correct permissions (rwxrwxr-x).
+                # 2. Define the user-specific temporary directory path under the system /tmp.
+                user_tmp_dir = os.path.join('/tmp', current_user)
+
+                # 3. Create the directory if it doesn't exist with GROUP permissions.
                 try:
-                    # Create the base 'tmp' directory first
-                    os.makedirs(project_tmp_dir, mode=0o775, exist_ok=True)
-                    # Then create the user-specific directory
+                    # mode=0o775 sets permissions to rwxrwxr-x (user and group can write).
                     os.makedirs(user_tmp_dir, mode=0o775, exist_ok=True)
                     logger.debug(f"Ensured user temp directory exists with group permissions: {user_tmp_dir}")
                 except OSError as e:
                     raise Exception(f"Failed to create user temp directory '{user_tmp_dir}': {e}") from e
 
-                # 5. Construct the full path for the VMX file.
+                # 4. Construct the full path for the VMX file.
                 vmx_filename = f"{clone_name}.vmx"
                 vmx_path = os.path.join(user_tmp_dir, vmx_filename)
                 
-                # 6. Execute the download -> update -> upload -> verify sequence.
+                # 5. Execute the download -> update -> upload -> verify sequence.
                 if not vmm.download_vmx_file(clone_name, vmx_path) or \
                    not vmm.update_vm_uuid(vmx_path, component["uuid"]) or \
                    not vmm.upload_vmx_file(clone_name, vmx_path) or \
@@ -203,6 +192,7 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
                    raise Exception("The VMX UUID update process failed.")
                 
                 logger.info(f"Successfully updated UUID for '{clone_name}'.")
+            # --- END OF THE CORRECTED LOGIC ---
 
             if not vmm.create_snapshot(clone_name, "base", description=f"Base snapshot of {clone_name}"):
                 raise Exception("Failed to create 'base' snapshot on the new clone.")
@@ -216,29 +206,25 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             overall_component_success = False
             continue
 
-    # STEP 4: Power on all successfully created VMs in parallel.
+    # 4. Power on all successfully created VMs in parallel.
     power_on_failures = []
     with ThreadPoolExecutor() as executor:
         futures = {executor.submit(vmm.poweron_vm, comp["clone_name"]): comp["clone_name"] for comp in successful_clones}
         for future in tqdm(futures, desc=f"Pod {pod} → Powering on", unit="vm", leave=False):
             try:
-                if not future.result():
-                    power_on_failures.append(futures[future])
-            except Exception as e:
-                failed_vm_name = futures[future]
-                power_on_failures.append(f"{failed_vm_name} (Exception: {e})")
+                if not future.result(): power_on_failures.append(futures[future])
+            except Exception as e: power_on_failures.append(f"{futures[future]} (Exception: {e})")
 
     if power_on_failures:
-        error_msg = f"Failed to power on VMs: {', '.join(power_on_failures)}"
-        component_errors.append(error_msg)
+        component_errors.append(f"Failed to power on VMs: {', '.join(power_on_failures)}")
         overall_component_success = False
 
     if not overall_component_success:
-        final_error_message = "; ".join(component_errors)
-        return False, "component_build_failure", final_error_message
+        return False, "component_build_failure", "; ".join(component_errors)
         
     logger.info(f"Successfully completed build for PA Pod {pod}.")
     return True, None, None
+
 
 
 def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None) -> Tuple[bool, Optional[str], Optional[str]]:
