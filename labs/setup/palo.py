@@ -109,21 +109,12 @@ def solve_vlan_id(port_groups: list) -> list:
 
 # --- Build Functions ---
 
+
 def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, selected_components=None) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Builds a standard Palo Alto pod (e.g., for PCNSA/PCNSE courses).
     This process involves creating all resources from scratch, cloning all VMs,
     and performing special firewall configuration like UUID updates.
-
-    Args:
-        service_instance: The connected vCenter service instance.
-        pod_config (Dict): The fully resolved configuration for this specific pod.
-        rebuild (bool): If True, deletes existing VMs before building.
-        full (bool): If True, performs a full clone instead of a linked clone.
-        selected_components (Optional[List[str]]): If provided, only builds these components.
-
-    Returns:
-        A tuple (success, failed_step, error_message).
     """
     # STEP 0: Initialize managers and key variables
     vmm = VmManager(service_instance)
@@ -162,24 +153,22 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm", leave=False):
         clone_name = component["clone_name"]
         try:
-            # 3a. Handle Rebuild: Delete the old VM if it exists.
             if rebuild:
                 logger.info(f"Rebuild requested: Deleting existing VM '{clone_name}'.")
                 if not vmm.delete_vm(clone_name):
                     logger.warning(f"Could not delete VM '{clone_name}' during rebuild (it may not exist).")
 
-            # 3b. Clone the VM from its base template.
             base_vm = component["base_vm"]
             if not vmm.get_obj([vim.VirtualMachine], base_vm):
                 raise Exception(f"Base VM template '{base_vm}' not found.")
 
             clone_successful = False
-            if not full: # Default is a linked clone
+            if not full:
                 logger.debug(f"Creating linked clone '{clone_name}' from '{base_vm}'.")
                 if not vmm.snapshot_exists(base_vm, "base") and not vmm.create_snapshot(base_vm, "base", "Base snapshot for linked clones"):
                     raise Exception(f"Failed to create 'base' snapshot on {base_vm}")
                 clone_successful = vmm.create_linked_clone(base_vm, clone_name, "base", group_name, directory_name=target_folder_name)
-            else: # Full clone requested
+            else:
                 logger.debug(f"Creating full clone '{clone_name}' from '{base_vm}'.")
                 clone_successful = vmm.clone_vm(base_vm, clone_name, group_name, directory_name=target_folder_name)
             
@@ -187,31 +176,39 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
                 raise Exception("The clone operation failed.")
             logger.info(f"Successfully cloned '{clone_name}'.")
 
-            # 3c. Configure the network adapters of the new VM.
             vm_network = vmm.get_vm_network(base_vm)
             updated_vm_network = update_network_dict_1110(vm_network, pod)
             if not vmm.update_vm_network(clone_name, updated_vm_network):
                 raise Exception("Failed to update VM network adapters.")
             
-            # 3d. *** CRITICAL: Update UUID for firewall licensing ***
+            # --- START OF THE CORRECTED CODE BLOCK ---
             if "firewall" in component["component_name"]:
                 logger.info(f"Performing VMX UUID update for firewall '{clone_name}'.")
                 
+                # 1. Get the current user's login name.
                 try:
                     current_user = os.getlogin()
                 except OSError:
+                    # Fallback for environments where os.getlogin() might fail.
                     current_user = getpass.getuser()
-                
+
+                # 2. Define the user-specific temporary directory path.
                 user_tmp_dir = os.path.join('/tmp', current_user)
+
+                # 3. Create the directory if it doesn't exist, with secure permissions.
                 try:
+                    # mode=0o700 sets permissions to rwx------ (owner only).
+                    # exist_ok=True prevents an error if the directory already exists.
                     os.makedirs(user_tmp_dir, mode=0o700, exist_ok=True)
                     logger.debug(f"Ensured user temp directory exists: {user_tmp_dir}")
                 except OSError as e:
                     raise Exception(f"Failed to create user temp directory '{user_tmp_dir}': {e}") from e
 
+                # 4. Construct the full path for the VMX file inside the user's directory.
                 vmx_filename = f"{clone_name}.vmx"
                 vmx_path = os.path.join(user_tmp_dir, vmx_filename)
                 
+                # 5. Execute the download -> update -> upload -> verify sequence using the safe path.
                 if not vmm.download_vmx_file(clone_name, vmx_path) or \
                    not vmm.update_vm_uuid(vmx_path, component["uuid"]) or \
                    not vmm.upload_vmx_file(clone_name, vmx_path) or \
@@ -219,8 +216,8 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
                    raise Exception("The VMX UUID update process failed.")
                 
                 logger.info(f"Successfully updated UUID for '{clone_name}'.")
+            # --- END OF THE CORRECTED CODE BLOCK ---
 
-            # 3e. Create a 'base' snapshot on the newly configured clone.
             if not vmm.create_snapshot(clone_name, "base", description=f"Base snapshot of {clone_name}"):
                 raise Exception("Failed to create 'base' snapshot on the new clone.")
             
