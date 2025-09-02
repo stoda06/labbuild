@@ -97,6 +97,11 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     """
     Builds a standard Palo Alto pod (e.g., for PCNSA/PCNSE courses).
     """
+    # --- ADDED DEBUG PRINT ---
+    print("\n\n" + "="*80)
+    print("      DEBUG: EXECUTING LATEST VERSION OF build_1110_pod FUNCTION")
+    print("="*80 + "\n\n")
+
     vmm = VmManager(service_instance)
     nm = NetworkManager(service_instance)
     folder_mgr = FolderManager(service_instance)
@@ -108,20 +113,16 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
 
     logger.info(f"Starting build for PA Pod {pod} on host '{pod_config['host_fqdn']}'.")
 
-    # STEP 1: Set up network infrastructure
+    # ... (Network, RP, and Folder setup logic - unchanged) ...
     for network in tqdm(pod_config['networks'], desc=f"Pod {pod} → Setting up networks", unit="net", leave=False):
         solved_port_groups = solve_vlan_id(network["port_groups"])
         if not nm.create_vswitch_portgroups(pod_config["host_fqdn"], network["switch_name"], solved_port_groups):
             return False, "create_vswitch_portgroups", f"Failed creating port groups on {network['switch_name']}"
-
-    # STEP 2: Create organizational containers
     if not rpm.create_resource_pool(parent_rp_name, group_name, host_fqdn=pod_config["host_fqdn"]):
         return False, "create_resource_pool", f"Failed creating resource pool {group_name}"
-    
     if not folder_mgr.create_folder(pod_config["vendor_shortcode"], target_folder_name):
         return False, "create_folder", f"Failed creating folder '{target_folder_name}'"
 
-    # STEP 3: Process each component (VM)
     components_to_build = pod_config["components"]
     if selected_components:
         components_to_build = [c for c in components_to_build if c["component_name"] in selected_components]
@@ -133,13 +134,12 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
     for component in tqdm(components_to_build, desc=f"Pod {pod} → Cloning/Configuring", unit="vm", leave=False):
         clone_name = component["clone_name"]
         try:
+            # ... (Cloning logic - unchanged) ...
             if rebuild:
                 vmm.delete_vm(clone_name)
-
             base_vm = component["base_vm"]
             if not vmm.get_obj([vim.VirtualMachine], base_vm):
                 raise Exception(f"Base VM template '{base_vm}' not found.")
-
             clone_successful = False
             if not full:
                 if not vmm.snapshot_exists(base_vm, "base") and not vmm.create_snapshot(base_vm, "base", "Base snapshot for linked clones"):
@@ -147,44 +147,45 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
                 clone_successful = vmm.create_linked_clone(base_vm, clone_name, "base", group_name, directory_name=target_folder_name)
             else:
                 clone_successful = vmm.clone_vm(base_vm, clone_name, group_name, directory_name=target_folder_name)
-            
             if not clone_successful:
                 raise Exception("The clone operation failed.")
-            
             vm_network = vmm.get_vm_network(base_vm)
             updated_vm_network = update_network_dict_1110(vm_network, pod)
             if not vmm.update_vm_network(clone_name, updated_vm_network):
                 raise Exception("Failed to update VM network adapters.")
             
-            # --- START OF THE CORRECTED LOGIC ---
+            # --- START OF MODIFIED LOGIC WITH DEBUG PRINTS ---
             if "firewall" in component["component_name"]:
                 logger.info(f"Performing VMX UUID update for firewall '{clone_name}'.")
                 
-                # 1. Get the effective user ID of the current process. getpass is more reliable.
                 try:
                     current_user = getpass.getuser()
                 except Exception as e:
-                    logger.warning(f"Could not determine username via getpass: {e}. Falling back to 'unknown_user'.")
                     current_user = "unknown_user"
                 
                 logger.debug(f"Effective user for temp directory is '{current_user}'.")
 
-                # 2. Define the user-specific temporary directory path under the system /tmp.
                 user_tmp_dir = os.path.join('/tmp', current_user)
+                print(f"DEBUG: User temp directory path constructed as: '{user_tmp_dir}'")
 
-                # 3. Create the directory if it doesn't exist with GROUP permissions.
                 try:
-                    # mode=0o775 sets permissions to rwxrwxr-x (user and group can write).
+                    # Create the directory if it doesn't exist
                     os.makedirs(user_tmp_dir, mode=0o775, exist_ok=True)
-                    logger.debug(f"Ensured user temp directory exists with group permissions: {user_tmp_dir}")
-                except OSError as e:
-                    raise Exception(f"Failed to create user temp directory '{user_tmp_dir}': {e}") from e
+                    
+                    # --- THIS IS THE NEW, CRUCIAL FIX ---
+                    # Explicitly set the permissions every time to ensure they are correct.
+                    # This will fix the issue if the directory was created with wrong permissions before.
+                    os.chmod(user_tmp_dir, 0o775)
+                    logger.debug(f"Ensured user temp directory '{user_tmp_dir}' has 775 permissions.")
+                    # --- END OF NEW FIX ---
 
-                # 4. Construct the full path for the VMX file.
+                except OSError as e:
+                    raise Exception(f"Failed to create or set permissions on user temp directory '{user_tmp_dir}': {e}") from e
+
                 vmx_filename = f"{clone_name}.vmx"
                 vmx_path = os.path.join(user_tmp_dir, vmx_filename)
+                print(f"DEBUG: Final VMX file path for download is: '{vmx_path}'")
                 
-                # 5. Execute the download -> update -> upload -> verify sequence.
                 if not vmm.download_vmx_file(clone_name, vmx_path) or \
                    not vmm.update_vm_uuid(vmx_path, component["uuid"]) or \
                    not vmm.upload_vmx_file(clone_name, vmx_path) or \
@@ -192,7 +193,6 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
                    raise Exception("The VMX UUID update process failed.")
                 
                 logger.info(f"Successfully updated UUID for '{clone_name}'.")
-            # --- END OF THE CORRECTED LOGIC ---
 
             if not vmm.create_snapshot(clone_name, "base", description=f"Base snapshot of {clone_name}"):
                 raise Exception("Failed to create 'base' snapshot on the new clone.")
@@ -206,7 +206,7 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             overall_component_success = False
             continue
 
-    # 4. Power on all successfully created VMs in parallel.
+    # ... (Power-on and return logic - unchanged) ...
     power_on_failures = []
     with ThreadPoolExecutor() as executor:
         futures = {executor.submit(vmm.poweron_vm, comp["clone_name"]): comp["clone_name"] for comp in successful_clones}
@@ -214,17 +214,13 @@ def build_1110_pod(service_instance, pod_config, rebuild=False, full=False, sele
             try:
                 if not future.result(): power_on_failures.append(futures[future])
             except Exception as e: power_on_failures.append(f"{futures[future]} (Exception: {e})")
-
     if power_on_failures:
         component_errors.append(f"Failed to power on VMs: {', '.join(power_on_failures)}")
         overall_component_success = False
-
     if not overall_component_success:
         return False, "component_build_failure", "; ".join(component_errors)
-        
     logger.info(f"Successfully completed build for PA Pod {pod}.")
     return True, None, None
-
 
 
 def build_1100_220_pod(service_instance, host_details, pod_config, rebuild=False, full=False, selected_components=None) -> Tuple[bool, Optional[str], Optional[str]]:
