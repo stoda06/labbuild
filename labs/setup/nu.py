@@ -62,12 +62,14 @@ def update_network_dict(network_dict, pod_number, course_name="", component_name
                 # Requirement: All networks on 'w10' connect to 'nu-vr-X' (except RDP)
                 # We preserve the RDP network to avoid breaking access.
                 if 'rdp' not in details['network_name']:
-                    new_details['network_name'] = f"nuvr-{pod_number}"
+                    new_details['network_name'] = f"nu-vr-{pod_number}"
 
             # Always apply the RDP MAC address logic for any component's RDP NIC
             if 'rdp' in new_details['network_name']:
                 mac_parts = '00:50:56:05:00:00'.split(':')
+                print(f'before: {mac_parts}')
                 mac_parts[-1] = pod_hex
+                print(f'after: {mac_parts}')
                 new_details['mac_address'] = ':'.join(mac_parts)
 
             updated_network_dict[adapter_label] = new_details
