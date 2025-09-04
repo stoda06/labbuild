@@ -15,29 +15,48 @@ def update_network_dict(network_dict, pod_number, course_name="", component_name
     - For all other courses, applies the original default logic.
     """
     pod_hex = format(pod_number, '02x')
+    print(f'pod_hex is {pod_hex}, pod number is {pod_number}')
 
     # --- MODIFICATION: Course-specific logic for nu-aapm-610 ---
     if "aapm-610" in course_name:
         logger.debug(f"Applying 'aapm-610' network rules for component '{component_name}' pod {pod_number}.")
         updated_network_dict = {}
         
-        # Sort adapters by label (e.g., "Network adapter 1", "Network adapter 2") to reliably find the "second" one
+        # Sort adapters by label to ensure a consistent processing order
         sorted_adapters = sorted(network_dict.keys())
 
-        for i, adapter_label in enumerate(sorted_adapters):
+        for adapter_label in sorted_adapters:
             details = network_dict[adapter_label]
             new_details = details.copy() # Start with a copy of original details
 
-            if "aapm" in component_name.lower():
-                # Requirement: All networks on 'aapm' VMs connect to 'vgt-X'
-                new_details['network_name'] = f"vgt-{pod_number}"
-
-            elif "vr" in component_name.lower():
-                # Requirement: The second network adapter connects to 'vgt-X'
-                if i == 1: # i is a zero-based index, so 1 is the second adapter
-                    new_details['network_name'] = f"vgt-{pod_number}"
-                else: # For other adapters (e.g., the first one, third, etc.)
+            # --- REORDERED LOGIC: Check for the most specific component name ('vr') FIRST ---
+            if "vr" in component_name.lower():
+                try:
+                    # Assumes label format like "Network adapter 1", gets the last word ("1") and converts to int.
+                    adapter_number = int(adapter_label.split()[-1])
+                except (ValueError, IndexError):
+                    logger.warning(
+                        f"Could not parse adapter number from '{adapter_label}' for component '{component_name}'. "
+                        "Applying default 'nuvr' network as a fallback."
+                    )
+                    # Apply a safe default for this component if parsing fails
                     new_details['network_name'] = f"nuvr-{pod_number}"
+                else:
+                    # Requirement:
+                    # - Adapter 1: nu-rdp
+                    # - Adapter 2: vgt-X
+                    # - Others:    nuvr-X
+                    if adapter_number == 1:
+                        new_details['network_name'] = "nu-rdp"
+                    elif adapter_number == 2:
+                        new_details['network_name'] = f"vgt-{pod_number}"
+                    else:
+                        new_details['network_name'] = f"nuvr-{pod_number}"
+            
+            elif "aapm" in component_name.lower():
+                # Requirement: All networks on 'aapm' VMs connect to 'vgt-X'
+                # This now correctly runs only for components that are NOT 'vr' but contain 'aapm'.
+                new_details['network_name'] = f"vgt-{pod_number}"
 
             elif "w10" in component_name.lower():
                 # Requirement: All networks on 'w10' connect to 'nu-vr-X' (except RDP)
