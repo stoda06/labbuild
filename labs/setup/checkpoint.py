@@ -113,7 +113,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
     else:
         target_group_name = f'cp-pod{target_pod_number}'
         target_folder_name = f'cp-pod{target_pod_number}-folder'
-    
+
     target_resource_pool_name = target_group_name # CP RPs are often named same as group
 
     # STEP 1: Resource Pool for the TARGET pod
@@ -148,12 +148,12 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
         elif vswitch_result is True: # vSwitch created or already existed
             if not network_mgr.create_vm_port_groups(host_fqdn_target, switch_name, net_config["port_groups"], pod_number=target_pod_number):
                  return False, "create_vm_port_groups_cp", f"Failed creating port groups on '{switch_name}'"
-        
+
         pg_names = [pg["port_group_name"] for pg in net_config["port_groups"]]
         # Apply permissions for the target pod's user to these networks
         if not network_mgr.apply_user_role_to_networks(domain_user, role_name, pg_names):
             return False, "apply_role_networks_cp", f"Failed applying role to networks: {pg_names}"
-        
+
         if net_config.get("promiscuous_mode"):
             # Pass the list of port group names that need promiscuous mode
             promiscuous_pg_names = net_config.get("promiscuous_mode")
@@ -203,7 +203,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
                         raise Exception(f"Failed creating snapshot '{snapshot_for_clone}' on source '{base_vm_for_clone}'")
                 else:
                     logger.warning(f"CloneFrom: Component '{component_original_name}' not in source VM map. Defaulting to template '{base_vm_for_clone}'.")
-            
+
             with _lock_for_locks:
                 # Get or create a lock for this specific base VM template
                 if base_vm_for_clone not in _clone_locks:
@@ -213,7 +213,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
             logger.info(f"Pod {target_pod_number}: Acquiring clone lock for base VM '{base_vm_for_clone}'...")
             with clone_lock:
                 logger.info(f"Pod {target_pod_number}: Clone lock for '{base_vm_for_clone}' acquired.")
-                
+
                 # Perform Cloning (The entire cloning block is now inside the lock)
                 clone_successful = False
                 if not full:
@@ -226,7 +226,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
                 if not clone_successful:
                     # No need to release the lock, the 'with' statement handles it.
                     raise Exception(f"Clone operation failed for '{target_vm_name}'")
-            
+
             logger.info(f"Pod {target_pod_number}: Clone lock for '{base_vm_for_clone}' released.")
 
             # Network Configuration
@@ -234,7 +234,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
             base_vm_network_layout = vm_mgr.get_vm_network(original_template_for_net)
             if base_vm_network_layout is None:
                 raise Exception(f"Could not get network layout from template '{original_template_for_net}'")
-            
+
             target_pod_network_config = update_network_dict(base_vm_network_layout, target_pod_number)
             if not vm_mgr.update_vm_network(target_vm_name, target_pod_network_config) or not vm_mgr.connect_networks_to_vm(target_vm_name, target_pod_network_config):
                 raise Exception(f"Failed to configure network for '{target_vm_name}'")
@@ -244,7 +244,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
                 raise Exception(f"Failed creating 'base' snapshot on '{target_vm_name}'")
 
             # Maestro CD drive logic
-            if "maestro" in component["component_name"].lower() and "maestro-r81" in pod_config["course_name"].lower():
+            if "maestro" in component["component_name"].lower() and "maestro" in pod_config["course_name"].lower():
                 if not vm_mgr.modify_cd_drive(target_vm_name, "CD/DVD drive 1", "Datastore ISO file", "datastore2-ho" if "hotshot" in host_fqdn_target.lower() else "keg2", f"podiso/pod-{target_pod_number}-a.iso", connected=True):
                     raise Exception(f"Failed modifying CD drive for Maestro VM '{target_vm_name}'")
         except Exception as e:
@@ -255,14 +255,14 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
             continue # Continue to the next component
 
     successful_components = [
-        c for c in components_to_process 
+        c for c in components_to_process
         if f"Component '{c.get('component_name', 'Unknown')}' failed" not in "".join(component_errors)
     ]
     vm_names_to_power_on = [
         component["clone_name"].replace("{X}", str(target_pod_number))
         for component in successful_components if component.get("state") != "poweroff"
     ]
-    
+
     power_on_failures = []
     if vm_names_to_power_on:
         with ThreadPoolExecutor(max_workers=thread) as executor:
@@ -281,11 +281,11 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
         logger.error(error_msg)
         component_errors.append(error_msg)
         overall_component_success = False
-    
+
     if not overall_component_success:
         final_error_message = "; ".join(component_errors)
         return False, "component_build_failure", final_error_message
-    
+
     logger.info(f"Successfully built Checkpoint pod {target_pod_number}.")
     return True, None, None
 
@@ -338,7 +338,7 @@ def teardown_pod(service_instance, pod_config):
     for network in pod_config['networks']:
         network_manager.delete_vswitch(pod_config["host_fqdn"], network['switch_name'])
     resource_pool_manager.delete_resource_pool(group_name)
-    
+
 
 def perm_only_cp_pod(service_instance, pod_config):
     """
