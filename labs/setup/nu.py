@@ -15,37 +15,28 @@ def update_network_dict(network_dict, pod_number, course_name="", component_name
     - For all other courses, applies the original default logic.
     """
     pod_hex = format(pod_number, '02x')
-    print(f'pod_hex is {pod_hex}, pod number is {pod_number}')
 
-    # --- MODIFICATION: Course-specific logic for nu-aapm-610 ---
+    # --- Course-specific logic for nu-aapm-610 ---
     if "aapm-610" in course_name:
         logger.debug(f"Applying 'aapm-610' network rules for component '{component_name}' pod {pod_number}.")
         updated_network_dict = {}
         
-        # Sort adapters by label to ensure a consistent processing order
         sorted_adapters = sorted(network_dict.keys())
 
         for adapter_label in sorted_adapters:
             details = network_dict[adapter_label]
-            new_details = details.copy() # Start with a copy of original details
+            new_details = details.copy() 
 
-            # --- REORDERED LOGIC: Check for the most specific component name ('vr') FIRST ---
             if "vr" in component_name.lower():
                 try:
-                    # Assumes label format like "Network adapter 1", gets the last word ("1") and converts to int.
                     adapter_number = int(adapter_label.split()[-1])
                 except (ValueError, IndexError):
                     logger.warning(
                         f"Could not parse adapter number from '{adapter_label}' for component '{component_name}'. "
                         "Applying default 'nuvr' network as a fallback."
                     )
-                    # Apply a safe default for this component if parsing fails
                     new_details['network_name'] = f"nuvr-{pod_number}"
                 else:
-                    # Requirement:
-                    # - Adapter 1: nu-rdp
-                    # - Adapter 2: vgt-X
-                    # - Others:    nuvr-X
                     if adapter_number == 1:
                         new_details['network_name'] = "nu-rdp"
                     elif adapter_number == 2:
@@ -53,23 +44,39 @@ def update_network_dict(network_dict, pod_number, course_name="", component_name
                     else:
                         new_details['network_name'] = f"nuvr-{pod_number}"
             
+            # --- MODIFICATION START ---
             elif "aapm" in component_name.lower():
-                # Requirement: All networks on 'aapm' VMs connect to 'vgt-X'
-                # This now correctly runs only for components that are NOT 'vr' but contain 'aapm'.
+                # Requirement: 
+                # - All networks connect to 'vgt-X'
+                # - Adapters 1 & 2 are DISCONNECTED at power on.
+                # - Adapters 3 & 4 (and others) are CONNECTED at power on.
                 new_details['network_name'] = f"vgt-{pod_number}"
+                
+                try:
+                    # Parse the adapter number from the label (e.g., "Network adapter 1" -> 1)
+                    adapter_number = int(adapter_label.split()[-1])
+                    if adapter_number <= 2:
+                        new_details['connected_at_power_on'] = False
+                        logger.debug(f"For AAPM component '{component_name}', setting {adapter_label} to disconnected.")
+                    else:
+                        new_details['connected_at_power_on'] = True
+                        logger.debug(f"For AAPM component '{component_name}', setting {adapter_label} to connected.")
+                except (ValueError, IndexError):
+                    logger.warning(
+                        f"Could not parse adapter number from '{adapter_label}' for AAPM component. "
+                        "Defaulting to 'connected'."
+                    )
+                    # If we can't parse it, it's safer to leave it connected.
+                    new_details['connected_at_power_on'] = True
+            # --- MODIFICATION END ---
 
             elif "w10" in component_name.lower():
-                # Requirement: All networks on 'w10' connect to 'nu-vr-X' (except RDP)
-                # We preserve the RDP network to avoid breaking access.
                 if 'rdp' not in details['network_name']:
                     new_details['network_name'] = f"nu-vr-{pod_number}"
 
-            # Always apply the RDP MAC address logic for any component's RDP NIC
             if 'rdp' in new_details['network_name']:
                 mac_parts = '00:50:56:05:00:00'.split(':')
-                print(f'before: {mac_parts}')
                 mac_parts[-1] = pod_hex
-                print(f'after: {mac_parts}')
                 new_details['mac_address'] = ':'.join(mac_parts)
 
             updated_network_dict[adapter_label] = new_details
@@ -104,16 +111,13 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
     if not rpm.create_resource_pool(parent_resource_pool, resource_pool):
         return False, "create_resource_pool", f"Failed creating resource pool {resource_pool}"
 
-    # Pre-build network creation for aapm-610 course
     if "aapm-610" in course_name:
         logger.info(f"Course 'aapm-610' detected. Ensuring required networks exist for pod {pod}.")
         
-        # Find a suitable vSwitch with '-nt' in its name
         target_vswitch = nm.find_vswitch_by_name_substring(pod_config["host_fqdn"], "-nt")
         if not target_vswitch:
             return False, "find_vswitch", "Could not find a vSwitch with '-nt' in its name for network creation."
 
-        # Define the port groups that need to exist
         required_port_groups = [
             {"port_group_name": f"nu-vr-{pod}", "vlan_id": 0},
             {"port_group_name": f"vgt-{pod}", "vlan_id": 4095}
@@ -145,7 +149,6 @@ def build_nu_pod(service_instance, pod_config, rebuild=False, full=False, select
             if not vmm.clone_vm(component["base_vm"], component["clone_name"], resource_pool):
                 return False, "clone_vm", f"Failed cloning VM for {component['clone_name']}"
 
-        # Pass course and component names to network update function
         vm_network = vmm.get_vm_network(component["base_vm"])
         updated_vm_network = update_network_dict(
             network_dict=vm_network,
@@ -183,21 +186,7 @@ def teardown_nu_pod(service_instance, pod_config):
 def add_monitor(pod_config, db_client, prtg_server=None):
     """
     Adds or updates a PRTG monitor for a Nutanix pod.
-
-    - If pod_number > 1: Deletes any existing monitors with the same name.
-    - If pod_number <= 1: Pauses any existing monitors with the same name.
-    - Creates a new monitor on a suitable server from the 'ot' vendor group in PRTG config.
-
-    Args:
-        pod_config (dict): Pod configuration containing PRTG details and pod info.
-        db_client (pymongo.MongoClient): Active MongoDB client.
-        prtg_server (str, optional): Specific PRTG server name to target for creation.
-
-    Returns:
-        str or None: The URL of the created PRTG monitor, or None on failure.
     """
-
-    # --- 1. Extract Monitor Details & Calculate IP ---
     try:
         pod_number = int(pod_config.get("pod_number"))
         prtg_details = pod_config.get("prtg", {})
@@ -209,10 +198,8 @@ def add_monitor(pod_config, db_client, prtg_server=None):
             logger.error("Missing required PRTG config (name pattern, container, object) in pod_config.")
             return None
 
-        # Construct the specific monitor name for this pod
         monitor_name = monitor_name_pattern.replace("{X}", str(pod_number))
 
-        # Determine base IP based on host
         host_short = pod_config.get("host_fqdn", "").split(".")[0].lower()
         if host_short in ("hotshot", "trypticon"):
             base_ip = "172.26.5.100"
@@ -233,7 +220,6 @@ def add_monitor(pod_config, db_client, prtg_server=None):
         logger.error(f"Error processing pod_config for PRTG details: {e}", exc_info=True)
         return None
 
-    # --- 2. Get Configured PRTG Servers for 'ot' (Other) ---
     try:
         db = db_client["labbuild_db"]
         prtg_conf = db["prtg"].find_one({"vendor_shortcode": "ot"})
@@ -245,40 +231,29 @@ def add_monitor(pod_config, db_client, prtg_server=None):
         logger.error(f"Failed to retrieve PRTG server configuration from DB: {e}", exc_info=True)
         return None
 
-    # --- 3. Pre-creation Action: Search all 'ot' servers to Pause or Delete existing monitors ---
     action_log = []
     for server in all_ot_servers:
-        server_url = server.get("url")
-        api_token = server.get("apitoken")
-        server_name = server.get("name", server_url)
-        if not server_url or not api_token:
-            continue
+        server_url, api_token, server_name = server.get("url"), server.get("apitoken"), server.get("name", server.get("url"))
+        if not server_url or not api_token: continue
 
         try:
             prtg_mgr = PRTGManager(server_url, api_token)
             existing_id = prtg_mgr.search_device(container_id, monitor_name)
             if existing_id:
                 if pod_number > 1:
-                    # --- If pod number > 1, DELETE the monitor ---
                     logger.warning(f"Found existing monitor '{monitor_name}' (ID: {existing_id}) on {server_name}. Deleting...")
-                    if prtg_mgr.delete_monitor_by_id(existing_id):
-                        action_log.append(f"Deleted from {server_name}")
-                    else:
-                        logger.error(f"Failed to delete monitor ID {existing_id} from {server_name}.")
+                    if prtg_mgr.delete_monitor_by_id(existing_id): action_log.append(f"Deleted from {server_name}")
+                    else: logger.error(f"Failed to delete monitor ID {existing_id} from {server_name}.")
                 else:
-                    # --- If pod number <= 1, PAUSE the monitor ---
                     logger.warning(f"Found existing monitor '{monitor_name}' (ID: {existing_id}) on {server_name}. Pausing...")
-                    if prtg_mgr.pause_device(existing_id):
-                        action_log.append(f"Paused on {server_name}")
-                    else:
-                        logger.error(f"Failed to pause monitor ID {existing_id} from {server_name}.")
+                    if prtg_mgr.pause_device(existing_id): action_log.append(f"Paused on {server_name}")
+                    else: logger.error(f"Failed to pause monitor ID {existing_id} from {server_name}.")
         except Exception as e:
             logger.error(f"Error during pre-creation check on server {server_name}: {e}", exc_info=True)
 
     if action_log:
         logger.info(f"Finished pre-creation actions for '{monitor_name}': {', '.join(action_log)}.")
 
-    # --- 4. Select Target Server for Creation ---
     target_server_info = None
     if prtg_server:
         target_server_info = next((s for s in all_ot_servers if s.get("name") == prtg_server), None)
@@ -286,18 +261,12 @@ def add_monitor(pod_config, db_client, prtg_server=None):
             logger.error(f"Specified target PRTG server '{prtg_server}' not found in 'ot' configuration.")
             return None
     else:
-        # Find first available server based on capacity
         for server in all_ot_servers:
-            # (Server selection logic copied from other add_monitor functions)
-            server_url = server.get("url")
-            api_token = server.get("apitoken")
-            server_name = server.get("name", server_url)
+            server_url, api_token, server_name = server.get("url"), server.get("apitoken"), server.get("name", server.get("url"))
             if not server_url or not api_token: continue
             try:
                 prtg_mgr = PRTGManager(server_url, api_token)
-                current_sensor_count = prtg_mgr.get_up_sensor_count()
-                template_sensor_count = prtg_mgr.get_template_sensor_count(template_id)
-                if (current_sensor_count + template_sensor_count) < 499:
+                if (prtg_mgr.get_up_sensor_count() + prtg_mgr.get_template_sensor_count(template_id)) < 499:
                     target_server_info = server
                     break
             except Exception as e:
@@ -307,11 +276,7 @@ def add_monitor(pod_config, db_client, prtg_server=None):
         logger.error(f"Could not find any suitable target PRTG server for monitor '{monitor_name}'.")
         return None
 
-    # --- 5. Create New Monitor on Target Server ---
-    target_url = target_server_info.get("url")
-    target_token = target_server_info.get("apitoken")
-    target_name = target_server_info.get("name", target_url)
-
+    target_url, target_token, target_name = target_server_info.get("url"), target_server_info.get("apitoken"), target_server_info.get("name", target_server_info.get("url"))
     logger.info(f"Attempting to create monitor '{monitor_name}' on target server: {target_name}")
     try:
         prtg_target_mgr = PRTGManager(target_url, target_token)
@@ -319,19 +284,15 @@ def add_monitor(pod_config, db_client, prtg_server=None):
         if not new_device_id:
             logger.error(f"Failed to clone device '{monitor_name}' on {target_name}.")
             return None
-
         if not prtg_target_mgr.set_device_ip(new_device_id, new_ip):
             logger.error(f"Failed to set IP '{new_ip}' for device ID {new_device_id} on {target_name}.")
             return None
-
         if not prtg_target_mgr.enable_device(new_device_id):
             logger.error(f"Failed to enable monitor ID {new_device_id} on {target_name}.")
             return None
-
         monitor_url = f"{target_url}/device.htm?id={new_device_id}"
         logger.info(f"Successfully created and enabled PRTG monitor: {monitor_url}")
         return monitor_url
-
     except Exception as e:
         logger.error(f"Error during monitor creation on target server {target_name}: {e}", exc_info=True)
         return None
