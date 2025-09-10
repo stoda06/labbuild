@@ -6,7 +6,23 @@ from monitor.prtg import PRTGManager
 from typing import Dict, Any, Optional, List # Added List
 
 import logging
+import subprocess 
+from datetime import datetime, timedelta, timezone # <--- THE FIX IS HERE
+from zoneinfo import ZoneInfo     
 logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
+
+# Helper class for ANSI terminal color codes
+class LogColors:
+    """A helper class to provide ANSI color codes for terminal output."""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m' # Yellow
+    FAIL = '\033[91m'    # Red
+    ENDC = '\033[0m'     # Reset to default color
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
 def update_network_dict(vm_name, network_dict, class_number, pod_number):
     def replace_mac_octet(mac_address, pod_num):
@@ -244,6 +260,65 @@ def build_pod(service_instance, pod_config, mem=None, rebuild=False, full=False,
         component_errors.append(error_msg)
         overall_component_success = False
 
+    # =================== FINAL VERSION WITH MULTIPLE TIMEZONES ===================
+    pod_number_for_cmd = pod_config.get("pod_number")
+    if pod_number_for_cmd is not None:
+        # Use a high-visibility color to ensure the log is seen
+        logger.warning(
+            f"{LogColors.HEADER}Preparing to schedule background 'pushlic' command for pod {pod_number_for_cmd}.{LogColors.ENDC}"
+        )
+        
+        try:
+            # 1. Get the current time in UTC and calculate the future time.
+            #    UTC is the universal standard and the best starting point.
+            future_time_utc = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+            # 2. Convert the future UTC time to the server's local timezone.
+            future_time_local = future_time_utc.astimezone()
+            local_time_str = future_time_local.strftime("%H:%M:%S %Z")
+
+            # 3. Convert the future UTC time to Indian Standard Time (IST).
+            ist_zone = ZoneInfo("Asia/Kolkata")
+            future_time_ist = future_time_utc.astimezone(ist_zone)
+            ist_time_str = future_time_ist.strftime("%H:%M:%S %Z")
+
+            # 4. Log both calculated times for clarity.
+            logger.warning(
+                f"{LogColors.OKBLUE}The 'pushlic' command will run in 5 mins. Server Time: {local_time_str}{LogColors.ENDC}"
+            )
+            logger.warning(
+                f"{LogColors.OKBLUE}Equivalent time in India: {ist_time_str}{LogColors.ENDC}"
+            )
+
+            command_to_run = (
+                f"(sleep 300 && /usr/local/bin/pushlic {pod_number_for_cmd} {pod_number_for_cmd}) "
+                f"> /dev/null 2>&1 &"
+            )
+            
+            # The DEBUG log that prints the exact command being run
+            logger.debug(
+                f"{LogColors.OKCYAN}{LogColors.BOLD}Exact shell command being executed: {command_to_run}{LogColors.ENDC}"
+            )
+
+            subprocess.Popen(command_to_run, shell=True)
+
+            # Final confirmation message
+            logger.warning(
+                f"{LogColors.HEADER}Successfully launched background 'pushlic' command. All its output will be discarded.{LogColors.ENDC}"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"{LogColors.FAIL}Failed to launch the background 'pushlic' command for pod {pod_number_for_cmd}. Error: {e}{LogColors.ENDC}",
+                exc_info=True
+            )
+    # =================== END OF UPDATED BLOCK =====================
+    if not overall_component_success:
+        final_error_message = "; ".join(component_errors)
+        return False, "component_build_failure", final_error_message
+
+    return True, None, None
+    
     if not overall_component_success:
         final_error_message = "; ".join(component_errors)
         return False, "component_build_failure", final_error_message
