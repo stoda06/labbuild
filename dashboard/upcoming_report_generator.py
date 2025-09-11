@@ -391,7 +391,7 @@ def extract_apm_command(apm_cmds):
 # In labbuild/dashboard/upcoming_report_generator.py
 # Final version - fixes grouping for consolidated trainer pods.
 
-def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_map, host_vcenter_map):
+def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_map, host_vcenter_map, maestro_configs: Dict[str, Any]):
     logger.info("Starting unpack_interim_allocations process...")
 
     # Data Normalization Step (handles flat vs. nested structure)
@@ -422,8 +422,62 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
 
     processed_trainer_pods = []
     for doc in trainer_docs_raw:
-        ram = doc.get('memory_gb_one_pod')
         course_version = doc.get('final_labbuild_course') or doc.get('labbuild_course')
+        
+        # --- START: New Maestro Unpacking Logic for Trainer Pods ---
+        if course_version and course_version.startswith("maestro-"):
+            # (Maestro logic is unchanged, it correctly hardcodes students to 1 per pod)
+            logger.debug(f"Found Maestro trainer allocation: {course_version}. Applying unpacking logic.")
+            assignments = doc.get('assignments', [])
+            for a in assignments:
+                host, start, end = a.get('host'), a.get('start_pod'), a.get('end_pod', a.get('start_pod'))
+                if not all([host, start is not None, end is not None]): continue
+
+                vcenter_short = host_vcenter_map.get(host.lower(), '')
+                for pod_num in range(int(start), int(end) + 1):
+                    target_course_name = None
+                    if vcenter_short in ['vcenter-appliance-1', 'vcenter-appliance-2']:
+                        target_course_name = 'maestro-r81'
+                    elif vcenter_short == 'vcenter-appliance-3':
+                        target_course_name = 'maestro-rack1' if pod_num % 2 != 0 else 'maestro-rack2'
+                    
+                    if not target_course_name or target_course_name not in maestro_configs:
+                        logger.warning(f"Could not map pod {pod_num} on vCenter '{vcenter_short}' to a Maestro course.")
+                        continue
+                        
+                    config = maestro_configs[target_course_name]
+                    username = doc.get('student_apm_username') or doc.get('apm_username') or doc.get('username')
+                    password = doc.get('student_apm_password') or doc.get('apm_password') or doc.get('password')
+                    related_courses = doc.get('related_student_courses', [])
+                    grouping_code = related_courses[0] if related_courses else doc.get('sf_course_code', '')
+
+                    expanded_row = {
+                        'course_code': grouping_code,
+                        'location': config.get('location'),
+                        'us_au_location': 'AU' if 'r81' in target_course_name else 'US',
+                        'course_start_date': format_date(doc.get('sf_start_date') or doc.get('start_date')),
+                        'last_day': format_date(doc.get('sf_end_date') or doc.get('end_date')),
+                        'trainer_name': doc.get('sf_trainer_name') or doc.get('trainer_name') or "Trainer",
+                        'course_name': target_course_name,
+                        'start_end_pod': f"{pod_num} -> {pod_num}",
+                        'username': username,
+                        'password': password,
+                        'class_number': doc.get('f5_class_number'),
+                        'students': 1,
+                        'vendor_pods': 1,
+                        'ram': config.get('memory') or ram_lookup_map.get(target_course_name),
+                        'virtual_hosts': host,
+                        'vcenter': vcenter_short,
+                        'pod_type': 'trainer',
+                        'version': target_course_name,
+                        'course_version': target_course_name,
+                        'apm_command_value': config.get('apm_command') or target_course_name,
+                    }
+                    processed_trainer_pods.append(expanded_row)
+            continue
+        # --- END: New Maestro Unpacking Logic for Trainer Pods ---
+
+        ram = doc.get('memory_gb_one_pod')
         if not ram and course_version in ram_lookup_map:
             ram = ram_lookup_map.get(course_version)
 
@@ -443,11 +497,7 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
             if start is not None:
                 pod_ranges.append(str(start) if end is None or start == end else f"{start}-{end}")
                 pod_count += (int(end) - int(start) + 1)
-
-        # ======================================================================
-        # MODIFIED LOGIC: Intelligently determine the grouping code.
-        # This is the key fix.
-        # ======================================================================
+        
         related_courses = doc.get('related_student_courses', [])
         sf_code = doc.get('sf_course_code', '')
         grouping_code = ''
@@ -455,18 +505,21 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
         if related_courses:
             grouping_code = related_courses[0]
         elif sf_code.lower().startswith("consolidated for:"):
-            # If it's a consolidated code, parse it to get a real course code for grouping.
-            # E.g., "Consolidated for: PA330VEU250820, ..." -> "PA330VEU250820"
-            code_part = sf_code[17:].strip() # Get everything after "Consolidated for:"
+            code_part = sf_code[17:].strip()
             first_code = code_part.split(',')[0].strip()
             grouping_code = first_code
         else:
-            # Fallback to the original code if it's not a consolidated string.
             grouping_code = sf_code
-        # ======================================================================
+
+        # <<< FIX #1: Robust student count for Trainer Pods >>>
+        # First, try to get student count from related courses.
+        student_count = len(related_courses)
+        # If that is zero, fall back to counting the number of allocated pods.
+        if not student_count or student_count == 0:
+            student_count = pod_count
 
         trainer_pod_entry = {
-            'course_code': grouping_code,  # Use the newly determined grouping_code
+            'course_code': grouping_code,
             'location': "",
             'us_au_location': determine_us_au_location(host_str),
             'course_start_date': format_date(doc.get('sf_start_date') or doc.get('start_date')),
@@ -477,7 +530,7 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
             'username': username,
             'password': password,
             'class_number': doc.get('f5_class_number'),
-            'students': len(related_courses),
+            'students': student_count, # Use the new robust student_count
             'vendor_pods': doc.get('effective_pods_req') or pod_count or 0,
             'ram': ram,
             'virtual_hosts': host_str,
@@ -488,8 +541,6 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
             'apm_command_value': extract_apm_command(doc.get('apm_commands', [])) or course_version,
         }
         processed_trainer_pods.append(trainer_pod_entry)
-
-    # ... (The rest of the function remains the same) ...
 
     grouped_courses = defaultdict(lambda: {'docs': [], 'assignments': []})
     for doc in standard_docs_raw:
@@ -506,12 +557,62 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
     for code, data in grouped_courses.items():
         base_doc = data['docs'][0]
         all_docs = data['docs']
+        course_version = base_doc.get('final_labbuild_course') or base_doc.get('labbuild_course')
+        
+        # --- START: New Maestro Unpacking Logic for Standard Pods ---
+        if course_version and course_version.startswith("maestro-"):
+            # (Maestro logic is unchanged)
+            logger.debug(f"Found standard Maestro allocation: {course_version}. Applying unpacking logic.")
+            final_username = _find_value_across_docs(all_docs, ['student_apm_username', 'apm_username', 'username'])
+            final_password = _find_value_across_docs(all_docs, ['student_apm_password', 'apm_password', 'password'])
 
+            for a in data['assignments']:
+                host, start, end = a.get('host'), a.get('start_pod'), a.get('end_pod', a.get('start_pod'))
+                if not all([host, start is not None, end is not None]): continue
+
+                vcenter_short = host_vcenter_map.get(host.lower(), '')
+                for pod_num in range(int(start), int(end) + 1):
+                    target_course_name = None
+                    if vcenter_short in ['vcenter-appliance-1', 'vcenter-appliance-2']:
+                        target_course_name = 'maestro-r81'
+                    elif vcenter_short == 'vcenter-appliance-3':
+                        target_course_name = 'maestro-rack1' if pod_num % 2 != 0 else 'maestro-rack2'
+                    
+                    if not target_course_name or target_course_name not in maestro_configs:
+                        logger.warning(f"Could not map pod {pod_num} on vCenter '{vcenter_short}' to a Maestro course.")
+                        continue
+                        
+                    config = maestro_configs[target_course_name]
+                    expanded_row = {
+                        'course_code': code,
+                        'location': config.get('location'),
+                        'us_au_location': 'AU' if 'r81' in target_course_name else 'US',
+                        'course_start_date': format_date(base_doc.get('sf_start_date') or base_doc.get('start_date')),
+                        'last_day': format_date(base_doc.get('sf_end_date') or base_doc.get('end_date')),
+                        'trainer_name': base_doc.get('sf_trainer_name') or base_doc.get('trainer_name'),
+                        'course_name': target_course_name,
+                        'start_end_pod': f"{pod_num} -> {pod_num}",
+                        'username': final_username,
+                        'password': final_password,
+                        'class_number': base_doc.get('f5_class_number'),
+                        'students': 1,
+                        'vendor_pods': 1,
+                        'ram': config.get('memory') or ram_lookup_map.get(target_course_name),
+                        'virtual_hosts': host,
+                        'vcenter': vcenter_short,
+                        'pod_type': 'default',
+                        'version': target_course_name,
+                        'course_version': target_course_name,
+                        'apm_command_value': config.get('apm_command') or target_course_name,
+                    }
+                    processed_standard_courses.append(expanded_row)
+            continue
+        # --- END: New Maestro Unpacking Logic for Standard Pods ---
+        
         final_username = _find_value_across_docs(all_docs, ['student_apm_username', 'apm_username', 'username'])
         final_password = _find_value_across_docs(all_docs, ['student_apm_password', 'apm_password', 'password'])
         final_ram = _find_value_across_docs(all_docs, ['memory_gb_one_pod', 'ram'])
         
-        course_version = base_doc.get('final_labbuild_course') or base_doc.get('labbuild_course')
         if not final_ram and course_version in ram_lookup_map:
             final_ram = ram_lookup_map.get(course_version)
 
@@ -532,6 +633,13 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
         
         us_au_loc = determine_us_au_location(final_host_str)
 
+        # <<< FIX #2: Robust student count for Standard Courses >>>
+        # First, try to get student count from the explicit 'sf_pax_count' field.
+        student_count = base_doc.get('sf_pax_count', 0)
+        # If that is zero, fall back to counting the number of allocated pods.
+        if not student_count or student_count == 0:
+            student_count = pod_count
+
         course = {
             'course_code': code,
             'location': find_location_from_code(code, location_map),
@@ -544,7 +652,7 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
             'username': final_username,
             'password': final_password,
             'class_number': base_doc.get('f5_class_number'),
-            'students': base_doc.get('sf_pax_count', 0),
+            'students': student_count, # Use the new robust student_count
             'vendor_pods': base_doc.get('effective_pods_req') or pod_count or 0,
             'ram': final_ram,
             'virtual_hosts': final_host_str,
@@ -561,7 +669,7 @@ def unpack_interim_allocations(documents, vendor_map, location_map, ram_lookup_m
 
 
 
-def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_lookup_map: Dict, host_vcenter_map: Dict) -> List[Dict]:
+def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_lookup_map: Dict, host_vcenter_map: Dict, maestro_configs: Dict[str, Any]) -> List[Dict]:
     extended_courses = []
     logger.info(f"Unpacking {len(documents)} extended allocations from currentallocation.")
     for doc in documents:
@@ -569,6 +677,57 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
         if not course_details:
             logger.warning(f"Skipping extended allocation doc with _id {doc.get('_id')} due to missing 'courses' data.")
             continue
+        
+        course_version = course_details.get('course_name')
+        
+        # --- START: New Maestro Unpacking Logic ---
+        if course_version and course_version.startswith("maestro-"):
+            logger.debug(f"Found Maestro allocation: {course_version}. Applying unpacking logic.")
+            pod_details_list = doc.get('pod_details') or course_details.get('pod_details', [])
+            
+            for pod_detail in pod_details_list:
+                pod_num, host = pod_detail.get('pod_number'), pod_detail.get('host')
+                if pod_num is None or not host: continue
+
+                vcenter_short = host_vcenter_map.get(host.lower(), '')
+                
+                target_course_name = None
+                if vcenter_short in ['vcenter-appliance-1', 'vcenter-appliance-2']:
+                    target_course_name = 'maestro-r81'
+                elif vcenter_short == 'vcenter-appliance-3':
+                    target_course_name = 'maestro-rack1' if pod_num % 2 != 0 else 'maestro-rack2'
+                
+                if not target_course_name or target_course_name not in maestro_configs:
+                    logger.warning(f"Could not map pod {pod_num} on vCenter '{vcenter_short}' to a Maestro course.")
+                    continue
+
+                config = maestro_configs[target_course_name]
+                expanded_row = {
+                    'course_code': doc.get('tag', ''),
+                    'location': config.get('location'),
+                    'us_au_location': 'AU' if 'r81' in target_course_name else 'US',
+                    'course_start_date': format_date(course_details.get('start_date')),
+                    'last_day': format_date(course_details.get('end_date')),
+                    'trainer_name': course_details.get('trainer_name'),
+                    'course_name': target_course_name,
+                    'start_end_pod': f"{pod_num} -> {pod_num}",
+                    'username': course_details.get('apm_username'),
+                    'password': course_details.get('apm_password'),
+                    'class_number': None,
+                    'students': 1,
+                    'vendor_pods': 1,
+                    'ram': config.get('memory') or ram_lookup_map.get(target_course_name),
+                    'virtual_hosts': host,
+                    'vcenter': vcenter_short,
+                    'pod_type': 'extended',
+                    'version': target_course_name,
+                    'course_version': target_course_name,
+                    'apm_command_value': config.get('apm_command') or target_course_name,
+                }
+                extended_courses.append(expanded_row)
+            continue
+        # --- END: New Maestro Unpacking Logic ---
+            
         pod_details_list = doc.get('pod_details') or course_details.get('pod_details', [])
         pod_numbers = sorted([p.get('pod_number') for p in pod_details_list if p.get('pod_number') is not None])
         hosts = sorted(list(set(p.get('host') for p in pod_details_list if p.get('host'))))
@@ -578,7 +737,6 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
         if pod_numbers:
             start_end_pod = f"{pod_numbers[0]}-{pod_numbers[-1]}" if len(pod_numbers) > 1 else str(pod_numbers[0])
             
-        course_version = course_details.get('course_name')
         ram_value = course_details.get('memory_gb_one_pod') or course_details.get('ram')
         if not ram_value:
             if course_version in ram_lookup_map:
@@ -604,7 +762,6 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
             'pod_type': 'extended',
             'version': course_version,
             'course_version': course_version,
-            # ✅ MODIFIED: Fallback to course version if APM command is not found
             'apm_command_value': extract_apm_command(doc.get('apm_commands', [])) or course_version,
         }
         extended_courses.append(course)
@@ -617,6 +774,9 @@ def unpack_extended_allocations(documents: List[Dict], location_map: Dict, ram_l
 # labbuild/dashboard/upcoming_report_generator.py
 
 # labbuild/dashboard/upcoming_report_generator.py
+
+# In labbuild/dashboard/upcoming_report_generator.py
+# Replace your existing function with this corrected version.
 
 def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[Dict], extended_pods: List[Dict], host_map: Dict) -> io.BytesIO:
     wb = Workbook()
@@ -718,6 +878,17 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
         for host_key, ram in group_host_ram_totals.items():
             total_ram_by_host[host_key] += ram
 
+        # ======================================================================
+        # <<< THE FIX IS ON THIS LINE >>>
+        # ======================================================================
+        # Check if the group is F5 Networks or AV Courses.
+        if group_name in ["F5 Networks", "AV Courses"]: # <-- FIX: Changed "Avaya" to "AV Courses"
+            has_trainer_pods = any(record.get("pod_type") == "trainer" for record in records)
+            if not has_trainer_pods:
+                logger.debug(f"Adding a blank line for group '{group_name}' as it has no trainer pods.")
+                current_row += 1
+        # ======================================================================
+
         pod_total_formula = 0
         if (students_col_num := header_pos.get("Students")) and data_start_row <= data_end_row:
             students_col_letter = get_column_letter(students_col_num)
@@ -739,15 +910,13 @@ def generate_excel_in_memory(course_allocations: List[Dict], trainer_pods: List[
     write_overview_summary(sheet, trainer_pods, course_allocations, extended_pods)
     write_summary_section(sheet, 2, total_ram_by_host)
 
-    # ✅ MODIFIED: Patch "Allocated RAM (GB)" row in RAM Summary section with new universal formula
-    allocated_ram_row = 4  # Adjust if your summary section starts elsewhere
-    courses_data_start_row = 15  # Adjust if your first courses section starts at another row
+    allocated_ram_row = 4
+    courses_data_start_row = 15
 
     for i, env_key in enumerate(SUMMARY_ENV_ORDER):
         col_idx = RAM_SUMMARY_START_COL + 2 + i
         col_letter = get_column_letter(col_idx)
         
-        # Apply the new formula universally to all columns in the summary
         formula = f"=SUM({col_letter}{courses_data_start_row}:{col_letter}1002)/2"
         
         cell = sheet.cell(row=allocated_ram_row, column=col_idx)
@@ -775,7 +944,6 @@ def get_upcoming_report_data(db):
         extended_docs = list(db[ALLOCATION_COLLECTION].find({"extend": "true"}))
         logger.info(f"Found {len(extended_docs)} allocations marked for extension.")
 
-        # ✅ FIXED: Fetch future-dated, non-extended courses from the main allocation collection to capture all upcoming labs.
         today_str = datetime.now().strftime('%Y-%m-%d')
         logger.info(f"Fetching upcoming labs from ALLOCATION_COLLECTION starting from {today_str}...")
         upcoming_query = {
@@ -790,6 +958,13 @@ def get_upcoming_report_data(db):
         course_configs = list(db[COURSE_CONFIG_COLLECTION].find({}, {"course_name": 1, "memory": 1}))
         ram_lookup_map = {doc['course_name']: doc['memory'] for doc in course_configs if 'course_name' in doc and 'memory' in doc}
         logger.info(f"Built RAM lookup map with {len(ram_lookup_map)} entries.")
+
+        # --- START: Fetch Maestro Course Configs ---
+        maestro_course_names = ["maestro-r81", "maestro-rack1", "maestro-rack2"]
+        maestro_configs_list = list(db[COURSE_CONFIG_COLLECTION].find({"course_name": {"$in": maestro_course_names}}))
+        maestro_configs = {doc['course_name']: doc for doc in maestro_configs_list}
+        logger.info(f"Fetched {len(maestro_configs)} Maestro configurations for special unpacking logic.")
+        # --- END: Fetch Maestro Course Configs ---
 
         locations_data = list(db["locations"].find({}))
         location_map = {loc['code']: loc['name'] for loc in locations_data if 'code' in loc and 'name' in loc}
@@ -817,22 +992,18 @@ def get_upcoming_report_data(db):
 
         # --- Data Unpacking & Merging ---
 
-        # Unpack from interim collection first (these are often high-priority or currently staging)
         course_allocs, trainer_pods = unpack_interim_allocations(
-            interim_docs, vendor_map, location_map, ram_lookup_map, host_vcenter_map
+            interim_docs, vendor_map, location_map, ram_lookup_map, host_vcenter_map, maestro_configs
         )
 
-        # Unpack the newly fetched upcoming courses from the main allocation collection
         upcoming_allocs = unpack_extended_allocations(
-            upcoming_docs_from_alloc, location_map, ram_lookup_map, host_vcenter_map
+            upcoming_docs_from_alloc, location_map, ram_lookup_map, host_vcenter_map, maestro_configs
         )
 
-        # Unpack extended courses as before
         extended_pods = unpack_extended_allocations(
-            extended_docs, location_map, ram_lookup_map, host_vcenter_map
+            extended_docs, location_map, ram_lookup_map, host_vcenter_map, maestro_configs
         )
 
-        # ✅ FIXED: Merge and de-duplicate, giving interim-sourced data priority to prevent double-counting.
         interim_course_codes = {c['course_code'] for c in course_allocs}
         unique_upcoming_allocs = [
             alloc for alloc in upcoming_allocs
