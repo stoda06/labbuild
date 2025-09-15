@@ -5,6 +5,7 @@ import os
 import requests
 import re
 import hashlib
+import math
 import random
 import string
 from typing import List, Dict, Any, Optional, Union, Set
@@ -449,13 +450,37 @@ class DefaultVendorPlanner(BaseVendorPlanner):
             for rule in rules: actions.update(rule.get("actions", {}))
             host_priority = actions.get("host_priority", self.context.all_hosts)
             
-        # Parse the 'Pods Req.' string robustly to get the number
+        # Parse the 'Pods Req.' string robustly to get the base number
+        # Treat this field as the number of STUDENTS
         pods_req_raw = sf_course.get('Pods Req.', '1')
         pods_req_match = re.match(r"^\s*(\d+)", str(pods_req_raw))
-        pods_req = int(pods_req_match.group(1)) if pods_req_match else 1
-        
+        parsed = int(pods_req_match.group(1)) if pods_req_match else 1
+        # Keep both aliases so legacy code paths continue to work.
+        base_pods = parsed      # used by non-AV vendors
+        students  = parsed      # used by AV student→pod math
+
+        # Avaya-specific rule: 2 students per pod + 1 trainer spare.
+        if self.vendor_code == 'av':
+                pods_req = math.ceil(max(1, students) / 2) + 1
+        else:
+             pods_req = base_pods
+    
+        if self.vendor_code == 'av':
+            # If pods_req <= 2, force trypticon
+            if pods_req <= 2:
+                host_priority = ['trypticon']
+            else:
+                host_priority = ['hotshot', 'trypticon'] + [h for h in self.context.all_hosts if h not in ('hotshot','trypticon')]
+        # Apply optional UI cap AFTER transformation
         if sf_course.get('preselect_max_pods_applied_constraint') is not None:
-             pods_req = min(pods_req, int(sf_course['preselect_max_pods_applied_constraint']))
+            try:
+                cap = int(sf_course['preselect_max_pods_applied_constraint'])
+                pods_req = min(pods_req, cap)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid preselect_max_pods_applied_constraint for SF course '%s': %r",
+                    sf_code, sf_course.get('preselect_max_pods_applied_constraint')
+                )
 
         return {
             "labbuild_course": labbuild_course,
