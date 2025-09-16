@@ -72,7 +72,8 @@ def run_cluster_status(child, label, ip, pod, print_lock):
         
         down_services = []
         for line in output.splitlines():
-            if line.strip().endswith("DOWN") or "DOWN\t" in line or "DOWN [" in line:
+            text = line.strip().upper()
+            if text.strip().endswith("DOWN") or "DOWN\t" in line or "DOWN [" in line:
                 component = re.split(r'\s{2,}|\t+', line.strip())[0].strip()
                 results.append({'pod': pod, 'component': f"{label}-{component}", 'ip': ip, 'port': 'N/A', 'status': 'DOWN'})
         
