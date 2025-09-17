@@ -232,27 +232,30 @@ def toggle_power():
     query_params = {k: v for k, v in request.form.items() if k.startswith('filter_')}
     return redirect(url_for('main.view_allocations', **query_params)) # Redirect to main blueprint
 
-
 @bp.route('/teardown-item', methods=['POST'])
 def teardown_item():
     """
     Handles teardown/delete actions.
     MODIFIED: Returns JSON for AJAX calls and redirects for non-AJAX.
+    - F5 teardown from the dashboard is always pod-specific to prevent accidental class deletion.
     """
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     
     try:
         tag = request.form.get('tag'); host = request.form.get('host'); vendor = request.form.get('vendor'); course = request.form.get('course')
         pod_num_str = request.form.get('pod_number'); class_num_str = request.form.get('class_number'); delete_level = request.form.get('delete_level')
-        if not delete_level or not tag:
-            msg = "Missing delete level or tag."
+        
+        if not all([delete_level, tag, vendor, course, host]):
+            msg = "Missing required data for teardown (tag, vendor, course, host, level)."
             if is_ajax: return jsonify({"success": False, "message": msg}), 400
             flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
             
-        pod_num = int(pod_num_str) if pod_num_str else None; class_num = int(class_num_str) if class_num_str else None
+        pod_num = int(pod_num_str) if pod_num_str else None
+        class_num = int(class_num_str) if class_num_str else None
 
-        # --- Handle DB-Only Deletion ---
+        # --- Handle DB-Only Deletion (This logic remains the same) ---
         if delete_level.endswith('_db'):
+            # ... (this block is unchanged and correct)
             logger.info(f"AJAX DB delete request: Level='{delete_level}', Tag='{tag}'")
             success, item_desc = False, "Unknown"
             try:
@@ -272,27 +275,84 @@ def teardown_item():
                 flash(message, 'danger'); logger.error(f"DB delete error: {e_db}", exc_info=True)
                 return jsonify({"success": False, "message": message}), 500
         
-        # --- Handle Full Infrastructure Teardown ---
+        # --- Handle Full Infrastructure Teardown (This logic is now heavily modified) ---
         elif delete_level in ['class', 'pod']:
-            if not all([vendor, course, host]):
-                msg = "Vendor, Course, Host required for infrastructure teardown."
-                if is_ajax: return jsonify({"success": False, "message": msg}), 400
-                flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
-
             args_list, item_desc = [], ""
-            if delete_level == 'class' and vendor.lower() == 'f5' and class_num is not None: args_list = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-cn', str(class_num)]; item_desc = f"F5 Class {class_num}"
-            elif delete_level == 'pod' and pod_num is not None:
-                args_list = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
-                item_desc = f"Pod {pod_num}"
-                if vendor.lower() == 'f5' and class_num is not None: args_list.extend(['-cn', str(class_num)]); item_desc += f" (Class {class_num})"
+            
+            # highlight-start
+            if vendor.lower() == 'f5':
+                # --- THIS IS THE NEW, UNIFIED LOGIC FOR ALL F5 TEARDOWNS FROM THE DASHBOARD ---
+                if class_num is None:
+                    msg = "F5 teardown from the dashboard requires a class number."
+                    if is_ajax: return jsonify({"success": False, "message": msg}), 400
+                    flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
+
+                start_pod, end_pod = None, None
+
+                if delete_level == 'class':
+                    # ACTION: Teardown all pods within this class.
+                    pod_numbers = []
+                    try:
+                        # Find all pods for this class in the DB to construct the range.
+                        alloc_doc = alloc_collection.find_one({"tag": tag, "courses.course_name": course})
+                        if alloc_doc:
+                            course_doc = next((c for c in alloc_doc.get("courses", []) if c.get("course_name") == course), None)
+                            if course_doc:
+                                class_detail = next((pd for pd in course_doc.get("pod_details", []) if pd.get("class_number") == class_num), None)
+                                if class_detail and 'pods' in class_detail:
+                                    pod_numbers = [p['pod_number'] for p in class_detail.get('pods', []) if 'pod_number' in p]
+                    except Exception as e:
+                        logger.error(f"DB error fetching pod range for F5 class {class_num}: {e}", exc_info=True)
+                        if is_ajax: return jsonify({"success": False, "message": "DB error fetching pod range."}), 500
+                        flash("DB error fetching pod range.", "danger"); return redirect(url_for('main.view_allocations'))
+
+                    if not pod_numbers:
+                        msg = f"No pods found in the database for F5 Class {class_num}. Nothing to tear down."
+                        if is_ajax: return jsonify({"success": True, "message": msg}), 200 # Success, nothing to do
+                        flash(msg, "info"); return redirect(url_for('main.view_allocations'))
+
+                    start_pod = min(pod_numbers)
+                    end_pod = max(pod_numbers)
+                    item_desc = f"All Pods ({start_pod}-{end_pod}) in F5 Class {class_num}"
+
+                elif delete_level == 'pod':
+                    # ACTION: Teardown a single, specific pod.
+                    if pod_num is None:
+                        msg = "Pod number is required for a pod-level teardown."
+                        if is_ajax: return jsonify({"success": False, "message": msg}), 400
+                        flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
+                    
+                    start_pod = pod_num
+                    end_pod = pod_num
+                    item_desc = f"Pod {pod_num} in F5 Class {class_num}"
+
+                # Construct the final command. It will ALWAYS have -s and -e for F5.
+                args_list = [
+                    'teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag,
+                    '-cn', str(class_num),
+                    '-s', str(start_pod),
+                    '-e', str(end_pod)
+                ]
+            
+            else: # --- Logic for non-F5 vendors remains the same ---
+                if delete_level == 'pod' and pod_num is not None:
+                    args_list = ['teardown', '-v', vendor, '-g', course, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
+                    item_desc = f"Pod {pod_num}"
+                else:
+                    # Non-F5 'class' level teardown is not a concept from the UI
+                    msg = f"Invalid teardown request for non-F5 vendor (level: {delete_level})."
+                    if is_ajax: return jsonify({"success": False, "message": msg}), 400
+                    flash(msg, "warning"); return redirect(url_for('main.view_allocations'))
+            # highlight-end
             
             if args_list:
+                logger.info(f"Dispatching background teardown task with command: {' '.join(args_list)}")
                 thread = threading.Thread(target=run_labbuild_task, args=(args_list,), daemon=True); thread.start()
-                message = f"Submitted infrastructure teardown for {item_desc}. The item will be removed from the list upon completion."
+                message = f"Submitted infrastructure teardown for {item_desc}. The item(s) will be removed from the list upon completion."
                 flash(message, 'info')
                 return jsonify({"success": True, "message": message, "action": "remove"})
             else:
-                msg = "Failed to build teardown command."
+                msg = "Failed to build teardown command (no valid action determined)."
                 if is_ajax: return jsonify({"success": False, "message": msg}), 400
                 flash(msg, "danger")
         else:
@@ -316,6 +376,7 @@ def teardown_tag():
     """
     Handles teardown of an entire tag.
     MODIFIED: Now returns a JSON response for AJAX calls.
+    - For F5 courses, this now generates pod-specific teardown commands to avoid deleting class infrastructure.
     """
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     tag = request.form.get('tag')
@@ -325,7 +386,7 @@ def teardown_tag():
         if is_ajax: return jsonify({"success": False, "message": msg}), 400
         flash(msg, "danger"); return redirect(url_for('main.view_allocations'))
     
-    logger.info(f"Initiating FULL teardown for Tag: '{tag}'")
+    logger.info(f"Initiating SAFE pod-only teardown for Tag: '{tag}'")
     tasks_to_run = []
 
     try:
@@ -344,36 +405,57 @@ def teardown_tag():
             course_name, vendor, pod_details = course.get("course_name"), course.get("vendor"), course.get("pod_details", [])
             if not course_name or not vendor or not isinstance(pod_details, list): continue
             
-            items_by_host = defaultdict(lambda: {"pods": set(), "classes": set()})
-            for pd in pod_details:
-                if not isinstance(pd, dict): continue
-                host, pod_num, class_num = pd.get("host", pd.get("pod_host")), pd.get("pod_number"), pd.get("class_number")
-                if not host: continue
-                is_f5 = vendor.lower() == 'f5'
-                if is_f5 and class_num is not None: items_by_host[host]["classes"].add(class_num)
-                elif pod_num is not None: items_by_host[host]["pods"].add(pod_num)
+            # highlight-start
+            if vendor.lower() == 'f5':
+                # --- NEW F5-SAFE LOGIC ---
+                # Group all pods by their class number and host
+                pods_by_class_and_host = defaultdict(set)
+                for pd in pod_details:
+                    if not isinstance(pd, dict): continue
+                    class_num = pd.get("class_number")
+                    host = pd.get("host")
+                    if not class_num or not host: continue
+                    
+                    # Add all pods nested within this class entry to the set
+                    for nested_pod in pd.get("pods", []):
+                        if nested_pod.get("pod_number") is not None:
+                            pods_by_class_and_host[(class_num, host)].add(nested_pod["pod_number"])
 
-            for host, items in items_by_host.items():
-                for class_num in sorted(list(items["classes"])):
-                    args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-cn', str(class_num)]
-                    tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Class '{class_num}'"})
-                if items["pods"]:
-                    for pod_num in sorted(list(items["pods"])):
-                        args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
-                        tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Pod '{pod_num}'"})
+                # Now, create a ranged teardown command for each class/host group
+                for (class_num, host), pod_numbers in pods_by_class_and_host.items():
+                    if not pod_numbers: continue
+                    start_pod = min(pod_numbers)
+                    end_pod = max(pod_numbers)
+                    args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-cn', str(class_num), '-s', str(start_pod), '-e', str(end_pod)]
+                    tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Pods {start_pod}-{end_pod} in Class '{class_num}'"})
+            else:
+                # --- Original logic for non-F5 vendors ---
+                items_by_host = defaultdict(lambda: {"pods": set()})
+                for pd in pod_details:
+                    if not isinstance(pd, dict): continue
+                    host, pod_num = pd.get("host", pd.get("pod_host")), pd.get("pod_number")
+                    if not host or pod_num is None: continue
+                    items_by_host[host]["pods"].add(pod_num)
+                
+                for host, items in items_by_host.items():
+                    if items["pods"]:
+                        for pod_num in sorted(list(items["pods"])):
+                            args = ['teardown', '-v', vendor, '-g', course_name, '--host', host, '-t', tag, '-s', str(pod_num), '-e', str(pod_num)]
+                            tasks_to_run.append({'args': args, 'description': f"Tag '{tag}', Pod '{pod_num}'"})
+            # highlight-end
 
         if not tasks_to_run:
             message = f"No teardown tasks found for Tag '{tag}'."
-            if is_ajax: return jsonify({"success": True, "message": message}) # Success, but nothing to do
+            if is_ajax: return jsonify({"success": True, "message": message})
             flash(message, "warning"); return redirect(url_for('main.view_allocations'))
             
-        logger.info(f"Submitting {len(tasks_to_run)} tasks for Tag '{tag}' sequentially...")
+        logger.info(f"Submitting {len(tasks_to_run)} pod-specific teardown tasks for Tag '{tag}' sequentially...")
         
         def run_sequential_tasks(tasks):
             for i, task_info in enumerate(tasks):
                 args = task_info['args']
                 desc = task_info['description']
-                logger.info(f"Starting task {i+1}/{len(tasks)}: {desc}")
+                logger.info(f"Starting task {i+1}/{len(tasks)}: {desc} | CMD: {' '.join(args)}") # Added command logging
                 run_labbuild_task(args)
                 logger.info(f"Finished task {i+1}/{len(tasks)}: {desc}")
             logger.info(f"All teardown tasks submitted for Tag '{tag}'.")
@@ -381,7 +463,7 @@ def teardown_tag():
         thread = threading.Thread(target=run_sequential_tasks, args=(tasks_to_run,), daemon=True)
         thread.start()
         
-        message = f"Submitted {len(tasks_to_run)} teardown tasks for Tag '{tag}'. The group will be removed upon completion."
+        message = f"Submitted {len(tasks_to_run)} pod-specific teardown tasks for Tag '{tag}'. The group will be removed upon completion."
         flash(message, "info")
         return jsonify({"success": True, "message": message, "action": "remove"})
         

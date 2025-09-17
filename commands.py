@@ -591,45 +591,60 @@ def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogg
     # --- DB Only Mode ---
     if db_only_arg:
         logger.info("DB-only mode activated: Updating database entries.")
-        if start_pod_arg is None or end_pod_arg is None:
-             err_msg="DB-only mode requires --start-pod and --end-pod."
-             logger.error(err_msg)
-             operation_logger.log_pod_status(pod_id="db_only", status="failed", step="missing_pod_range", error=err_msg)
-             return [{"identifier": "db_only", "status": "failed", "error_message": err_msg}]
+        # highlight-start
         if not host_arg:
-             err_msg="DB-only mode requires --host."
-             logger.error(err_msg); operation_logger.log_pod_status(pod_id="db_only", status="failed", error=err_msg); return [{"identifier": "db_only", "status": "failed", "error_message": err_msg}]
+            err_msg="DB-only mode requires --host."
+            logger.error(err_msg); operation_logger.log_pod_status(pod_id="db_only", status="failed", error=err_msg); return [{"identifier": "db_only", "status": "failed", "error_message": err_msg}]
 
-        # --- THIS IS THE CORRECTED LOGIC ---
-        # Construct the data dictionary with all optional metadata.
         data_for_db = {
-            "tag": tag_arg,
-            "course_name": course_arg,
-            "vendor": vendor_arg,
-            "pod_details": [],
-            "start_date": start_date_arg,
-            "end_date": end_date_arg,
-            "trainer_name": trainer_name_arg,
-            "apm_username": username_arg,
-            "apm_password": password_arg,
+            "tag": tag_arg, "course_name": course_arg, "vendor": vendor_arg,
+            "pod_details": [], "start_date": start_date_arg, "end_date": end_date_arg,
+            "trainer_name": trainer_name_arg, "apm_username": username_arg, "apm_password": password_arg,
         }
 
-        for pod_num in range(start_pod_arg, end_pod_arg + 1):
-            # Create a MINIMAL pod entry. Do NOT include prtg_url or poweron.
-            # This prevents the update operation from overwriting existing values with defaults.
-            pod_db_entry = {"pod_number": pod_num, "host": host_arg}
-            data_for_db["pod_details"].append(pod_db_entry)
+        if is_f5_vendor:
+            if class_number_arg is None:
+                err_msg = "F5 DB-only setup requires --class_number."
+                logger.error(err_msg)
+                operation_logger.log_pod_status(pod_id="db_only", status="failed", error=err_msg)
+                return [{"identifier": "db_only", "status": "failed", "error_message": err_msg}]
+            
+            # Create the F5 class structure
+            class_db_entry = {
+                "class_number": class_number_arg,
+                "host": host_arg,
+                "pods": []
+            }
+            
+            # If a pod range is also specified, add the pod entries
+            if start_pod_arg is not None and end_pod_arg is not None:
+                for pod_num in range(start_pod_arg, end_pod_arg + 1):
+                    class_db_entry["pods"].append({"pod_number": pod_num})
+            
+            data_for_db["pod_details"].append(class_db_entry)
+
+        else: # Non-F5 vendors
+            if start_pod_arg is None or end_pod_arg is None:
+                err_msg="DB-only mode requires --start-pod and --end-pod for non-F5 vendors."
+                logger.error(err_msg)
+                operation_logger.log_pod_status(pod_id="db_only", status="failed", error=err_msg)
+                return [{"identifier": "db_only", "status": "failed", "error_message": err_msg}]
+
+            for pod_num in range(start_pod_arg, end_pod_arg + 1):
+                pod_db_entry = {"pod_number": pod_num, "host": host_arg}
+                data_for_db["pod_details"].append(pod_db_entry)
         
         try:
             update_database(data_for_db)
             logger.info("DB-only setup complete: Database updated.")
             operation_logger.log_pod_status(pod_id="db_only", status="skipped", step="db_only_mode")
-            results = [{"identifier": str(pd["pod_number"]), "status": "skipped", "message": "DB Only"} for pd in data_for_db["pod_details"]]
+            results = [{"identifier": str(pd.get("pod_number") or pd.get("class_number")), "status": "skipped", "message": "DB Only"} for pd in data_for_db["pod_details"]]
             return results
         except Exception as db_err:
             logger.error(f"DB-only mode failed during database update: {db_err}", exc_info=True)
             operation_logger.log_pod_status(pod_id="db_only", status="failed", step="db_update_error", error=str(db_err))
             return [{"identifier": "db_only", "status": "failed", "error_message": str(db_err)}]
+        # highlight-end
 
     # --- Prepare vCenter Connection (needed for perm, monitor, and normal setup) ---
     host_details = None
@@ -802,7 +817,6 @@ def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogg
     )
     logger.info(f"Setup process finished for course '{course_arg}'.")
     return all_results
-
 
 def teardown_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
     """Handles the 'teardown' command logic using args_dict."""
