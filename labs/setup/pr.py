@@ -1,3 +1,5 @@
+# In labs/setup/pr.py
+
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.vm_manager import VmManager
 from pyVmomi import vim
@@ -35,7 +37,17 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
     pod_number = int(pod_config["pod_number"])
     snapshot_name = 'base'
     components_to_build = pod_config["components"]
-    parent_resource_pool = pod_config["group"]
+    
+    # highlight-start
+    # --- THIS IS THE FIX ---
+    # Construct the parent resource pool name dynamically from the vendor and host.
+    # e.g., vendor 'pr' and host 'unicron' becomes 'pr-un'.
+    vendor_shortcode = pod_config.get("vendor_shortcode", "pr")
+    host_fqdn = pod_config.get("host_fqdn", "")
+    host_short_name = host_fqdn.split('.')[0][0:2] # Takes the first two letters of the host name
+    parent_resource_pool = f"{vendor_shortcode}-{host_short_name}"
+    # --- END OF FIX ---
+    
     group_pool = parent_resource_pool + "-pod" + str(pod_number)
 
     if not rpm.create_resource_pool(parent_resource_pool, group_pool):
@@ -113,7 +125,17 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
 def teardown_pr_pod(service_instance, pod_config):
 
     rpm = ResourcePoolManager(service_instance)
-    group_pool = f'pr-pod{pod_config["pod_number"]}'
+    
+    # highlight-start
+    # --- THIS IS THE FIX for TEARDOWN ---
+    vendor_shortcode = pod_config.get("vendor_shortcode", "pr")
+    host_fqdn = pod_config.get("host_fqdn", "")
+    host_short_name = host_fqdn.split('.')[0][0:2]
+    parent_resource_pool = f"{vendor_shortcode}-{host_short_name}"
+    # --- END OF FIX ---
+
+    group_pool = f'{parent_resource_pool}-pod{pod_config["pod_number"]}'
     
     rpm.poweroff_all_vms(group_pool)
     rpm.delete_resource_pool(group_pool)
+# highlight-end
