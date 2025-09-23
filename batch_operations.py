@@ -9,6 +9,7 @@ from pymongo.errors import PyMongoError
 from constants import DB_NAME, ALLOCATION_COLLECTION
 from db_utils import mongo_client
 from operation_logger import OperationLogger
+# Modified: Now needs manage_environment for the Avaya-specific logic
 from commands import setup_environment, teardown_environment, manage_environment
 
 # --- NEW Imports for host-level operations ---
@@ -54,6 +55,7 @@ def perform_vendor_level_operation(
     Finds all valid allocations for a vendor, asks for confirmation,
     and then performs a batch operation, optionally filtered by a pod/class range.
     """
+    # ... (This function remains unchanged)
     print(f"--- Starting Vendor-Level Operation ---")
     print(f"Vendor: {vendor.upper()}")
     print(f"Operation: {operation.capitalize()}")
@@ -167,10 +169,11 @@ def perform_vendor_level_operation(
     except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr)
 
 
-# --- NEW FUNCTION FOR HOST-LEVEL OPERATIONS ---
+# --- UPDATED FUNCTION FOR HOST-LEVEL OPERATIONS ---
 def perform_host_level_operation(vendor: str, host: str, operation: str, yes: bool, thread_count: int, verbose: bool):
     """
     Finds all resource pools for a vendor on a specific host and performs a power operation.
+    **Contains special, database-driven logic for the 'av' vendor.**
     """
     print(f"--- Starting Host-Level Operation ---")
     print(f"Vendor: {vendor.upper()}")
@@ -178,6 +181,94 @@ def perform_host_level_operation(vendor: str, host: str, operation: str, yes: bo
     print(f"Operation: {operation.capitalize()}")
     print("---------------------------------------")
 
+    # --- SPECIAL LOGIC FOR AVAYA ---
+    if vendor.lower() == 'av':
+        print("Avaya vendor detected. Using database-driven mode to find allocations.")
+        try:
+            with mongo_client() as client:
+                if not client:
+                    print("Error: Could not connect to the database.", file=sys.stderr)
+                    return
+                
+                alloc_collection = client[DB_NAME][ALLOCATION_COLLECTION]
+                # Find all allocations that have pod details on the specified host
+                query = {"courses.pod_details.host": host}
+                allocations_cursor = alloc_collection.find(query)
+
+                tasks_to_process = defaultdict(lambda: {"pods": set()})
+
+                for doc in allocations_cursor:
+                    tag = doc.get("tag")
+                    for course in doc.get("courses", []):
+                        c_vendor = course.get("vendor")
+                        # Filter for the correct vendor (Avaya)
+                        if not c_vendor or c_vendor.lower() != 'av':
+                            continue
+                        
+                        c_name = course.get("course_name")
+                        for pd in course.get("pod_details", []):
+                            # Filter for the correct host
+                            if pd.get("host") == host and pd.get("pod_number") is not None:
+                                group_key = (tag, c_name, c_vendor, host)
+                                tasks_to_process[group_key]['pods'].add(pd["pod_number"])
+
+                if not tasks_to_process:
+                    print(f"No Avaya allocations found in the database for host '{host}'.")
+                    return
+                
+                # Generate jobs from the found allocations
+                final_jobs = []
+                for group_key, items in tasks_to_process.items():
+                    tag, course, c_vendor, host_name = group_key
+                    pod_ranges = _create_contiguous_ranges(items['pods'])
+                    for start_pod, end_pod in pod_ranges:
+                        range_str = f"{start_pod}" if start_pod == end_pod else f"{start_pod}-{end_pod}"
+                        job_args = {
+                            'command': 'manage', 'operation': operation,
+                            'vendor': c_vendor, 'course': course, 'host': host_name, 'tag': tag,
+                            'verbose': verbose, 'start_pod': start_pod, 'end_pod': end_pod,
+                            'thread': thread_count # Pass down thread count
+                        }
+                        desc = f"{operation.capitalize()} Pods {range_str} for '{course}' on '{host_name}' (Tag: {tag})"
+                        final_jobs.append({'args': job_args, 'desc': desc})
+
+                print("\nThe following operations will be performed (based on DB records):\n")
+                for job in sorted(final_jobs, key=lambda x: x['desc']):
+                    print(f"  - {job['desc']}")
+                print(f"\nTotal operations to run: {len(final_jobs)}")
+
+                if not yes:
+                    if input("\nAre you sure you want to proceed? (yes/no): ").lower().strip() != 'yes':
+                        print("\nOperation cancelled by user.")
+                        return
+                
+                print(f"\nUser confirmed. Submitting {len(final_jobs)} operations now...")
+                with ThreadPoolExecutor(max_workers=thread_count) as executor:
+                    future_to_job = {
+                        executor.submit(
+                            manage_environment, 
+                            job['args'], 
+                            OperationLogger(job['args']['command'], job['args'])
+                        ): job['desc']
+                        for job in final_jobs
+                    }
+                    print("\n--- Waiting for all operations to complete ---")
+                    for future in as_completed(future_to_job):
+                        desc = future_to_job[future]
+                        try:
+                            future.result()
+                            print(f"  [SUCCESS] Operation completed: {desc}")
+                        except Exception as exc:
+                            print(f"  [FAILURE] Operation failed: {desc}. Error: {exc}")
+                print("\n--- Avaya Host-Level Operation Finished ---")
+
+        except PyMongoError as e:
+            print(f"Database Error during Avaya host operation: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}", file=sys.stderr)
+        return # End Avaya-specific execution
+
+    # --- DEFAULT LOGIC FOR ALL OTHER VENDORS (vCenter Scan) ---
     try:
         host_details = get_host_by_name(host)
         if not host_details:
@@ -198,14 +289,17 @@ def perform_host_level_operation(vendor: str, host: str, operation: str, yes: bo
 
         root_rp_for_host = host_obj.parent.resourcePool
 
-        host_short_2char_from_fqdn = host_details['fqdn'][0:2]
+        host_short_2char = host_details['host_name'][-2:] if len(host_details['host_name']) > 2 else host_details['host_name']
+        
+        # --- IMPROVED REGEX PATTERNS ---
         patterns = {
             'cp': re.compile(r'^cp-(maestro-)?pod\d+$'),
-            'pa': re.compile(r'^pa-pod\d+$'),
+            'pa': re.compile(rf'^pa-pod\d+(?:-{host_short_2char})?$'), # Suffix optional
             'f5': re.compile(r'^f5-class\d+$'),
-            'av': re.compile(r'^av-(ipo-)?pod\d+$'),
-            'nu': re.compile(rf'^nu-pod\d+-{host_short_2char_from_fqdn}$'),
-            'pr': re.compile(r'^(pr-pod\d+|.*-pod\d+)$') # Generalize PR slightly
+            # Avaya pattern updated for robustness, although it's now handled by the DB logic above
+            'av': re.compile(rf'^av-(ipo-)?pod\d+(?:-{host_short_2char})?$'),
+            'nu': re.compile(rf'^nu-pod\d+-{host_short_2char}$'),
+            'pr': re.compile(r'^(pr-pod\d+|.*-pod\d+)$')
         }
         vendor_pattern = patterns.get(vendor.lower())
         if not vendor_pattern:
