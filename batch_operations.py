@@ -11,6 +11,14 @@ from db_utils import mongo_client
 from operation_logger import OperationLogger
 from commands import setup_environment, teardown_environment, manage_environment
 
+# --- NEW Imports for host-level operations ---
+from vcenter_utils import get_vcenter_instance
+from config_utils import get_host_by_name
+from managers.vm_manager import VmManager
+from pyVmomi import vim
+# --- END NEW Imports ---
+
+
 logger = logging.getLogger('labbuild.batch')
 
 def _create_contiguous_ranges(item_numbers: set) -> List[Tuple[int, int]]:
@@ -157,3 +165,140 @@ def perform_vendor_level_operation(
             print("\n--- Vendor-Level Operation Finished ---")
     except PyMongoError as e: print(f"Database Error: {e}", file=sys.stderr)
     except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr)
+
+
+# --- NEW FUNCTION FOR HOST-LEVEL OPERATIONS ---
+def perform_host_level_operation(vendor: str, host: str, operation: str, yes: bool, thread_count: int, verbose: bool):
+    """
+    Finds all resource pools for a vendor on a specific host and performs a power operation.
+    """
+    print(f"--- Starting Host-Level Operation ---")
+    print(f"Vendor: {vendor.upper()}")
+    print(f"Host: {host}")
+    print(f"Operation: {operation.capitalize()}")
+    print("---------------------------------------")
+
+    try:
+        host_details = get_host_by_name(host)
+        if not host_details:
+            print(f"Error: Host '{host}' not found in the database.", file=sys.stderr)
+            return
+
+        service_instance = get_vcenter_instance(host_details)
+        if not service_instance:
+            print(f"Error: Could not connect to vCenter for host '{host}'.", file=sys.stderr)
+            return
+
+        vmm = VmManager(service_instance)
+
+        host_obj = vmm.get_obj([vim.HostSystem], host_details['fqdn'])
+        if not host_obj:
+            print(f"Error: Host object '{host_details['fqdn']}' not found in vCenter.", file=sys.stderr)
+            return
+
+        root_rp_for_host = host_obj.parent.resourcePool
+
+        host_short_2char_from_fqdn = host_details['fqdn'][0:2]
+        patterns = {
+            'cp': re.compile(r'^cp-(maestro-)?pod\d+$'),
+            'pa': re.compile(r'^pa-pod\d+$'),
+            'f5': re.compile(r'^f5-class\d+$'),
+            'av': re.compile(r'^av-(ipo-)?pod\d+$'),
+            'nu': re.compile(rf'^nu-pod\d+-{host_short_2char_from_fqdn}$'),
+            'pr': re.compile(r'^(pr-pod\d+|.*-pod\d+)$') # Generalize PR slightly
+        }
+        vendor_pattern = patterns.get(vendor.lower())
+        if not vendor_pattern:
+            print(f"Error: No resource pool naming convention defined for vendor '{vendor}'.", file=sys.stderr)
+            return
+
+        def collect_rps_recursive(rp_root, collected_list):
+            for child_rp in rp_root.resourcePool:
+                if vendor_pattern.match(child_rp.name):
+                    collected_list.append(child_rp)
+                # Recurse into all children, as a matching RP might be nested
+                collect_rps_recursive(child_rp, collected_list)
+
+        target_rps = []
+        collect_rps_recursive(root_rp_for_host, target_rps)
+
+        if not target_rps:
+            print(f"No resource pools matching the '{vendor.upper()}' naming convention found on host '{host}'.")
+            return
+
+        print("\nThe following resource pools will be affected:\n")
+        for rp in sorted(target_rps, key=lambda x: x.name):
+            print(f"  - {rp.name}")
+        
+        print(f"\nTotal resource pools to {operation}: {len(target_rps)}")
+        
+        if not yes:
+            if input("\nAre you sure you want to proceed? (yes/no): ").lower().strip() != 'yes':
+                print("\nOperation cancelled by user.")
+                return
+        else:
+            print("\nNon-interactive mode (-y) detected. Proceeding automatically.")
+
+        print(f"\nUser confirmed. Submitting {len(target_rps)} operations now...")
+
+        def power_op_worker(vm_obj):
+            """Performs a power operation on a single VM object."""
+            if operation == 'start':
+                vmm.poweron_vm(vm_obj.name)
+            elif operation == 'stop':
+                vmm.poweroff_vm(vm_obj.name)
+            elif operation == 'reboot':
+                # Implement reboot as a safe power-off then power-on
+                vmm.poweroff_vm(vm_obj.name)
+                vmm.poweron_vm(vm_obj.name)
+
+        def rp_worker(rp_obj):
+            """Worker to manage all VMs within a resource pool."""
+            all_vms_in_rp = []
+            def collect_vms_recursive(current_rp):
+                all_vms_in_rp.extend(current_rp.vm)
+                for child_rp in current_rp.resourcePool:
+                    collect_vms_recursive(child_rp)
+            collect_vms_recursive(rp_obj)
+
+            if not all_vms_in_rp:
+                return (rp_obj.name, "success", "No VMs found in RP.")
+            
+            errors = []
+            with ThreadPoolExecutor(max_workers=10) as vm_executor:
+                future_to_vm = {vm_executor.submit(power_op_worker, vm): vm.name for vm in all_vms_in_rp}
+                for future in as_completed(future_to_vm):
+                    vm_name = future_to_vm[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        errors.append(f"VM '{vm_name}': {e}")
+            
+            if errors:
+                return (rp_obj.name, "failure", "; ".join(errors))
+            return (rp_obj.name, "success", f"Operation '{operation}' completed for {len(all_vms_in_rp)} VM(s).")
+
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            future_to_rp = {executor.submit(rp_worker, rp): rp.name for rp in target_rps}
+            
+            print("\n--- Waiting for all operations to complete ---")
+            for future in as_completed(future_to_rp):
+                name = future_to_rp[future]
+                try:
+                    rp_name, status, message = future.result()
+                    if status == 'success':
+                        print(f"  [SUCCESS] Operation completed for RP: {rp_name}")
+                    else:
+                        print(f"  [FAILURE] Operation for RP {rp_name} completed with errors: {message}")
+                except Exception as exc:
+                    print(f"  [FAILURE] Operation failed catastrophically for RP: {name}. Error: {exc}")
+                    if verbose:
+                        import traceback
+                        traceback.print_exc()
+
+        print("\n--- Host-Level Operation Finished ---")
+    except Exception as e:
+        print(f"An unexpected error occurred during host-level operation: {e}", file=sys.stderr)
+        if verbose:
+            import traceback
+            traceback.print_exc()
