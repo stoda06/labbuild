@@ -1,5 +1,3 @@
-# In labs/setup/pr.py
-
 from managers.resource_pool_manager import ResourcePoolManager
 from managers.vm_manager import VmManager
 from pyVmomi import vim
@@ -7,27 +5,24 @@ from pyVmomi import vim
 import logging
 logger = logging.getLogger(__name__)
 
+# ... (update_network_dict function remains unchanged) ...
 def update_network_dict(network_dict, pod_number):
     def replace_mac_octet(mac_address, pod_num):
         mac_parts = mac_address.split(':')
-        mac_parts[4] = format(pod_num, '02x')  # This ensures zero-padded two-digit hex
+        mac_parts[4] = format(pod_num, '02x')
         return ':'.join(mac_parts)
-
     updated_network_dict = {}
     for adapter, details in network_dict.items():
         network_name = details['network_name']
         mac_address = details['mac_address']
         connected_at_power_on = details['connected_at_power_on']
-
         if 'rdp' in network_name:
             mac_address = replace_mac_octet(mac_address, pod_number)
-
         updated_network_dict[adapter] = {
             'network_name': network_name,
             'mac_address': mac_address,
             'connected_at_power_on': connected_at_power_on
         }
-
     return updated_network_dict
 
 
@@ -38,19 +33,22 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
     snapshot_name = 'base'
     components_to_build = pod_config["components"]
     
-    # highlight-start
-    # --- THIS IS THE FIX ---
-    # Construct the parent resource pool name dynamically from the vendor and host.
-    # e.g., vendor 'pr' and host 'unicron' becomes 'pr-un'.
     vendor_shortcode = pod_config.get("vendor_shortcode", "pr")
     host_fqdn = pod_config.get("host_fqdn", "")
-    host_short_name = host_fqdn.split('.')[0][0:2] # Takes the first two letters of the host name
-    parent_resource_pool = f"{vendor_shortcode}-{host_short_name}"
-    # --- END OF FIX ---
+    # Correctly get the 2-letter host short name (e.g., 'un' from 'unicron')
+    host_short_name = host_fqdn.split('.')[0][0:2] 
     
-    group_pool = parent_resource_pool + "-pod" + str(pod_number)
+    # Correctly define the PARENT resource pool (e.g., 'pr-un')
+    parent_resource_pool = f"{vendor_shortcode}-{host_short_name}"
+    
+    # --- THIS IS THE FIX ---
+    # Construct the CHILD resource pool name independently of the parent.
+    # It should be 'pr-podX', not 'pr-un-podX'.
+    group_pool = f"{vendor_shortcode}-pod{pod_number}"
+    # --- END OF FIX ---
 
-    if not rpm.create_resource_pool(parent_resource_pool, group_pool):
+    # Create the child pool under the correct parent
+    if not rpm.create_resource_pool(parent_resource_pool, group_pool, host_fqdn=host_fqdn):
         return False, "create_resource_pool", f"Failed creating resource pool {group_pool}"
 
     if selected_components:
@@ -91,7 +89,20 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
                 raise Exception("Failed to create snapshot on clone")
 
             iso_path = f"podiso/pod-{pod_number}-a.iso"
-            datastore_name = "keg2" if "k2" in pod_config.get("host_fqdn", "") else "datastore2-ho"
+            
+            host_datastore_map = {
+                "ni": "datastore1-ni", "cl": "datastore1-cl",
+                "ul": "datastore1-ul", "un": "datastore1-un",
+                "ho": "datastore2-ho", "tr": "datastore2-tr"
+            }
+            
+            datastore_name = host_datastore_map.get(host_short_name)
+            
+            if not datastore_name:
+                raise Exception(f"Could not determine ISO datastore for host '{host_fqdn}'. No mapping found for short name '{host_short_name}'.")
+
+            logger.info(f"Selected datastore '{datastore_name}' for ISO mount based on host '{host_fqdn}'.")
+            
             if not vmm.modify_cd_drive(clone_name, "CD/DVD drive 1", "Datastore ISO file", datastore_name, iso_path, connected=True):
                 raise Exception("Failed to modify CD drive")
             
@@ -99,7 +110,7 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
 
         except Exception as e:
             error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
-            logger.error(error_msg)
+            logger.error(error_msg, exc_info=True)
             component_errors.append(error_msg)
             overall_component_success = False
             continue
@@ -123,19 +134,13 @@ def build_pr_pod(service_instance, pod_config, rebuild=False, thread=4, full=Fal
 
 
 def teardown_pr_pod(service_instance, pod_config):
-
     rpm = ResourcePoolManager(service_instance)
-    
-    # highlight-start
-    # --- THIS IS THE FIX for TEARDOWN ---
     vendor_shortcode = pod_config.get("vendor_shortcode", "pr")
-    host_fqdn = pod_config.get("host_fqdn", "")
-    host_short_name = host_fqdn.split('.')[0][0:2]
-    parent_resource_pool = f"{vendor_shortcode}-{host_short_name}"
+    
+    # --- THIS IS THE FIX for teardown ---
+    # Construct the resource pool name to be deleted using the correct convention.
+    group_pool = f'{vendor_shortcode}-pod{pod_config["pod_number"]}'
     # --- END OF FIX ---
-
-    group_pool = f'{parent_resource_pool}-pod{pod_config["pod_number"]}'
     
     rpm.poweroff_all_vms(group_pool)
     rpm.delete_resource_pool(group_pool)
-# highlight-end
