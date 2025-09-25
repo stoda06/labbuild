@@ -137,7 +137,7 @@ def teardown_pr_pod(service_instance, pod_config):
     rpm = ResourcePoolManager(service_instance)
     vendor_shortcode = pod_config.get("vendor_shortcode", "pr")
     
-    # --- THIS IS THE FIX for teardown ---
+    # --- THIS IS THE FIX for teardown ---labbuild2 setup -v pr -g "prtg" --host unicron -s 12 -e 13 -t "DK_PR_TEST" 
     # Construct the resource pool name to be deleted using the correct convention.
     group_pool = f'{vendor_shortcode}-pod{pod_config["pod_number"]}'
     # --- END OF FIX ---

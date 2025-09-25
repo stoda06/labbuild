@@ -60,7 +60,10 @@ def execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading.
 
     # Final safeguard validation
     required = ['vendor', 'start_pod', 'end_pod', 'host', 'group']
-    if any(args_dict.get(arg) is None for arg in required):
+    is_f5_with_class = vendor == 'f5' and args_dict.get('class_number') is not None
+    
+    # Non-F5 must have all required args. F5 is special as class_number is the key.
+    if not is_f5_with_class and any(args_dict.get(arg) is None for arg in required):
         return [{'status': 'failed', 'error': f"Internal Error: Missing args for worker: {args_dict}"}]
 
     # Dispatch to vendor-specific test script, passing the lock
@@ -85,6 +88,13 @@ def execute_single_test_worker(args_dict: Dict[str, Any], print_lock: threading.
             argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
             if component_arg: argv.extend(["-c", component_arg])
             return avaya.main(argv, print_lock=print_lock)
+        # --- THIS IS THE NEWLY ADDED BLOCK ---
+        elif vendor == "pr":
+            from labs.test import pr
+            argv = ["-s", str(start), "-e", str(end), "--host", host, "-g", group]
+            if component_arg: argv.extend(["-c", component_arg])
+            return pr.main(argv, print_lock=print_lock)
+        # --- END OF NEW BLOCK ---
         elif vendor == "f5":
             classnum = args_dict.get("class_number")
             if classnum is None: return [{'status': 'failed', 'error': "Internal Error: F5 class_number missing."}]
