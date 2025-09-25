@@ -296,7 +296,6 @@ def perform_host_level_operation(vendor: str, host: str, operation: str, yes: bo
             'cp': re.compile(r'^cp-(maestro-)?pod\d+$'),
             'pa': re.compile(rf'^pa-pod\d+(?:-{host_short_2char})?$'), # Suffix optional
             'f5': re.compile(r'^f5-class\d+$'),
-            # Avaya pattern updated for robustness, although it's now handled by the DB logic above
             'av': re.compile(rf'^av-(ipo-)?pod\d+(?:-{host_short_2char})?$'),
             'nu': re.compile(rf'^nu-pod\d+-{host_short_2char}$'),
             'pr': re.compile(r'^(pr-pod\d+|.*-pod\d+)$')

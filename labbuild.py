@@ -39,7 +39,6 @@ def main():
         parser.error("A command (setup, manage, teardown, test, move, migrate) is required.")
 
     # --- Auto-Lookup Mode ---
-    # This mode is triggered when course/tag are omitted but a pod range is provided.
     is_auto_lookup_mode = (
         args.command in ['setup', 'manage', 'teardown'] and
         args.start_pod is not None and
@@ -92,7 +91,6 @@ def main():
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logger.setLevel(log_level)
     
-    # Configure levels for all sub-loggers
     all_loggers = [logging.getLogger(name) for name in logging.root.manager.loggerDict if name.startswith('labbuild')]
     for sub_logger in all_loggers:
         sub_logger.setLevel(log_level)
@@ -102,13 +100,8 @@ def main():
         sys.exit(0)
 
     # --- Validation for Standard (Manual) Command Runs ---
-    # At this point, we know it's not a list/batch operation or an auto-lookup operation.
-    # Therefore, it must be a manual run, which has its own set of required arguments.
     if args.command in ['setup', 'manage', 'teardown', 'move', 'migrate']:
         
-        # 1. Check for core identifiers: course and tag.
-        # If we are in this part of the code, auto-lookup conditions were not met.
-        # So, if course or tag are missing, the command is ambiguous.
         if not args.course or not args.tag:
             parser.error(
                 f"For a manual '{args.command}' operation, you must provide both --course (-g) and --tag (-t).\n"
@@ -116,7 +109,6 @@ def main():
                 f"To manage all pods for a vendor on a host, omit --course, --tag, and pod ranges."
             )
         
-        # 2. Check for other required arguments for a standard run (not db-only, etc.)
         is_f5 = args.vendor.lower() == 'f5'
         is_special_mode = (
             args_dict.get('db_only') or
@@ -151,10 +143,19 @@ def main():
         if any(r.get("status") == COMPONENT_LIST_STATUS for r in all_results if isinstance(r, dict)):
             print("\nUse the -c flag with one or more component names (comma-separated).")
         elif isinstance(all_results, list):
-            total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "success")
-            total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "failed")
-            total_skipped = sum(1 for r in all_results if isinstance(r, dict) and "skip" in r.get("status", "").lower())
-        
+            # --- THIS IS THE FIX ---
+            if args.command == 'test':
+                # Test results have a 'test_status' key: 'success', 'failed', 'skipped'
+                total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("test_status") == "success")
+                total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("test_status") == "failed")
+                total_skipped = sum(1 for r in all_results if isinstance(r, dict) and r.get("test_status") == "skipped")
+            else:
+                # Other commands use a simple 'status' key
+                total_success = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "success")
+                total_failure = sum(1 for r in all_results if isinstance(r, dict) and r.get("status") == "failed")
+                total_skipped = sum(1 for r in all_results if isinstance(r, dict) and "skip" in r.get("status", "").lower())
+            # --- END OF FIX ---
+
         if total_failure > 0:
             overall_status = "completed_with_errors"
         elif total_success > 0 or total_skipped > 0:
