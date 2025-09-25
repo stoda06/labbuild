@@ -11,6 +11,13 @@ logger = logging.getLogger('labbuild.test.pr')
 
 def run_nmap_test(pod_number: int, component_name: str, ip: str, port: int) -> Dict[str, Any]:
     """Runs a single nmap port scan and returns a structured result."""
+    result = {
+        'pod': pod_number,
+        'component': component_name,
+        'ip': ip,
+        'port': port,
+        'status': 'ERROR',  # Default to ERROR
+    }
     try:
         nm = nmap.PortScanner()
         # Use -Pn to skip host discovery (ping), as it's often blocked.
@@ -18,36 +25,27 @@ def run_nmap_test(pod_number: int, component_name: str, ip: str, port: int) -> D
         
         # Check if the host was scanned and the port was found
         if ip not in nm.all_hosts() or 'tcp' not in nm[ip] or port not in nm[ip]['tcp']:
-             status = 'DOWN / FILTERED'
+             result['status'] = 'DOWN / FILTERED'
         else:
-            status = nm[ip]['tcp'][port]['state']
+            result['status'] = nm[ip]['tcp'][port]['state'].upper() # e.g., OPEN, CLOSED, FILTERED
         
-        return {
-            'pod': pod_number,
-            'component': component_name,
-            'ip': ip,
-            'port': port,
-            'status': status.upper()
-        }
     except KeyError:
-        # This can also happen if nmap fails to get a response
-        return {
-            'pod': pod_number,
-            'component': component_name,
-            'ip': ip,
-            'port': port,
-            'status': 'DOWN / FILTERED'
-        }
+        result['status'] = 'DOWN / FILTERED'
     except Exception as e:
         logger.error(f"Nmap test failed for {ip}:{port} - {e}")
-        return {
-            'pod': pod_number,
-            'component': component_name,
-            'ip': ip,
-            'port': port,
-            'status': 'ERROR',
-            'error': str(e)
-        }
+        result['error'] = str(e)
+
+    # --- THIS IS THE FIX ---
+    # Add a final 'test_status' field for easy counting.
+    # Only 'OPEN' is considered a success.
+    if result['status'] == 'OPEN':
+        result['test_status'] = 'success'
+    else:
+        result['test_status'] = 'failed'
+    # --- END OF FIX ---
+    
+    return result
+
 
 def run_pr_pod_tests(pod_config: Dict[str, Any], component: Optional[str] = None) -> List[Dict[str, Any]]:
     """
@@ -60,7 +58,7 @@ def run_pr_pod_tests(pod_config: Dict[str, Any], component: Optional[str] = None
 
     if pod_number is None:
         logger.error("Pod number is missing in the pod configuration for PR test.")
-        return [{"status": "failed", "error": "Missing pod_number"}]
+        return [{"status": "failed", "test_status": "failed", "error": "Missing pod_number"}]
 
     logger.info(f"Starting PR tests for Pod {pod_number} on host {host_fqdn}.")
 
@@ -80,7 +78,7 @@ def run_pr_pod_tests(pod_config: Dict[str, Any], component: Optional[str] = None
         components_to_test = [c for c in test_cases if c['component'].lower() == component.lower()]
         if not components_to_test:
             logger.warning(f"Component '{component}' not found for PR pod test. Available: {[c['component'] for c in test_cases]}")
-            return [{"status": "skipped", "message": f"Component {component} not applicable for PR test"}]
+            return [{"status": "skipped", "test_status": "skipped", "message": f"Component {component} not applicable for PR test"}]
 
     for case in components_to_test:
         test_result = run_nmap_test(
