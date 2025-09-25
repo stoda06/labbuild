@@ -16,6 +16,8 @@ from listing import list_vendor_courses
 from commands import COMPONENT_LIST_STATUS
 from arg_parser import create_parser
 from auto_operations import run_auto_lookup_operation
+# Import the new function for the new mode
+from batch_operations import perform_host_level_operation
 
 # --- Environment & Logger Setup ---
 load_dotenv()
@@ -46,12 +48,41 @@ def main():
         args.tag is None
     )
 
+    # --- NEW: Host-Level Batch Management Mode ---
+    is_host_level_manage_mode = (
+        args.command == 'manage' and
+        args.vendor and
+        args.host and
+        not args.course and
+        not args.tag and
+        args.start_pod is None and
+        args.end_pod is None and
+        args.class_number is None
+    )
+
     if is_auto_lookup_mode:
         logger = setup_logger()
         log_level = logging.DEBUG if args.verbose else logging.INFO
         logger.setLevel(log_level)
         run_auto_lookup_operation(vars(args))
         sys.exit(0)
+
+    # --- HIGHLIGHT: Handle the new host-level manage mode ---
+    if is_host_level_manage_mode:
+        logger = setup_logger()
+        log_level = logging.DEBUG if args.verbose else logging.INFO
+        logger.setLevel(log_level)
+        
+        perform_host_level_operation(
+            vendor=args.vendor,
+            host=args.host,
+            operation=args.operation,
+            yes=args.yes,
+            thread_count=args.thread,
+            verbose=args.verbose
+        )
+        sys.exit(0)
+    # --- END NEW LOGIC ---
 
     # --- Standard (Manual) Command Execution ---
     args_dict = vars(args)
@@ -81,7 +112,8 @@ def main():
         if not args.course or not args.tag:
             parser.error(
                 f"For a manual '{args.command}' operation, you must provide both --course (-g) and --tag (-t).\n"
-                f"To run on an existing allocation without knowing the course/tag, omit them and instead provide --start-pod and --end-pod to trigger auto-lookup."
+                f"To run on an existing allocation without knowing the course/tag, omit them and instead provide --start-pod and --end-pod to trigger auto-lookup.\n"
+                f"To manage all pods for a vendor on a host, omit --course, --tag, and pod ranges."
             )
         
         # 2. Check for other required arguments for a standard run (not db-only, etc.)
