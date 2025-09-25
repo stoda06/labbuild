@@ -16,7 +16,11 @@ def run_nmap_test(pod_number: int, component_name: str, ip: str, port: int) -> D
         # Use -Pn to skip host discovery (ping), as it's often blocked.
         nm.scan(hosts=ip, ports=str(port), arguments='-Pn')
         
-        status = nm[ip]['tcp'][port]['state']
+        # Check if the host was scanned and the port was found
+        if ip not in nm.all_hosts() or 'tcp' not in nm[ip] or port not in nm[ip]['tcp']:
+             status = 'DOWN / FILTERED'
+        else:
+            status = nm[ip]['tcp'][port]['state']
         
         return {
             'pod': pod_number,
@@ -26,7 +30,7 @@ def run_nmap_test(pod_number: int, component_name: str, ip: str, port: int) -> D
             'status': status.upper()
         }
     except KeyError:
-        # This happens if nmap doesn't get a response (e.g., host down, filtered)
+        # This can also happen if nmap fails to get a response
         return {
             'pod': pod_number,
             'component': component_name,
