@@ -13,15 +13,13 @@ from collections import defaultdict
 # Import local utilities and helpers
 from config_utils import fetch_and_prepare_course_config, extract_components, get_host_by_name
 from vcenter_utils import get_vcenter_instance
-# Pass args_dict down to orchestrator functions
 from orchestrator import vendor_setup, vendor_teardown, update_monitor_and_database
 from operation_logger import OperationLogger
-# Import the new function from db_utils
 from db_utils import update_database, delete_from_database, get_prtg_url, mongo_client, get_test_params_by_tag
 from monitor.prtg import PRTGManager
 from constants import DB_NAME, ALLOCATION_COLLECTION
 
-import labs.setup.checkpoint as checkpoint 
+import labs.setup.checkpoint as checkpoint
 from labs.test.test_utils import parse_exclude_string, get_test_jobs_by_vendor, display_test_jobs, get_test_jobs_for_range, execute_single_test_worker
 import labs.manage.vm_operations as vm_operations
 from labs.manage.vm_relocation import relocate_pod_vms
@@ -36,11 +34,11 @@ logger = logging.getLogger('labbuild.commands')
 COMPONENT_LIST_STATUS = "component_list_displayed"
 TEMP_COURSE_CONFIG_COLLECTION = "temp_courseconfig"
 
-COMPONENT_LIST_STATUS = "component_list_displayed"
+# --- Add Color Constants for Reporting ---
 RED = '\033[91m'
 ENDC = '\033[0m'
 
-# --- NEW HELPER FUNCTION ---
+# --- HELPER FUNCTION ---
 def _format_pod_ranges(numbers: List[int]) -> str:
     """Converts a list of numbers into a compact range string. e.g., [1,2,3,5] -> '1-3, 5'"""
     if not numbers:
@@ -71,7 +69,7 @@ def _format_pod_ranges(numbers: List[int]) -> str:
 def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[OperationLogger] = None) -> List[Dict[str, Any]]:
     """Runs a test suite for a lab, by tag, by vendor, or by manual parameters."""
     
-    # --- Mode 0: Database listing mode (No changes here) ---
+    # --- Mode 0: Database listing mode ---
     if args_dict.get('db'):
         logger.info("Database listing mode invoked for 'test' command.")
         
@@ -157,7 +155,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
 
     thread_count = args_dict.get('thread', 10)
 
-    # --- Mode 1: Vendor-wide test mode (No changes here) ---
+    # --- Mode 1: Vendor-wide test mode ---
     is_vendor_mode = (args_dict.get('vendor') and not args_dict.get('tag') and
                       args_dict.get('start_pod') is None and args_dict.get('end_pod') is None and
                       args_dict.get('class_number') is None)
@@ -197,14 +195,13 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
                             if isinstance(res, dict): res['tag'] = tag
                     all_results.extend(results)
                     for res in results:
-                        status_upper = res.get('status', '').upper()
-                        if status_upper not in ['UP', 'SUCCESS', 'OPEN', 'FILTERED'] and not status_upper.startswith('SKIPPED'):
+                        if res.get('test_status') == 'failed':
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
                     logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
                     failure_report = {'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
-                                      'status': 'EXCEPTION', 'error': str(e)}
+                                      'status': 'EXCEPTION', 'error': str(e), 'test_status': 'failed'}
                     all_failures.append(failure_report)
                     all_results.append(failure_report)
 
@@ -228,7 +225,7 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
 
         return all_results
 
-    # --- Mode 2: Component listing request (No changes here) ---
+    # --- Mode 2: Component listing request ---
     if args_dict.get('component') == '?':
         course_name = args_dict.get('group')
         if not course_name:
@@ -256,84 +253,20 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
 
-    # --- Mode 3: Tag-based test mode (No changes here) ---
-    # FILE: commands.py
-
-    # --- Mode 3: Tag-based test mode ---
+    # --- Mode 3 (Tag-based) & 4 (Manual Range) combined logic ---
+    jobs = []
+    
     if args_dict.get('tag'):
         tag = args_dict.get('tag')
         logger.info(f"Test command invoked with tag: '{tag}'. Fetching parameters from database.")
-        
         if any(k in args_dict for k in ['vendor', 'start_pod', 'host', 'group'] if k != 'tag'):
             logger.warning(f"Conflicting arguments provided with --tag. Using parameters from tag '{tag}'.")
-        
-        try:
-            jobs = get_test_params_by_tag(tag)
-            if not jobs:
-                err_msg = f"Could not retrieve any valid test jobs for tag '{tag}'. The tag might not exist or its courses may be invalid."
-                logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
-                return [{"status": "failed", "error": err_msg}]
-
-            logger.info(f"Successfully fetched {len(jobs)} test job(s) for tag '{tag}'.")
-            
-            # Since a tag can have multiple vendors, we can't assume one.
-            # We'll use the vendor from the first job for display purposes, or a generic one.
-            display_vendor = jobs[0].get('vendor', 'multi-vendor').upper()
-            display_test_jobs(jobs, display_vendor)
-
-            all_results = []
-            all_failures = []
-            print_lock = threading.Lock()
-            with ThreadPoolExecutor(max_workers=thread_count) as executor:
-                future_to_job = {}
-                for job in jobs:
-                    # The job dictionary from get_test_params_by_tag already has everything needed
-                    job_args_dict = job.copy()
-                    job_args_dict["component"] = args_dict.get("component")
-                    future = executor.submit(execute_single_test_worker, job_args_dict, print_lock)
-                    future_to_job[future] = job
-                
-                for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
-                    try:
-                        results = future.result()
-                        # Tag is already in the job, so it will be in the results
-                        all_results.extend(results)
-                        for res in results:
-                            status_upper = res.get('status', '').upper()
-                            if status_upper not in ['UP', 'SUCCESS', 'OPEN', 'FILTERED'] and not status_upper.startswith('SKIPPED'):
-                                all_failures.append(res)
-                    except Exception as e:
-                        job_info = future_to_job[future]
-                        logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
-                        failure_report = {'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
-                                          'status': 'EXCEPTION', 'error': str(e)}
-                        all_failures.append(failure_report)
-                        all_results.append(failure_report)
-
-            if all_failures:
-                print("\n" + "="*80)
-                print("                       CONSOLIDATED ERROR REPORT")
-                print("="*80)
-                headers = ["Pod/Class", "Component", "IP Address", "Port", "Status/Error"]
-                error_table_data = []
-                for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
-                    pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
-                    status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
-                    error_table_data.append([pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'), fail.get('port', 'N/A'), status])
-                print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
-                print("="*80)
-            else:
-                print("\n✅ All tests completed successfully with no reported failures.")
-
-            return all_results
-
-        except Exception as e:
-            err_msg = f"An unexpected error occurred while processing tag '{tag}': {e}"
-            logger.error(err_msg, exc_info=True); print(f"Error: {err_msg}", file=sys.stderr)
+        jobs = get_test_params_by_tag(tag)
+        if not jobs:
+            err_msg = f"Could not retrieve any valid test jobs for tag '{tag}'."
+            logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
-        
-    # --- Mode 4: Manual test mode with range ---
-    # --- THIS ENTIRE SECTION IS REPLACED WITH THE NEW LOGIC ---
+
     is_manual_range_mode = args_dict.get('start_pod') is not None and args_dict.get('end_pod') is not None
     is_manual_class_mode = args_dict.get('vendor', '').lower() == 'f5' and args_dict.get('class_number') is not None
 
@@ -348,91 +281,72 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
         start_num = args_dict.get('start_pod')
         end_num = args_dict.get('end_pod')
 
-        if is_manual_class_mode and start_num is None:
-            start_num = 0
-            end_num = 9999
+        if is_manual_class_mode and start_num is None: start_num = 0; end_num = 9999
         elif start_num is None or end_num is None:
             err_msg = "Manual test requires --start-pod and --end-pod for non-F5 vendors."
             logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
             return [{"status": "failed", "error": err_msg}]
-
-        # --- STAGE 1: SEARCH AND ENRICH ---
+        
         logger.info("Stage 1: Searching for matching allocations in the database...")
         jobs = get_test_jobs_for_range(
-            vendor=vendor,
-            start_num=start_num,
-            end_num=end_num,
-            class_filter=args_dict.get('class_number'),
-            host_filter=args_dict.get('host'),
+            vendor=vendor, start_num=start_num, end_num=end_num,
+            class_filter=args_dict.get('class_number'), host_filter=args_dict.get('host'),
             group_filter=args_dict.get('group')
         )
         
-        # --- STAGE 2: MANUAL OVERRIDE FALLBACK ---
         if not jobs:
             logger.warning("No matching allocations found in the database. Attempting manual override.")
-            
-            # Check for mandatory arguments for a manual run
             required_args = ['vendor', 'group', 'host', 'start_pod', 'end_pod']
-            if is_manual_class_mode:
-                required_args = ['vendor', 'group', 'host', 'class_number'] # F5 test needs class_number primarily
-
+            if is_manual_class_mode: required_args = ['vendor', 'group', 'host', 'class_number']
             missing_args = [f"--{arg.replace('_', '-')}" for arg in required_args if args_dict.get(arg) is None]
 
             if missing_args:
                 err_msg = f"Manual test requires the following arguments: {', '.join(missing_args)}"
-                logger.error(err_msg)
-                print(f"\nError: {err_msg}", file=sys.stderr)
+                logger.error(err_msg); print(f"\nError: {err_msg}", file=sys.stderr)
                 return [{"status": "failed", "error": err_msg}]
 
             logger.info("All required manual arguments provided. Creating a synthetic test job.")
-            # Create a single "job" from the provided arguments
             manual_job = {
-                "vendor": args_dict['vendor'],
-                "course_name": args_dict['group'],
-                "host": args_dict['host'],
-                "tag": "MANUAL-TEST", # Use a placeholder tag
-                "start_pod": args_dict.get('start_pod'),
-                "end_pod": args_dict.get('end_pod'),
+                "vendor": args_dict['vendor'], "course_name": args_dict['group'], "host": args_dict['host'],
+                "tag": "MANUAL-TEST", "start_pod": args_dict.get('start_pod'), "end_pod": args_dict.get('end_pod'),
                 "class_number": args_dict.get('class_number')
             }
             jobs = [manual_job]
 
-        # From here, the execution is the same whether jobs came from DB or manual override
-        display_test_jobs(jobs, args_dict['vendor'])
+    # --- Unified Execution and Reporting Block for Tag/Manual modes ---
+    if jobs:
+        display_vendor = jobs[0].get('vendor', 'multi-vendor').upper()
+        display_test_jobs(jobs, display_vendor)
 
         all_results = []
         all_failures = []
         print_lock = threading.Lock()
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
-            future_to_job = {}
-            for job in jobs:
-                job_args_dict = job.copy()
-                job_args_dict["group"] = job.get("course_name")
-                job_args_dict["component"] = args_dict.get("component")
-                future = executor.submit(execute_single_test_worker, job_args_dict, print_lock)
-                future_to_job[future] = job
+            future_to_job = {
+                executor.submit(
+                    execute_single_test_worker, 
+                    {**job, "group": job.get("course_name"), "component": args_dict.get("component")}, 
+                    print_lock
+                ): job 
+                for job in jobs
+            }
             
             for future in tqdm(as_completed(future_to_job), total=len(jobs), desc="Running Tests", unit="job"):
                 try:
                     results = future.result()
-                    job_info = future_to_job[future]
-                    tag = job_info.get('tag')
-                    if tag:
-                        for res in results:
-                            if isinstance(res, dict): res['tag'] = tag
                     all_results.extend(results)
                     for res in results:
-                        status_upper = res.get('status', '').upper()
-                        if status_upper not in ['UP', 'SUCCESS', 'OPEN', 'FILTERED'] and not status_upper.startswith('SKIPPED'):
+                        if res.get('test_status') == 'failed':
                             all_failures.append(res)
                 except Exception as e:
                     job_info = future_to_job[future]
                     logger.error(f"Job {job_info} generated an exception: {e}", exc_info=True)
                     failure_report = {'pod': job_info.get('start_pod', 'N/A'), 'component': 'Execution', 
-                                      'status': 'EXCEPTION', 'error': str(e)}
+                                      'status': 'EXCEPTION', 'error': str(e), 'test_status': 'failed'}
                     all_failures.append(failure_report)
                     all_results.append(failure_report)
 
+        # --- THIS IS THE CONSOLIDATED REPORTING BLOCK ---
         if all_failures:
             print("\n" + "="*80)
             print("                       CONSOLIDATED ERROR REPORT")
@@ -442,20 +356,25 @@ def test_environment(args_dict: Dict[str, Any], operation_logger: Optional[Opera
             for fail in sorted(all_failures, key=lambda x: (x.get('pod') or x.get('class_number', 0))):
                 pod_id = fail.get('pod') or fail.get('class_number', 'N/A')
                 status = f"{RED}{fail.get('status') or fail.get('error', 'Unknown')}{ENDC}"
-                error_table_data.append([pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'), fail.get('port', 'N/A'), status])
+                error_table_data.append([
+                    pod_id, fail.get('component', 'N/A'), fail.get('ip', 'N/A'),
+                    fail.get('port', 'N/A'), status
+                ])
             print(tabulate(error_table_data, headers=headers, tablefmt="fancy_grid"))
             print("="*80)
         else:
             print("\n✅ All tests completed successfully with no reported failures.")
+        # --- END OF REPORTING BLOCK ---
 
         return all_results
-    
+
     # --- Fallback Error ---
-    err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range with --start-pod and --end-pod, or use --db to list allocations."
+    err_msg = "Invalid arguments for 'test' command. Please provide a --tag, or --vendor for a vendor-wide test, or a pod/class range, or use --db to list allocations."
     logger.error(err_msg); print(f"Error: {err_msg}", file=sys.stderr)
     return [{"status": "failed", "error": err_msg}] 
-# --- Modified setup_environment ---
-# Accepts args_dict instead of argparse.Namespace
+
+
+# ... (The rest of the file: setup_environment, teardown_environment, etc. remains unchanged)
 def setup_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
     """Handles the 'setup' command logic, taking args as a dictionary."""
     # --- Extract arguments from dict, providing defaults and type conversion ---
@@ -1008,8 +927,6 @@ def teardown_environment(args_dict: Dict[str, Any], operation_logger: OperationL
     return all_results
 
 
-# --- Modified manage_environment ---
-# Accepts args_dict instead of argparse.Namespace
 def manage_environment(args_dict: Dict[str, Any], operation_logger: OperationLogger) -> List[Dict[str, Any]]:
     """Handles the 'manage' command logic using args_dict."""
     # --- Extract arguments ---
