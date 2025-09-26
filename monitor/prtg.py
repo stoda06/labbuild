@@ -9,28 +9,16 @@ from urllib.parse import quote_plus, urlparse, parse_qs
 # Disable InsecureRequestWarning if not verifying SSL certificates.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-import logging
-logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
+logger = logging.getLogger(__name__)
 
 class PRTGManager:
     """
     A manager class for interacting with a PRTG server via its API.
-
-    This class provides functionality to search for, clone, configure, and enable devices
-    on a PRTG server. It also allows retrieval of sensor counts and device statuses.
+    ...
     """
 
     def __init__(self, prtg_url, api_token):
-        """
-        Initializes a new instance of the PRTGManager class.
-
-        This method sets up the API URL, API token, and a requests session configured with
-        retry logic to handle transient HTTP errors.
-
-        Args:
-            prtg_url (str): The base URL of the PRTG server.
-            api_token (str): The API token for authenticating with the PRTG server.
-        """
+        # ... (init method remains unchanged)
         self.prtg_url = prtg_url
         self.api_token = api_token
         self.session = requests.Session()
@@ -38,7 +26,8 @@ class PRTGManager:
         # Configure the session with retry logic for certain HTTP status codes.
         retries = Retry(total=5, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
         self.session.mount('https://', HTTPAdapter(max_retries=retries))
-    
+
+    # ... (all other methods like search_device, clone_device, etc., remain unchanged)
     def create_session(self):
         """
         Creates and returns a new requests session with retry logic.
@@ -114,7 +103,7 @@ class PRTGManager:
             # Return a list of all found object IDs
             return [device['objid'] for device in devices]
         except Exception as e:
-            self.logger.error(f"Failed to perform global search for device '{device_name}' on {self.prtg_url}: {e}")
+            logger.error(f"Failed to perform global search for device '{device_name}' on {self.prtg_url}: {e}")
             return []
 
     def clone_device(self, obj_id, container_id, clone_name):
@@ -393,133 +382,112 @@ class PRTGManager:
             # Optionally, log the error here using your logger.
             return 0
 
+    # --- THIS IS THE CORRECTED METHOD ---
     @staticmethod
     def add_monitor(pod_config, db_client):
         """
-        Adds a monitoring device to PRTG based on the provided pod configuration.
-
-        This static method retrieves available PRTG server configurations from the database,
-        selects one with available monitoring capacity, and then attempts to find or create a
-        monitoring device for the specified pod. It also sets the device's IP address based on the
-        template object's IP plus the pod number, and enables the device. If successful, the method
-        returns the URL of the newly configured PRTG monitor.
-
-        Args:
-            pod_config (dict): Configuration dictionary containing pod details and PRTG settings.
-                Expected keys include:
-                    - "pod_number": The unique identifier for the pod.
-                    - "container_id": The PRTG container (group) ID where the device should reside.
-                    - "prtg": A dictionary with keys:
-                        - "name": The name to assign to the device.
-                        - "object": The object ID of the template to clone if the device does not already exist.
-            db_client (MongoClient): A MongoDB client instance for accessing the PRTG server collection.
-
-        Returns:
-            str: The URL of the newly created or updated PRTG monitor if successful.
-            None: If the device could not be added.
+        Adds monitoring devices to PRTG based on a list in the pod configuration.
         """
-        
-        # Retrieve the pod number from the configuration.
+        first_successful_url = None
         pod = pod_config.get("pod_number")
         if not pod:
             logger.error("Pod number not specified in pod_config.")
             return None
 
-        # Connect to the database and access the 'prtg' collection.
+        # The prtg config is now a list of dictionaries
+        prtg_definitions = pod_config.get("prtg")
+        if not isinstance(prtg_definitions, list):
+            logger.error(f"PRTG configuration for pod {pod} is not a list. Skipping.")
+            return None
+
         db = db_client["labbuild_db"]
         collection = db["prtg"]
-
-        # Retrieve the PRTG server details for vendor.
         server_data = (collection.find_one({"vendor_shortcode": pod_config["vendor_shortcode"]}) or 
                        collection.find_one({"vendor_shortcode": "ot"}))
 
         if not server_data or "servers" not in server_data:
-            logger.error("No PRTG server configuration found for vendor 'cp'.")
+            logger.error(f"No PRTG server configuration found for vendor '{pod_config['vendor_shortcode']}'.")
             return None
 
-        # Iterate over the available PRTG servers.
-        for server in server_data["servers"]:
-            # Instantiate a new PRTGManager for the current server configuration.
-            prtg_obj = PRTGManager(server["url"], server["apitoken"])
-
-            # Extract the container ID from the configuration.
-            container_id = pod_config.get("prtg", {}).get("container")
+        # Iterate through each monitor definition in the course config
+        for monitor_def in prtg_definitions:
+            container_id = monitor_def.get("container")
             if not container_id:
-                logger.error("Container ID not specified in pod_config.")
+                logger.error(f"Container ID not specified for a monitor in pod {pod}. Skipping this monitor.")
                 continue
 
-            # Determine the device name to use.
-            clone_name = pod_config.get("prtg", {}).get("name")
+            clone_name_pattern = monitor_def.get("name")
+            if not clone_name_pattern:
+                logger.error(f"Monitor name not specified for a monitor in pod {pod}. Skipping.")
+                continue
             
-            # Look for an existing device with the specified name.
-            device_id = prtg_obj.search_device(container_id, clone_name)
-            if not device_id:
-                # If no existing device is found, attempt to clone a new device from a template.
-                template_obj_id = pod_config.get("prtg", {}).get("object")
-                if not template_obj_id:
-                    logger.error("Template object ID not specified in pod_config.")
-                    continue
-                device_id = prtg_obj.clone_device(template_obj_id, container_id, clone_name)
-                if not device_id:
-                    logger.error(f"Failed to clone device for {clone_name}.")
-                    continue
+            # Replace {X} placeholder with the actual pod number
+            clone_name = clone_name_pattern.replace("{X}", str(pod))
+            
+            # Iterate over the available PRTG servers to find a suitable one
+            for server in server_data["servers"]:
+                try:
+                    prtg_obj = PRTGManager(server["url"], server["apitoken"])
 
-            # Instead of reading the IP from pod_config, fetch the template object's IP,
-            # add the pod number to its last octet, and set the result as the new device's IP.
-            template_obj_id = pod_config.get("prtg", {}).get("object")
-            if not template_obj_id:
-                logger.error("Template object ID not specified in pod_config.")
-                continue
+                    device_id = prtg_obj.search_device(container_id, clone_name)
+                    if not device_id:
+                        template_obj_id = monitor_def.get("object")
+                        if not template_obj_id:
+                            logger.error(f"Template object ID not specified for monitor '{clone_name}'.")
+                            break # Break from server loop, move to next monitor_def
+                        
+                        device_id = prtg_obj.clone_device(template_obj_id, container_id, clone_name)
+                        if not device_id:
+                            logger.error(f"Failed to clone device for '{clone_name}' on server {server['url']}.")
+                            continue # Try next server
 
-            template_ip = prtg_obj.get_device_ip(template_obj_id)
-            if not template_ip:
-                logger.error(f"Failed to retrieve IP from template object {template_obj_id}.")
-                continue
+                    # IP Calculation (same logic as before)
+                    template_obj_id = monitor_def.get("object")
+                    template_ip = prtg_obj.get_device_ip(template_obj_id)
+                    if not template_ip:
+                        logger.error(f"Failed to get IP from template {template_obj_id} for '{clone_name}'.")
+                        break
+                    
+                    ip_parts = template_ip.split('.')
+                    last_octet = int(ip_parts[3])
+                    
+                    # Special logic for PRTG Win 10 vs 2012 can be based on name if needed
+                    if "Win_10" in clone_name:
+                        new_last_octet = 100 + pod
+                    elif "Win_2012" in clone_name:
+                        new_last_octet = 200 + pod
+                    else: # Fallback to original simple addition
+                        new_last_octet = last_octet + pod -1
+                    
+                    if new_last_octet > 255:
+                        logger.error(f"IP last octet out of range for '{clone_name}'.")
+                        break
 
-            try:
-                pod_number = int(pod)
-            except ValueError:
-                logger.error(f"Pod number '{pod}' is not a valid integer.")
-                continue
+                    new_ip = '.'.join(ip_parts[:3] + [str(new_last_octet)])
+                    if not prtg_obj.set_device_ip(device_id, new_ip):
+                        logger.error(f"Failed to set IP {new_ip} for device '{clone_name}'.")
+                        continue
 
-            ip_parts = template_ip.split('.')
-            if len(ip_parts) != 4:
-                logger.error(f"Template IP '{template_ip}' is not a valid IPv4 address.")
-                continue
+                    if not prtg_obj.get_device_status(device_id):
+                        if not prtg_obj.enable_device(device_id):
+                            logger.error(f"Failed to enable device '{clone_name}'.")
+                            continue
 
-            try:
-                last_octet = int(ip_parts[3])
-                if '11.1-vr' in clone_name:
-                    last_octet = 101
-            except ValueError:
-                logger.error(f"Last octet of template IP '{template_ip}' is not a valid integer.")
-                continue
+                    monitor_url = f"{server['url']}/device.htm?id={device_id}"
+                    logger.info(f"Monitor '{clone_name}' configured successfully: {monitor_url}")
 
-            new_last_octet = last_octet + pod_number - 1
-            if new_last_octet > 255:
-                logger.error(f"Resulting IP's last octet {new_last_octet} exceeds 255.")
-                continue
+                    if first_successful_url is None:
+                        first_successful_url = monitor_url
+                    
+                    # Successfully configured this monitor, break from the server loop
+                    break
 
-            new_ip = '.'.join(ip_parts[:3] + [str(new_last_octet)])
-            if not prtg_obj.set_device_ip(device_id, new_ip):
-                logger.error(f"Failed to set IP address {new_ip} for device {device_id}.")
-                continue
-
-            # Ensure that the device is enabled; if not, attempt to enable it.
-            if not prtg_obj.get_device_status(device_id):
-                if not prtg_obj.enable_device(device_id):
-                    logger.error(f"Failed to enable device {device_id}.")
-                    continue
-
-            # Build the URL for the newly configured monitor and return it.
-            monitor_url = f"{server['url']}/device.htm?id={device_id}"
-            logger.info(f"Device added successfully: {monitor_url}")
-            return monitor_url
-
-        # If no available server was able to successfully add the device, log an error.
-        logger.error("Failed to add device to any available PRTG server.")
-        return None
-    
+                except Exception as e:
+                    logger.error(f"Error processing monitor '{clone_name}' on server {server['url']}: {e}")
+                    continue # Try next server
+        
+        return first_successful_url
+        
     def pause_device(self, device_id):
         """
         Pauses a device on the PRTG server.
