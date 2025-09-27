@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import logging  # <--- THIS IS THE FIX
 import argparse
 import re
 import pexpect
@@ -201,6 +202,7 @@ def run_ssh_checks(pod, components, host, print_lock):
         print(f"\n📊 Network & Cluster Check Summary for Pod {pod}")
         headers=["Component", "Component IP", "NU Pod", "Port", "Status"]
         table_data = [[r['component'], r.get('ip', 'N/A'), r.get('host', host_fqdn), r.get('port', 'N/A'), r['status']] for r in results]
+        # Colorize the row based on the 'test_status' key
         formatted_rows = [[f"{RED}{cell}{ENDC}" if row_data['test_status'] != 'success' else cell for cell in row] for row, row_data in zip(table_data, results)]
         print(tabulate(formatted_rows, headers=headers, tablefmt="fancy_grid"))
 
