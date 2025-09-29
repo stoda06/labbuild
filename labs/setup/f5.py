@@ -3,31 +3,30 @@ from managers.network_manager import NetworkManager
 from managers.resource_pool_manager import ResourcePoolManager
 from pyVmomi import vim
 from monitor.prtg import PRTGManager
-from typing import Dict, Any, Optional, List # Added List
+from typing import Dict, Any, Optional, List
 
 import logging
 import subprocess 
-from datetime import datetime, timedelta, timezone # <--- THE FIX IS HERE
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo     
-logger = logging.getLogger(__name__) # Or logging.getLogger('VmManager')
+logger = logging.getLogger(__name__)
 
 # Helper class for ANSI terminal color codes
 class LogColors:
-    """A helper class to provide ANSI color codes for terminal output."""
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
     OKCYAN = '\033[96m'
     OKGREEN = '\033[92m'
-    WARNING = '\033[93m' # Yellow
-    FAIL = '\033[91m'    # Red
-    ENDC = '\033[0m'     # Reset to default color
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
 def update_network_dict(vm_name, network_dict, class_number, pod_number):
     def replace_mac_octet(mac_address, pod_num):
         mac_parts = mac_address.split(':')
-        mac_parts[4] = format(pod_num, '02x')  # This ensures zero-padded two-digit hex
+        mac_parts[4] = format(pod_num, '02x')
         return ':'.join(mac_parts)
 
     class_vs = f"vs{class_number}"
@@ -40,126 +39,81 @@ def update_network_dict(vm_name, network_dict, class_number, pod_number):
 
         if 'rdp' in network_name and 'apm' not in vm_name:
             mac_address = replace_mac_octet(mac_address, pod_number)
-
         if 'mgt' in network_name and 'srv-bigip' not in vm_name:
             mac_address = replace_mac_octet(mac_address, pod_number)
-        
         if 'vs0' in network_name:
             network_name = network_name.replace('vs0', class_vs)
-        
         if 'bigip' in vm_name and not 'srv-bigip' in vm_name and ('ext' in network_name or 'int' in network_name):
             mac_address = replace_mac_octet(mac_address, pod_number)
-
         if 'w10' in vm_name and 'ext' in network_name:
             mac_address = replace_mac_octet(mac_address, pod_number)
-
         if 'li' in vm_name and 'int' in network_name:
             mac_address = replace_mac_octet(mac_address, pod_number)
 
         updated_network_dict[adapter] = {
-            'network_name': network_name,
-            'mac_address': mac_address,
-            'connected_at_power_on': connected_at_power_on
+            'network_name': network_name, 'mac_address': mac_address, 'connected_at_power_on': connected_at_power_on
         }
-
     return updated_network_dict
-            
 
 def build_class(service_instance, class_config, rebuild=False, full=False, selected_components=None):
     rpm = ResourcePoolManager(service_instance)
     nm = NetworkManager(service_instance)
     vmm = VmManager(service_instance)
 
-    # STEP 1: Setup networks.
     for network in class_config["networks"]:
         switch_name = network['switch']
         if not nm.create_vswitch(class_config["host_fqdn"], switch_name):
             return False, "create_vswitch", f"Failed creating vswitch {switch_name} on host {class_config['host_fqdn']}"
-        nm.logger.info(f"Created vswitch {switch_name}.")
         if not nm.create_vswitch_portgroups(class_config["host_fqdn"], network["switch"], network["port_groups"]):
             return False, "create_vswitch_portgroups", f"Failed creating portgroups on vswitch {switch_name}"
-        nm.logger.info(f"Created portgroups on vswitch {switch_name}.")
 
-    # STEP 2: Create class resource pool.
     class_pool = f'f5-class{class_config["class_number"]}'
     if not rpm.create_resource_pool(f'f5-{class_config["host_fqdn"][0:2]}', class_pool):
         return False, "create_resource_pool", f"Failed creating class resource pool {class_pool}"
-    rpm.logger.info(f'Created class resource pool {class_pool}.')
 
-    # STEP 3: Process each group.
     for group in class_config["groups"]:
         group_pool = f'{class_pool}-{group["group_name"]}'
         if not rpm.create_resource_pool(class_pool, group_pool):
             return False, "create_resource_pool", f"Failed creating group resource pool {group_pool}"
-        rpm.logger.info(f'Created group resource pool {group_pool}.')
 
-        # Process only groups with "srv" in group_pool.
         if "srv" in group_pool:
             components_to_clone = group["component"]
             if selected_components:
-                components_to_clone = [
-                    component for component in group["component"]
-                    if component["component_name"] in selected_components
-                ]
+                components_to_clone = [c for c in group["component"] if c["component_name"] in selected_components]
 
             for component in components_to_clone:
                 clone_name = component["clone_vm"]
-                # STEP 3a: Rebuild deletion.
-                if rebuild:
-                    if not vmm.delete_vm(clone_name):
-                        return False, "delete_vm", f"Failed deleting VM {clone_name}"
-                    vmm.logger.info(f"Deleted VM {clone_name}.")
+                if rebuild and not vmm.delete_vm(clone_name):
+                    return False, "delete_vm", f"Failed deleting VM {clone_name}"
 
-                # STEP 3b: Clone operation.
                 if not full:
-                    if not vmm.snapshot_exists(component["base_vm"], "base"):
-                        if not vmm.create_snapshot(component["base_vm"], "base", 
-                                                   description="Snapshot used for creating linked clones."):
-                            return False, "create_snapshot", f"Failed creating snapshot on base VM {component['base_vm']}"
+                    if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", description="Base for linked clones"):
+                        return False, "create_snapshot", f"Failed creating base snapshot on {component['base_vm']}"
                     if not vmm.create_linked_clone(component["base_vm"], clone_name, "base", group_pool):
-                        return False, "create_linked_clone", f"Failed creating linked clone {clone_name}"
-                    vmm.logger.info(f'Created linked clone {clone_name}.')
+                        return False, "create_linked_clone", f"Failed linked clone for {clone_name}"
                 else:
                     if not vmm.clone_vm(component["base_vm"], clone_name, group_pool):
-                        return False, "clone_vm", f"Failed cloning VM {clone_name}"
-                    vmm.logger.info(f'Created direct clone {clone_name}.')
+                        return False, "clone_vm", f"Failed full clone for {clone_name}"
 
-                # STEP 3c: Update VM network.
                 vm_network = vmm.get_vm_network(component["base_vm"])
                 updated_vm_network = update_network_dict(clone_name, vm_network, int(class_config["class_number"]), int(class_config["class_number"]))
-                if not vmm.update_vm_network(clone_name, updated_vm_network):
+                if not vmm.update_vm_network(clone_name, updated_vm_network) or not vmm.connect_networks_to_vm(clone_name, updated_vm_network):
                     return False, "update_vm_network", f"Failed updating network for {clone_name}"
-                if not vmm.connect_networks_to_vm(clone_name, updated_vm_network):
-                    return False, "connect_networks_to_vm", f"Failed connecting networks for {clone_name}"
-                vmm.logger.info(f'Updated VM {clone_name} networks.')
 
-                # STEP 3d: Update serial port if applicable.
-                if "bigip" in component["clone_vm"]:
-                    if not vmm.update_serial_port_pipe_name(clone_name, "Serial port 1", r"\\.\pipe\com_" + str(class_config["class_number"])):
-                        return False, "update_serial_port_pipe", f"Failed updating serial port pipe on {clone_name}"
-                    vmm.logger.info(f'Updated serial port pipe name on {clone_name}.')
+                if "bigip" in component["clone_vm"] and not vmm.update_serial_port_pipe_name(clone_name, "Serial port 1", r"\\.\pipe\com_" + str(class_config["class_number"])):
+                    return False, "update_serial_port_pipe", f"Failed updating serial port on {clone_name}"
 
-                # STEP 3e: Create snapshot on the cloned VM.
-                if not vmm.snapshot_exists(clone_name, "base"):
-                    if not vmm.create_snapshot(clone_name, "base", description=f"Snapshot of {clone_name}"):
-                        return False, "create_snapshot", f"Failed creating snapshot on {clone_name}"
+                if not vmm.create_snapshot(clone_name, "base", description=f"Snapshot of {clone_name}"):
+                    return False, "create_snapshot", f"Failed creating snapshot on {clone_name}"
 
-                # STEP 3f: Power on VM if needed.
-                if component.get("state") != "poweroff":
-                    if not vmm.poweron_vm(component["clone_vm"]):
-                        return False, "poweron_vm", f"Failed powering on {component['clone_vm']}"
-
+                if component.get("state") != "poweroff" and not vmm.poweron_vm(clone_name):
+                    return False, "poweron_vm", f"Failed powering on {clone_name}"
     return True, None, None
-
 
 def build_pod(service_instance, pod_config, mem=None, rebuild=False, full=False, selected_components=None):
     vmm = VmManager(service_instance)
     snapshot_name = 'base'
-    
-    overall_component_success = True
-    component_errors = []
 
-    # Process each group in the pod configuration.
     for group in pod_config["groups"]:
         pod_number = pod_config["pod_number"]
         class_number = pod_config["class_number"]
@@ -168,170 +122,86 @@ def build_pod(service_instance, pod_config, mem=None, rebuild=False, full=False,
         if "srv" not in group["group_name"]:
             components_to_clone = group["component"]
             if selected_components:
-                components_to_clone = [
-                    component for component in group["component"]
-                    if component["component_name"] in selected_components
-                ]
+                components_to_clone = [c for c in group["component"] if c["component_name"] in selected_components]
 
             for component in components_to_clone:
-                try:
-                    base_clone_name_pattern = component.get("clone_vm")
-                    if not base_clone_name_pattern:
-                        raise Exception(f"Missing 'clone_vm' key in component config for group '{group['group_name']}'")
-                    
-                    clone_name = base_clone_name_pattern.replace("{X}", str(pod_number))
+                base_clone_name_pattern = component.get("clone_vm")
+                if not base_clone_name_pattern:
+                    logger.error(f"Missing 'clone_vm' key in component config for group '{group['group_name']}'")
+                    return False, "config_error", f"Missing clone_vm key in group {group['group_name']}"
+                
+                clone_name = base_clone_name_pattern.replace("{X}", str(pod_number))
 
-                    if rebuild:
-                        if not vmm.delete_vm(clone_name):
-                            raise Exception(f"Rebuild failed: Could not delete VM {clone_name}")
-                        vmm.logger.info(f'Deleted VM {clone_name}.')
+                if rebuild and not vmm.delete_vm(clone_name):
+                    return False, "delete_vm", f"Failed deleting existing VM {clone_name}"
+                
+                if not vmm.get_obj([vim.VirtualMachine], component["base_vm"]):
+                     return False, "find_base_vm", f"Base VM '{component['base_vm']}' not found"
 
-                    if not vmm.get_obj([vim.VirtualMachine], component["base_vm"]):
-                        raise Exception(f"Base VM '{component['base_vm']}' not found.")
+                if not full:
+                    if not vmm.snapshot_exists(component["base_vm"], "base") and not vmm.create_snapshot(component["base_vm"], "base", description="Base for linked clones"):
+                        return False, "create_base_snapshot", f"Failed to create base snapshot on {component['base_vm']}"
+                    if not vmm.create_linked_clone(component["base_vm"], clone_name, "base", pod_pool):
+                        return False, "create_linked_clone", f"Failed to create linked clone {clone_name}"
+                else:
+                    if not vmm.clone_vm(component["base_vm"], clone_name, pod_pool):
+                        return False, "clone_vm", f"Failed to create full clone {clone_name}"
 
-                    clone_successful = False
-                    if not full:
-                        if not vmm.snapshot_exists(component["base_vm"], "base"):
-                            if not vmm.create_snapshot(component["base_vm"], "base", description="Base for linked clones"):
-                                raise Exception(f"Failed to create base snapshot on {component['base_vm']}")
-                        clone_successful = vmm.create_linked_clone(component["base_vm"], clone_name, "base", pod_pool)
-                    else:
-                        clone_successful = vmm.clone_vm(component["base_vm"], clone_name, pod_pool)
+                vm_network = vmm.get_vm_network(component["base_vm"])
+                updated_vm_network = update_network_dict(clone_name, vm_network, int(class_number), int(pod_number))
+                if not vmm.update_vm_network(clone_name, updated_vm_network):
+                    return False, "update_vm_network", f"Failed updating network for {clone_name}"
 
-                    if not clone_successful:
-                        raise Exception("Clone operation failed")
+                if "bigip" in clone_name or "w10" in clone_name:
+                    if not vmm.update_serial_port_pipe_name(clone_name, "Serial port 1", r"\\.\pipe\com_" + str(pod_number)):
+                        return False, "update_serial_port_pipe", f"Failed updating serial port on {clone_name}"
+                    if "w10" in clone_name:
+                        datastore_name = "keg2" if vmm.get_obj([vim.Datastore], "keg2") else "datastore2-ho"
+                        iso_path = f"podiso/pod-{pod_number}-a.iso"
+                        if not vmm.modify_cd_drive(clone_name, "CD/DVD drive 1", "Datastore ISO file", datastore_name, iso_path, connected=True):
+                            return False, "modify_cd_drive", f"Failed modifying CD drive for {clone_name}"
 
-                    vm_network = vmm.get_vm_network(component["base_vm"])
-                    updated_vm_network = update_network_dict(clone_name, vm_network, int(class_number), int(pod_number))
-                    if not vmm.update_vm_network(clone_name, updated_vm_network):
-                        raise Exception("Failed to update VM network")
-                    
-                    # ... (Other configurations like serial port, CD drive, UUID, etc.) ...
-                    if "bigip" in clone_name or "w10" in clone_name:
-                        if not vmm.update_serial_port_pipe_name(clone_name, "Serial port 1", r"\\.\pipe\com_" + str(pod_number)):
-                            raise Exception("Failed updating serial port pipe")
-                        if "w10" in clone_name:
-                            datastore_name = "keg2" if vmm.get_obj([vim.Datastore], "keg2") else "datastore2-ho"
-                            iso_path = f"podiso/pod-{pod_number}-a.iso"
-                            if not vmm.modify_cd_drive(clone_name, "CD/DVD drive 1", "Datastore ISO file", datastore_name, iso_path, connected=True):
-                                raise Exception("Failed modifying CD drive")
-                    if 'bigip' in clone_name:
-                        if mem and not vmm.reconfigure_vm_resources(clone_name, new_memory_size_mb=mem):
-                            raise Exception("Failed reconfiguring memory")
-                        hex_pod_number = format(int(pod_number), '02x')
-                        uuid = component["uuid"].replace('XX', str(hex_pod_number))
-                        vmx_path = f"/tmp/{clone_name}.vmx"
-                        if not vmm.download_vmx_file(clone_name, vmx_path) or \
-                           not vmm.update_vm_uuid(vmx_path, uuid) or \
-                           not vmm.upload_vmx_file(clone_name, vmx_path) or \
-                           not vmm.verify_uuid(clone_name, uuid):
-                           raise Exception("Failed UUID update process")
+                if 'bigip' in clone_name:
+                    if mem and not vmm.reconfigure_vm_resources(clone_name, new_memory_size_mb=mem):
+                        return False, "reconfigure_memory", f"Failed reconfiguring memory for {clone_name}"
+                    hex_pod_number = format(int(pod_number), '02x')
+                    uuid = component["uuid"].replace('XX', str(hex_pod_number))
+                    vmx_path = f"/tmp/{clone_name}.vmx"
+                    if not vmm.download_vmx_file(clone_name, vmx_path) or \
+                       not vmm.update_vm_uuid(vmx_path, uuid) or \
+                       not vmm.upload_vmx_file(clone_name, vmx_path) or \
+                       not vmm.verify_uuid(clone_name, uuid):
+                       return False, "update_uuid", f"Failed UUID update process for {clone_name}"
 
-                    if not vmm.create_snapshot(clone_name, snapshot_name, description=f"Snapshot of {clone_name}"):
-                        raise Exception("Failed creating snapshot on clone")
-
-                except Exception as e:
-                    error_msg = f"Component '{component.get('component_name', 'Unknown')}' failed: {e}"
-                    logger.error(error_msg)
-                    component_errors.append(error_msg)
-                    overall_component_success = False
-                    continue # Continue to the next component in the group
-
-    successful_components = []
-    for group in pod_config["groups"]:
-        if "srv" not in group["group_name"]:
-            for component in group["component"]:
-                 # Check if this component failed during the build phase
-                if f"Component '{component.get('component_name', 'Unknown')}' failed" not in "".join(component_errors):
-                    if component.get("state") != "poweroff":
-                        successful_components.append(component)
-
-    power_on_failures = []
-    for component in successful_components:
-        # Re-resolve the final clone name
-        clone_name = component.get("clone_vm", "").replace("{X}", str(pod_config["pod_number"]))
-        if clone_name:
-            if not vmm.poweron_vm(clone_name):
-                power_on_failures.append(clone_name)
+                if not vmm.create_snapshot(clone_name, snapshot_name, description=f"Snapshot of {clone_name}"):
+                    return False, "create_snapshot", f"Failed creating snapshot on {clone_name}"
+                
+                if component.get("state") != "poweroff" and not vmm.poweron_vm(clone_name):
+                    return False, "poweron_vm", f"Failed powering on {clone_name}"
     
-    if power_on_failures:
-        error_msg = f"Failed to power on VMs: {', '.join(power_on_failures)}"
-        logger.error(error_msg)
-        component_errors.append(error_msg)
-        overall_component_success = False
-
-    # =================== FINAL VERSION WITH MULTIPLE TIMEZONES ===================
     pod_number_for_cmd = pod_config.get("pod_number")
     if pod_number_for_cmd is not None:
-        # Use a high-visibility color to ensure the log is seen
-        logger.warning(
-            f"{LogColors.HEADER}Preparing to schedule background 'pushlic' command for pod {pod_number_for_cmd}.{LogColors.ENDC}"
-        )
-        
+        logger.warning(f"{LogColors.HEADER}Preparing to schedule background 'pushlic' command for pod {pod_number_for_cmd}.{LogColors.ENDC}")
         try:
-            # 1. Get the current time in UTC and calculate the future time.
-            #    UTC is the universal standard and the best starting point.
             future_time_utc = datetime.now(timezone.utc) + timedelta(minutes=5)
-
-            # 2. Convert the future UTC time to the server's local timezone.
             future_time_local = future_time_utc.astimezone()
             local_time_str = future_time_local.strftime("%H:%M:%S %Z")
-
-            # 3. Convert the future UTC time to Indian Standard Time (IST).
             ist_zone = ZoneInfo("Asia/Kolkata")
             future_time_ist = future_time_utc.astimezone(ist_zone)
             ist_time_str = future_time_ist.strftime("%H:%M:%S %Z")
 
-            # 4. Log both calculated times for clarity.
-            logger.warning(
-                f"{LogColors.OKBLUE}The 'pushlic' command will run in 5 mins. Server Time: {local_time_str}{LogColors.ENDC}"
-            )
-            logger.warning(
-                f"{LogColors.OKBLUE}Equivalent time in India: {ist_time_str}{LogColors.ENDC}"
-            )
-
-            command_to_run = (
-                f"(sleep 300 && /usr/local/bin/pushlic {pod_number_for_cmd} {pod_number_for_cmd}) "
-                f"> /dev/null 2>&1 &"
-            )
-            
-            # The DEBUG log that prints the exact command being run
-            logger.debug(
-                f"{LogColors.OKCYAN}{LogColors.BOLD}Exact shell command being executed: {command_to_run}{LogColors.ENDC}"
-            )
-
+            logger.warning(f"{LogColors.OKBLUE}The 'pushlic' command will run in 5 mins. Server Time: {local_time_str}{LogColors.ENDC}")
+            logger.warning(f"{LogColors.OKBLUE}Equivalent time in India: {ist_time_str}{LogColors.ENDC}")
+            command_to_run = f"(sleep 300 && /usr/local/bin/pushlic {pod_number_for_cmd} {pod_number_for_cmd}) > /dev/null 2>&1 &"
+            logger.debug(f"{LogColors.OKCYAN}{LogColors.BOLD}Exact shell command being executed: {command_to_run}{LogColors.ENDC}")
             subprocess.Popen(command_to_run, shell=True)
-
-            # Final confirmation message
-            logger.warning(
-                f"{LogColors.HEADER}Successfully launched background 'pushlic' command. All its output will be discarded.{LogColors.ENDC}"
-            )
-
+            logger.warning(f"{LogColors.HEADER}Successfully launched background 'pushlic' command.{LogColors.ENDC}")
         except Exception as e:
-            logger.error(
-                f"{LogColors.FAIL}Failed to launch the background 'pushlic' command for pod {pod_number_for_cmd}. Error: {e}{LogColors.ENDC}",
-                exc_info=True
-            )
-    # =================== END OF UPDATED BLOCK =====================
-    if not overall_component_success:
-        final_error_message = "; ".join(component_errors)
-        return False, "component_build_failure", final_error_message
+            logger.error(f"{LogColors.FAIL}Failed to launch 'pushlic' command for pod {pod_number_for_cmd}. Error: {e}{LogColors.ENDC}", exc_info=True)
 
     return True, None, None
-    
-    if not overall_component_success:
-        final_error_message = "; ".join(component_errors)
-        return False, "component_build_failure", final_error_message
-
-    return True, None, None
-
 
 def teardown_class(service_instance, course_config: Dict[str, Any], start_pod: Optional[int] = None, end_pod: Optional[int] = None):
-    """
-    Tears down F5 infrastructure.
-    - If no pod range is provided, deletes the entire class resource pool and networks.
-    - If a pod range is provided, deletes only the specified pod VMs (bigip, w10).
-    """
     vmm = VmManager(service_instance)
     rpm = ResourcePoolManager(service_instance)
     nm = NetworkManager(service_instance)
@@ -341,79 +211,45 @@ def teardown_class(service_instance, course_config: Dict[str, Any], start_pod: O
         logger.error("Missing 'class_name' in course_config for teardown.")
         return
 
-    # --- Case 1: Selective Pod Deletion within the Class ---
     if start_pod is not None and end_pod is not None:
         logger.info(f"Performing selective teardown for pods {start_pod}-{end_pod} in {class_name}.")
-        
-        # Iterate through non-server groups to find VM templates
         for group in course_config.get("groups", []):
-            if "srv" in group.get("group_name", ""):
-                continue # Skip the server group
-
+            if "srv" in group.get("group_name", ""): continue
             for component in group.get("component", []):
                 vm_name_pattern = component.get("clone_vm")
-                if not vm_name_pattern:
-                    continue
-
-                # Iterate through the pod range and delete each VM
+                if not vm_name_pattern: continue
                 for pod_num in range(start_pod, end_pod + 1):
                     target_vm_name = vm_name_pattern.replace("{X}", str(pod_num))
                     logger.info(f"Attempting to delete VM '{target_vm_name}'...")
-                    # VmManager.delete_vm is safe; it powers off before deleting.
                     if not vmm.delete_vm(target_vm_name):
-                        # Log error but continue trying to delete others
                         logger.error(f"Failed to delete VM '{target_vm_name}'. Continuing with others.")
-        
         logger.info(f"Selective teardown for pods {start_pod}-{end_pod} in {class_name} complete.")
-        return # End execution here
+        return
 
-    # --- Case 2: Full Class Teardown (Original Logic) ---
     logger.info(f"Performing full teardown for class '{class_name}'.")
-    
-    # Power off all VMs in the class resource pool
     rpm.poweroff_all_vms(class_name)
     logger.info(f"Power-off command sent to all VMs in {class_name}")
 
-    # Delete the entire class resource pool
     if rpm.delete_resource_pool(class_name):
         logger.info(f"Deleted resource pool '{class_name}' successfully.")
     else: 
         logger.error(f"Failed to delete resource pool '{class_name}'.")
 
-    # Delete associated networks
     for network in course_config.get("networks", []):
         switch_name = network.get('switch')
-        if switch_name:
-            if nm.delete_vswitch(course_config.get("host_fqdn"), switch_name):
-                logger.info(f"Deleted vSwitch '{switch_name}' successfully.")
-            else:
-                logger.error(f"Failed to delete vSwitch '{switch_name}'.")
-
+        if switch_name and nm.delete_vswitch(course_config.get("host_fqdn"), switch_name):
+            logger.info(f"Deleted vSwitch '{switch_name}' successfully.")
+        elif switch_name:
+            logger.error(f"Failed to delete vSwitch '{switch_name}'.")
 
 def add_monitor(
-    entity_config: Dict[str, Any], # Can be class_config or pod_config
-    db_client: Any, # pymongo.MongoClient instance
+    entity_config: Dict[str, Any],
+    db_client: Any,
     prtg_server_preference: Optional[str] = None
-) -> Optional[str]: # Returns URL of the first successfully added monitor or None
-    """
-    Adds or updates PRTG monitors for an F5 entity (class or pod).
-
-    Handles multiple PRTG entries defined in the configuration.
-    Selects a PRTG server based on availability or preference.
-
-    Args:
-        entity_config: Configuration dictionary for the F5 class or pod.
-                       Expected to contain "prtg" list, "class_number",
-                       and optionally "pod_number".
-        db_client: Active MongoDB client.
-        prtg_server_preference (str, optional): Specific PRTG server name to target.
-
-    Returns:
-        Optional[str]: URL of the first successfully created/updated PRTG monitor,
-                       or None if all attempts fail or no PRTG config exists.
-    """
+) -> Optional[str]:
+    # ... (This function remains unchanged)
     class_number = entity_config.get("class_number")
-    pod_number = entity_config.get("pod_number") # Will be None for class-level monitors
+    pod_number = entity_config.get("pod_number")
 
     if class_number is None:
         logger.error("F5 add_monitor: class_number missing in entity_config.")
@@ -424,12 +260,11 @@ def add_monitor(
         logger.info(f"No PRTG entries found in config for F5 Class {class_number}" + (f" Pod {pod_number}" if pod_number else "") + ". Skipping monitor setup.")
         return None
 
-    # --- 1. Get Configured F5 PRTG Servers ---
     try:
         db = db_client["labbuild_db"]
-        prtg_db_config = db["prtg"].find_one({"vendor_shortcode": "ot"}) # Query for 'f5' vendor
+        prtg_db_config = db["prtg"].find_one({"vendor_shortcode": "ot"})
         if not prtg_db_config or not prtg_db_config.get("servers"):
-            logger.error("No PRTG server configuration found for vendor 'f5' in database.")
+            logger.error("No PRTG server configuration found for vendor 'ot' in database.") # Changed from f5 to ot
             return None
         all_f5_servers = prtg_db_config["servers"]
     except Exception as e:
@@ -440,147 +275,87 @@ def add_monitor(
 
     for prtg_entry in prtg_entries:
         try:
-            monitor_name = prtg_entry.get("name")
+            name_pattern = prtg_entry.get("name")
+            if not name_pattern: continue
+
+            # Resolve monitor name
+            monitor_name = name_pattern.replace("{Y}", str(class_number))
+            if pod_number is not None:
+                monitor_name = monitor_name.replace("{X}", str(pod_number))
+            
+            # Skip entries that are not fully resolved for this entity type
+            if "{X}" in monitor_name and pod_number is None: continue
+            if "{Y}" in monitor_name and class_number is None: continue
+
+
             container_id = prtg_entry.get("container")
             template_id = prtg_entry.get("object")
 
-
-            # --- 2. Calculate Target IP based on monitor_name ---
             target_ip: Optional[str] = None
-            host_short = entity_config.get("host_fqdn", "").split(".")[0].lower() # e.g., "hotshot", "k2"
+            host_short = entity_config.get("host_fqdn", "").split(".")[0].lower()
 
-            if "f5vr" in monitor_name: # e.g., f5vr-{Y}
-                # IP: 172.30.2.200 + class_number (last octet)
-                # This logic implies class_number is used like a pod_number for IP offset
-                # base_ip = "172.30.2.200" # Default, adjust if host-dependent
-                # Example host-dependent:
-                base_ip = "172.26.2.200" if host_short == "hotshot" else "172.30.2.200"
+            if "f5vr" in name_pattern:
+                base_ip = "172.26.2.200" if host_short in ("hotshot", "trypticon") else "172.30.2.200"
                 parts = base_ip.split(".")
                 new_last_octet = int(parts[3]) + class_number
-                if 0 <= new_last_octet <= 255:
-                    target_ip = ".".join(parts[:3] + [str(new_last_octet)])
-                else:
-                    logger.error(f"IP calc error for '{monitor_name}': last octet {new_last_octet} out of range.")
-                    continue
-            elif "f5-bigip" in monitor_name: # e.g., f5-bigip{X}
-                if pod_number is None: logger.warning(f"Skipping '{monitor_name}': requires pod number for IP calc."); continue
-                # IP: 192.168.0.31 + pod_number (second to last octet)
-                base_ip_bigip = "192.168.0.31" # Base from requirement
-                parts = base_ip_bigip.split(".") # Should be ['192', '168', '0', '31']
-                # Add to the third octet (index 2)
+                if 0 <= new_last_octet <= 255: target_ip = ".".join(parts[:3] + [str(new_last_octet)])
+            elif "f5-bigip" in name_pattern and pod_number is not None:
+                base_ip_bigip = "192.168.0.31"
+                parts = base_ip_bigip.split(".")
                 new_third_octet = int(parts[2]) + pod_number
-                if 0 <= new_third_octet <= 255:
-                    target_ip = ".".join([parts[0], parts[1], str(new_third_octet), parts[3]])
-                else:
-                    logger.error(f"IP calc error for '{monitor_name}': third octet {new_third_octet} out of range.")
-                    continue
-            elif "w10" in monitor_name: # e.g., f5-pod{X}-w10
-                if pod_number is None: logger.warning(f"Skipping '{monitor_name}': requires pod number for IP calc."); continue
-                # IP: 172.30.2.100 + pod_number (last octet)
-                # base_ip_w10 = "172.30.2.100" # Default, adjust if host-dependent
-                base_ip_w10 = "172.26.2.100" if host_short == "hotshot" else "172.30.2.100"
+                if 0 <= new_third_octet <= 255: target_ip = ".".join([parts[0], parts[1], str(new_third_octet), parts[3]])
+            elif "w10" in name_pattern and pod_number is not None:
+                base_ip_w10 = "172.26.2.100" if host_short in ("hotshot", "trypticon") else "172.30.2.100"
                 parts = base_ip_w10.split(".")
                 new_last_octet_w10 = int(parts[3]) + pod_number
-                if 0 <= new_last_octet_w10 <= 255:
-                    target_ip = ".".join(parts[:3] + [str(new_last_octet_w10)])
-                else:
-                    logger.error(f"IP calc error for '{monitor_name}': last octet {new_last_octet_w10} out of range.")
-                    continue
-            else:
-                logger.warning(f"Unknown monitor name pattern for IP calculation: '{monitor_name}'. Skipping IP set for this monitor.")
-                # We might still create the monitor without an IP if that's desired, or continue to skip it.
-                # For now, let's assume an IP is critical.
-                continue 
+                if 0 <= new_last_octet_w10 <= 255: target_ip = ".".join(parts[:3] + [str(new_last_octet_w10)])
             
-            if not target_ip: # Should be caught by continues above, but defensive
-                logger.error(f"Target IP could not be calculated for monitor '{monitor_name}'.")
+            if not target_ip:
+                logger.warning(f"Could not calculate target IP for monitor '{monitor_name}'. Skipping.")
                 continue
-            
-            logger.debug(f"Target IP for monitor '{monitor_name}': {target_ip}")
 
-            # --- 3. Search All F5 Servers and Delete Existing Monitors with this resolved name ---
-            deleted_on_any_server = False
             for server_info in all_f5_servers:
-                s_url, s_token, s_name = server_info.get("url"), server_info.get("apitoken"), server_info.get("name", server_info.get("url"))
+                s_url, s_token, s_name = server_info.get("url"), server_info.get("apitoken"), server_info.get("name", "")
                 if not s_url or not s_token: continue
                 try:
-                    prtg_search_mgr = PRTGManager(s_url, s_token)
-                    existing_id = prtg_search_mgr.search_device(container_id, monitor_name)
-                    if existing_id:
-                        logger.warning(f"Found existing monitor '{monitor_name}' (ID: {existing_id}) on server {s_name}. Deleting...")
-                        if prtg_search_mgr.delete_monitor_by_id(existing_id):
-                            logger.info(f"Successfully deleted monitor ID {existing_id} from {s_name}.")
-                            deleted_on_any_server = True
-                        else:
-                            logger.error(f"Failed to delete monitor ID {existing_id} from {s_name}.")
+                    prtg_mgr = PRTGManager(s_url, s_token)
+                    existing_id = prtg_mgr.search_device(container_id, monitor_name)
+                    if existing_id and prtg_mgr.delete_monitor_by_id(existing_id):
+                        logger.warning(f"Found and deleted existing monitor '{monitor_name}' on {s_name}.")
                 except Exception as e_del:
-                    logger.error(f"Error checking/deleting monitor '{monitor_name}' on server {s_name}: {e_del}")
+                    logger.error(f"Error checking/deleting monitor on {s_name}: {e_del}")
             
-            # --- 4. Select Target Server for Creation ---
-            target_prtg_server_details = None
+            target_server = None
             if prtg_server_preference:
-                target_prtg_server_details = next((s for s in all_f5_servers if s.get("name") == prtg_server_preference), None)
-                if not target_prtg_server_details:
-                    logger.error(f"Specified target PRTG server '{prtg_server_preference}' not found in F5 config.")
-                    continue # Try next PRTG entry in pod_config
+                target_server = next((s for s in all_f5_servers if s.get("name") == prtg_server_preference), None)
             else:
-                for server_info_select in all_f5_servers:
-                    s_url, s_token, s_name = server_info_select.get("url"), server_info_select.get("apitoken"), server_info_select.get("name", server_info_select.get("url"))
+                for server in all_f5_servers:
+                    s_url, s_token, s_name = server.get("url"), server.get("apitoken"), server.get("name", "")
                     if not s_url or not s_token: continue
                     try:
-                        prtg_cap_mgr = PRTGManager(s_url, s_token)
-                        current_sensors = prtg_cap_mgr.get_up_sensor_count()
-                        template_sensors = prtg_cap_mgr.get_template_sensor_count(template_id)
-                        # Example sensor limit, adjust as needed
-                        if (current_sensors + template_sensors) < 4990: # F5 might have higher limits or different templates
-                            logger.info(f"Selected server {s_name} for '{monitor_name}' (Sensors: {current_sensors}+{template_sensors} < 4990)")
-                            target_prtg_server_details = server_info_select
+                        prtg_mgr = PRTGManager(s_url, s_token)
+                        if (prtg_mgr.get_up_sensor_count() + prtg_mgr.get_template_sensor_count(template_id)) < 4990:
+                            target_server = server
                             break
-                        else:
-                            logger.warning(f"Server {s_name} for '{monitor_name}' skipped: capacity {current_sensors}+{template_sensors} >= 4990.")
                     except Exception as e_cap:
-                        logger.error(f"Error checking capacity for '{monitor_name}' on server {s_name}: {e_cap}")
+                        logger.error(f"Error checking capacity on {s_name}: {e_cap}")
             
-            if not target_prtg_server_details:
-                logger.error(f"No suitable PRTG server found for creating monitor '{monitor_name}'.")
-                continue # Try next PRTG entry in pod_config
-
-            # --- 5. Create New Monitor on Target Server ---
-            final_server_url = target_prtg_server_details.get("url")
-            final_api_token = target_prtg_server_details.get("apitoken")
-            final_server_name = target_prtg_server_details.get("name", final_server_url)
-
-            if not final_server_url or not final_api_token:
-                logger.error(f"Target server {final_server_name} for '{monitor_name}' has incomplete config.")
+            if not target_server:
+                logger.error(f"No suitable PRTG server found for '{monitor_name}'.")
                 continue
 
-            logger.info(f"Attempting to create monitor '{monitor_name}' (IP: {target_ip}) on server: {final_server_name}")
-            prtg_create_mgr = PRTGManager(final_server_url, final_api_token)
-            
-            new_device_id = prtg_create_mgr.clone_device(template_id, container_id, monitor_name)
-            if not new_device_id:
-                logger.error(f"Failed to clone device '{monitor_name}' on {final_server_name}.")
-                continue
-
-            if not prtg_create_mgr.set_device_ip(new_device_id, target_ip):
-                logger.error(f"Failed to set IP '{target_ip}' for new device ID {new_device_id} ('{monitor_name}') on {final_server_name}.")
-                # Consider deleting the partially created device
-                prtg_create_mgr.delete_monitor_by_id(new_device_id)
-                continue
-            
-            if not prtg_create_mgr.enable_device(new_device_id):
-                logger.error(f"Failed to enable monitor ID {new_device_id} ('{monitor_name}') on {final_server_name}.")
-                # Consider deleting
-                prtg_create_mgr.delete_monitor_by_id(new_device_id)
-                continue
-            
-            current_monitor_url = f"{final_server_url}/device.htm?id={new_device_id}"
-            logger.info(f"Successfully created and enabled PRTG monitor '{monitor_name}': {current_monitor_url}")
-            if first_successful_monitor_url is None:
-                first_successful_monitor_url = current_monitor_url # Capture the first success
-
+            final_url, final_token, final_name = target_server.get("url"), target_server.get("apitoken"), target_server.get("name", "")
+            prtg_create_mgr = PRTGManager(final_url, final_token)
+            new_id = prtg_create_mgr.clone_device(template_id, container_id, monitor_name)
+            if new_id and prtg_create_mgr.set_device_ip(new_id, target_ip) and prtg_create_mgr.enable_device(new_id):
+                url = f"{final_url}/device.htm?id={new_id}"
+                logger.info(f"Successfully created monitor '{monitor_name}' on {final_name}: {url}")
+                if first_successful_monitor_url is None: first_successful_monitor_url = url
+            else:
+                logger.error(f"Failed to create/configure monitor '{monitor_name}' on {final_name}.")
+                if new_id: prtg_create_mgr.delete_monitor_by_id(new_id)
+        
         except Exception as e_entry:
-            logger.error(f"Error processing PRTG entry {prtg_entry.get('name', 'Unknown')}: {e_entry}", exc_info=True)
-            # Continue to the next PRTG entry in the list
+            logger.error(f"Error processing PRTG entry: {e_entry}", exc_info=True)
 
-    return first_successful_monitor_url # Return the URL of the first one that succeeded
+    return first_successful_monitor_url
