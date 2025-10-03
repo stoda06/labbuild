@@ -6,12 +6,86 @@ import pandas as pd
 import re
 from datetime import datetime, timedelta
 import pytz # For timezone handling if needed
+from copy import deepcopy
+from itertools import combinations
 
 from simple_salesforce import Salesforce, SalesforceAuthenticationFailed, SalesforceGeneralError
 from typing import Optional, List, Dict, Any
 from collections import defaultdict
 from dotenv import load_dotenv
 import math
+
+PAN_BASE_COURSE_CODES = (210, 220, 330)
+
+
+def _extract_pan_numeric_code(course_code: str) -> Optional[int]:
+    if not course_code:
+        return None
+
+    match = re.search(r"PAN[^0-9]*(\d{3,})", str(course_code), re.IGNORECASE)
+    if not match:
+        return None
+
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_pan_component_codes(total_code: int) -> Optional[List[int]]:
+    if total_code in PAN_BASE_COURSE_CODES:
+        return None
+
+    valid_combinations: List[List[int]] = []
+    for r in range(2, len(PAN_BASE_COURSE_CODES) + 1):
+        for combo in combinations(PAN_BASE_COURSE_CODES, r):
+            if sum(combo) == total_code:
+                valid_combinations.append(list(combo))
+
+    if not valid_combinations:
+        return None
+
+    valid_combinations.sort(key=len, reverse=True)
+    return valid_combinations[0]
+
+
+def _expand_pan_combination_courses(courses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not courses:
+        return []
+
+    expanded: List[Dict[str, Any]] = []
+
+    for course in courses:
+        expanded.append(course)
+
+        course_code = course.get('Course Code')
+        numeric_code = _extract_pan_numeric_code(course_code)
+        if numeric_code is None:
+            continue
+
+        component_codes = _find_pan_component_codes(numeric_code)
+        if not component_codes:
+            continue
+
+        for index, component_code in enumerate(component_codes, start=1):
+            cloned_course = deepcopy(course)
+            source_code = course.get('Course Code')
+            component_label = f"PAN-{component_code}"
+
+            cloned_course['Course Code'] = component_label
+            cloned_course['pan_combination_source'] = source_code
+            cloned_course['pan_component_code'] = component_label
+            cloned_course['pan_component_index'] = index
+            cloned_course['pan_component_total'] = len(component_codes)
+            cloned_course['pan_component_uid'] = f"{source_code or 'PAN'}::{component_label}::{index}"
+
+            note = cloned_course.get('preselect_note')
+            component_note = f"Component of {source_code}"
+            cloned_course['preselect_note'] = f"{note} | {component_note}" if note else component_note
+
+            expanded.append(cloned_course)
+
+    return expanded
 
 # Load environment variables from the project root .env file
 project_root = os.path.dirname(os.path.abspath(__file__)) # Assumes utils is at the root
@@ -710,7 +784,7 @@ def get_upcoming_courses_data(build_rules: list, course_configs_list: list, host
     augmented_data_list = apply_build_rules_to_courses(
         df_processed, build_rules, course_configs_list, hosts_list
     )
-    return augmented_data_list
+    return _expand_pan_combination_courses(augmented_data_list)
 
 # --- NEW Orchestrator Function for CURRENT Week ---
 def get_current_courses_data() -> Optional[list]:

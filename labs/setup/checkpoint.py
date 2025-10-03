@@ -89,6 +89,81 @@ def increment_string(s: Optional[str]) -> str:
 
 
 # --- Main Build Function ---
+def _resolve_permission_context(pod_config: Dict, pod_number: int) -> Tuple[str, str]:
+    """Resolve the domain user and role name used for permission assignments.
+
+    The original implementation hard-coded both the domain-qualified username and the
+    vCenter role.  In practice, lab deployments occasionally need to override these
+    defaults—for example, when a pod is associated with a different Active Directory
+    domain, or when the role name deviates from ``labcp-0-role``.  Without the ability
+    to override these values, permission assignment fails with ``assign_role_to_rp``
+    errors even though the rest of the build succeeded.
+
+    To make the permission workflow resilient, we allow ``pod_config`` to provide
+    alternative values.  The lookup order is:
+
+    1. ``pod_config['permissions']`` dictionary, if present.
+    2. Top-level ``pod_config`` keys for backwards compatibility.
+    3. The legacy defaults used historically by the build system.
+
+    Each configurable entry supports ``str.format`` tokens so callers can embed the
+    pod number directly (e.g. ``"labcp-{pod_number}"``).
+
+    Args:
+        pod_config: Pod configuration payload.
+        pod_number: Integer pod identifier.
+
+    Returns:
+        A tuple of ``(domain_user, role_name)`` ready to be passed to the permission
+        helpers.
+    """
+
+    def _format(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            return value.format(pod_number=pod_number)
+        except (KeyError, IndexError, ValueError):
+            # Leave the value untouched if formatting fails—better to attempt using
+            # the original string than to mask a configuration typo entirely.
+            return value
+
+    permissions_cfg = pod_config.get("permissions", {}) if isinstance(pod_config.get("permissions"), dict) else {}
+
+    # Determine the base username (without domain) first so that we can construct a
+    # fully qualified principal if callers only provide ``domain`` overrides.
+    user_template = (
+        permissions_cfg.get("user_template")
+        or pod_config.get("user_template")
+        or "labcp-{pod_number}"
+    )
+    explicit_user = permissions_cfg.get("user") or pod_config.get("user")
+    principal = _format(explicit_user) or _format(user_template)
+
+    # Domain can be blank (e.g. for local vCenter users).  When ``domain_user`` is
+    # provided explicitly we honor it verbatim, otherwise we build a combined value
+    # from the domain and principal.
+    domain = permissions_cfg.get("domain") or pod_config.get("domain") or "vcenter.rededucation.com"
+    raw_domain_user = permissions_cfg.get("domain_user") or pod_config.get("domain_user")
+    domain_user = _format(raw_domain_user)
+
+    if not domain_user:
+        if principal and "\\" in principal:
+            domain_user = principal
+        elif principal and domain:
+            domain_user = f"{domain}\\{principal}"
+        else:
+            domain_user = principal or ""
+
+    role_name = (
+        _format(permissions_cfg.get("role_name"))
+        or _format(pod_config.get("role_name"))
+        or "labcp-0-role"
+    )
+
+    return domain_user, role_name
+
+
 def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thread: int = 4,
                  full: bool = False, selected_components: Optional[List[str]] = None,
                  clonefrom: Optional[int] = None,
@@ -103,8 +178,7 @@ def build_cp_pod(service_instance, pod_config: Dict, rebuild: bool = False, thre
     # permission_mgr = PermissionManager(service_instance) # If needed for permissions
 
     target_pod_number = pod_config["pod_number"]
-    domain_user = f"vcenter.rededucation.com\\labcp-{target_pod_number}" # For the target pod
-    role_name = "labcp-0-role" # Consistent role name
+    domain_user, role_name = _resolve_permission_context(pod_config, target_pod_number)
 
     # --- Determine Target Resource Pool and Folder Names ---
     if "maestro" in pod_config["course_name"].lower():
@@ -356,9 +430,7 @@ def perm_only_cp_pod(service_instance, pod_config):
     network_manager = NetworkManager(service_instance)
 
     # Define user, domain, and role.
-    user = f"labcp-{pod_config['pod_number']}"
-    domain = "vcenter.rededucation.com"
-    role = "labcp-0-role"
+    domain_user, role = _resolve_permission_context(pod_config, pod_config["pod_number"])
 
     # Determine folder name and resource pool name based on course name.
     if "maestro" in pod_config["course_name"]:
@@ -375,13 +447,13 @@ def perm_only_cp_pod(service_instance, pod_config):
 
     # Call the permission functions.
     folder_manager.logger.info("Assigning user to folder '%s'.", folder_name)
-    folder_manager.assign_user_to_folder(folder_name, f'{domain}\\{user}', role)
+    folder_manager.assign_user_to_folder(folder_name, domain_user, role)
 
     resource_pool_manager.logger.info("Assigning role to resource pool '%s'.", pod_resource_pool)
-    resource_pool_manager.assign_role_to_resource_pool(pod_resource_pool, f'{domain}\\{user}', role)
+    resource_pool_manager.assign_role_to_resource_pool(pod_resource_pool, domain_user, role)
 
     network_manager.logger.info("Applying user role to networks: %s.", network_names)
-    network_manager.apply_user_role_to_networks(f'{domain}\\{user}', role, network_names)
+    network_manager.apply_user_role_to_networks(domain_user, role, network_names)
 
 
 def add_monitor(pod_config, db_client, prtg_server=None):

@@ -1,5 +1,7 @@
 // In dashboard/static/js/upcoming_courses.js
 
+const PAN_BASE_COURSE_CODES = [210, 220, 330];
+
 /**
  * Manages the interactivity of the "Upcoming Courses" page.
  * This class handles data parsing, table rendering, sorting, user selections,
@@ -26,6 +28,7 @@ class UpcomingCoursesPlanner {
         const coursesDataScript = document.getElementById('courses-data-json');
         const courseConfigsDataScript = document.getElementById('course-configs-data-json');
         this.allCoursesData = this._parseJsonData(coursesDataScript, 'courses');
+        this.allCoursesData = this._expandPanCombinationCourses(this.allCoursesData);
         this.courseConfigsList = this._parseJsonData(courseConfigsDataScript, 'course configs');
         
         // --- 3. State Management ---
@@ -42,6 +45,106 @@ class UpcomingCoursesPlanner {
         // --- 5. Initial Setup ---
         this._attachEventListeners();
         this.sortAndRender(); // Perform the initial sort and render the table.
+    }
+
+    /**
+     * Expands any PAN combined courses (e.g., PAN-430) into additional rows so
+     * each underlying base course (210, 220, 330) is represented in the table.
+     * The original combined row is preserved and companion rows are appended.
+     *
+     * @param {Array<Object>} courses - Parsed course data.
+     * @returns {Array<Object>} - Expanded list including additional PAN rows.
+     */
+    _expandPanCombinationCourses(courses) {
+        if (!Array.isArray(courses)) return [];
+
+        const expandedCourses = [];
+
+        courses.forEach((course) => {
+            expandedCourses.push(course);
+
+            const componentCodes = this._getPanComponentCodes(course?.['Course Code']);
+            if (!componentCodes || componentCodes.length === 0) return;
+
+            componentCodes.forEach((componentCode) => {
+                const clonedCourse = JSON.parse(JSON.stringify(course));
+                clonedCourse['Course Code'] = `PAN-${componentCode}`;
+                clonedCourse['pan_combination_source'] = course?.['Course Code'] || null;
+
+                const existingNote = typeof clonedCourse['preselect_note'] === 'string'
+                    ? clonedCourse['preselect_note'].trim()
+                    : '';
+                const componentNote = clonedCourse['pan_combination_source']
+                    ? `Component of ${clonedCourse['pan_combination_source']}`
+                    : '';
+
+                if (componentNote) {
+                    clonedCourse['preselect_note'] = existingNote
+                        ? `${existingNote} | ${componentNote}`
+                        : componentNote;
+                }
+
+                expandedCourses.push(clonedCourse);
+            });
+        });
+
+        return expandedCourses;
+    }
+
+    /**
+     * Determines which PAN base course codes compose a combined PAN course.
+     * Only sums of the known base codes (210, 220, 330) are considered.
+     *
+     * @param {string} courseCode - The Salesforce course code string.
+     * @returns {Array<number>|null} - Array of base codes to add as extra rows.
+     */
+    _getPanComponentCodes(courseCode) {
+        if (typeof courseCode !== 'string') return null;
+
+        const match = courseCode.match(/^PAN[-\s]?(\d+)/i);
+        if (!match) return null;
+
+        const numericPart = parseInt(match[1], 10);
+        if (!Number.isFinite(numericPart)) return null;
+        if (PAN_BASE_COURSE_CODES.includes(numericPart)) return null; // Already a base course
+
+        const combination = this._findPanCombination(numericPart);
+        return (combination && combination.length > 0) ? combination : null;
+    }
+
+    /**
+     * Finds the combination of base PAN course codes that sums to the target.
+     * Each base code can be used at most once. If multiple combinations are
+     * possible (unlikely with the current base set), the one with the most
+     * components is returned.
+     *
+     * @param {number} target - Numeric portion of the PAN course code.
+     * @returns {Array<number>|null}
+     */
+    _findPanCombination(target) {
+        let bestCombination = null;
+        const baseCodes = PAN_BASE_COURSE_CODES;
+        const totalCombos = 1 << baseCodes.length;
+
+        for (let mask = 1; mask < totalCombos; mask += 1) {
+            const combination = [];
+            let sum = 0;
+
+            for (let bit = 0; bit < baseCodes.length; bit += 1) {
+                if (mask & (1 << bit)) {
+                    combination.push(baseCodes[bit]);
+                    sum += baseCodes[bit];
+                }
+            }
+
+            if (sum === target && combination.length > 1) {
+                if (!bestCombination || combination.length > bestCombination.length) {
+                    bestCombination = combination;
+                }
+            }
+        }
+
+        return bestCombination;
     }
 
     /**
