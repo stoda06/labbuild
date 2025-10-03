@@ -5,3 +5,8 @@ __pycache__
 *.code-workspace
 examples
 .DS_Store
+
+# patch leftovers
+*.patch
+*.orig
+*.rej
